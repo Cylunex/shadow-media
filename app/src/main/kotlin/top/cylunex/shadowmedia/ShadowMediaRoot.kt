@@ -1,6 +1,11 @@
 package top.cylunex.shadowmedia
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -57,6 +62,7 @@ import androidx.media3.ui.compose.material3.Player
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import top.cylunex.shadowmedia.model.MediaItem
 import top.cylunex.shadowmedia.model.MediaLibrary
 import top.cylunex.shadowmedia.model.EmbySession
@@ -273,6 +279,8 @@ private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: 
             onBack = viewModel::back,
             onRetry = viewModel::retryPlayback,
             onTerminalError = viewModel::recoverPlayback,
+            onExternalPlaybackStarted = viewModel::externalPlaybackStarted,
+            onExternalPlaybackStopped = viewModel::externalPlaybackStopped,
             onDelete = { viewModel.requestDelete(item) },
         )
     }
@@ -292,11 +300,23 @@ private fun FeedPage(
     onBack: () -> Unit,
     onRetry: () -> Unit,
     onTerminalError: (Long, String) -> Unit,
+    onExternalPlaybackStarted: (PlaybackPlan, Long) -> Unit,
+    onExternalPlaybackStopped: (PlaybackPlan, Long) -> Unit,
     onDelete: () -> Unit,
 ) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (isActive && plan != null) {
-            ActivePlayer(state, item, plan, container, onRetry, onTerminalError)
+            if (plan.isDiscImage()) {
+                IsoExternalPlayer(
+                    state = state,
+                    item = item,
+                    plan = plan,
+                    onStarted = onExternalPlaybackStarted,
+                    onStopped = onExternalPlaybackStopped,
+                )
+            } else {
+                ActivePlayer(state, item, plan, container, onRetry, onTerminalError)
+            }
         } else if (isActive) {
             FeedPlaceholder(isLoading, errorMessage, onRetry)
         }
@@ -342,6 +362,87 @@ private fun FeedPage(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun IsoExternalPlayer(
+    state: MainUiState,
+    item: MediaItem,
+    plan: PlaybackPlan,
+    onStarted: (PlaybackPlan, Long) -> Unit,
+    onStopped: (PlaybackPlan, Long) -> Unit,
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val session = requireNotNull(state.session)
+    var launchError by remember(plan) { mutableStateOf<String?>(null) }
+    var launchedAtPosition by remember(plan) { mutableLongStateOf(state.playbackStartPositionMs) }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val returnedPosition = result.data?.getLongExtra(VLC_RESULT_POSITION, -1L) ?: -1L
+        onStopped(plan, returnedPosition.takeIf { it >= 0 } ?: launchedAtPosition)
+    }
+
+    fun launchVlc() {
+        val startPosition = state.playbackStartPositionMs.coerceAtLeast(0L)
+        val playbackUrl = plan.primary.url.toHttpUrl()
+        val serverUrl = session.serverUrl.toHttpUrl()
+        if (
+            playbackUrl.scheme != serverUrl.scheme || playbackUrl.host != serverUrl.host ||
+            playbackUrl.port != serverUrl.port
+        ) {
+            launchError = "ISO 播放地址不属于当前 Emby 服务器，已拒绝向外部播放器发送凭据"
+            return
+        }
+        val authorizedUrl = playbackUrl.newBuilder()
+            .setQueryParameter("api_key", session.accessToken)
+            .build()
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setPackage(VLC_PACKAGE)
+            setDataAndType(Uri.parse(authorizedUrl.toString()), "video/*")
+            putExtra("title", item.name)
+            putExtra("from_start", startPosition == 0L)
+            putExtra("position", startPosition)
+        }
+        try {
+            launchedAtPosition = startPosition
+            launcher.launch(intent)
+            onStarted(plan, startPosition)
+            launchError = null
+        } catch (_: ActivityNotFoundException) {
+            launchError = "没有找到 VLC for Android，请先安装后重试"
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("ISO 光盘镜像", color = Color.White, style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "Emby 不能转码 ISO，Shadow Media 将把原始镜像交给支持 DVD ISO 的 VLC 播放。",
+            color = Color.White,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "授权仅用于这次 VLC 请求；临时 URL 不会写入播放诊断或本地 Feed 数据。",
+            color = Color.White.copy(alpha = 0.65f),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Spacer(Modifier.height(20.dp))
+        Button(onClick = ::launchVlc) { Text("用 VLC 播放 ISO") }
+        launchError?.let { error ->
+            Spacer(Modifier.height(12.dp))
+            Text(error, color = MaterialTheme.colorScheme.error)
+            OutlinedButton(
+                onClick = {
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse(VLC_DOWNLOAD_URL))
+                    )
+                },
+            ) { Text("打开 VLC 下载页") }
         }
     }
 }
@@ -649,3 +750,11 @@ private fun formatDuration(milliseconds: Long): String {
 }
 
 private fun Boolean.asFlag(): String = if (this) "是" else "否"
+
+private fun PlaybackPlan.isDiscImage(): Boolean =
+    videoType.equals("Iso", ignoreCase = true) ||
+        container?.split(',')?.any { it.equals("iso", ignoreCase = true) } == true
+
+private const val VLC_PACKAGE = "org.videolan.vlc"
+private const val VLC_RESULT_POSITION = "extra_position"
+private const val VLC_DOWNLOAD_URL = "https://www.videolan.org/vlc/download-android.html"

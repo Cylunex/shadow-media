@@ -128,8 +128,10 @@ class DefaultEmbyRepository(
                 )
             }
             if (
-                source.directStreamUrl.isNullOrBlank() &&
-                !isDiscImage && (source.supportsDirectPlay || source.supportsDirectStream)
+                isDiscImage || (
+                    source.directStreamUrl.isNullOrBlank() &&
+                        (source.supportsDirectPlay || source.supportsDirectStream)
+                    )
             ) {
                 add(
                     PlaybackCandidate(
@@ -145,7 +147,7 @@ class DefaultEmbyRepository(
                     )
                 )
             }
-            source.transcodingUrl?.takeIf(String::isNotBlank)?.let { transcodingUrl ->
+            source.transcodingUrl?.takeIf { it.isNotBlank() && !isDiscImage }?.let { transcodingUrl ->
                 add(
                     PlaybackCandidate(
                         url = EmbyEndpoints.resolvePlaybackUrl(session.serverUrl, transcodingUrl),
@@ -155,8 +157,7 @@ class DefaultEmbyRepository(
                 )
             }
             if (
-                source.transcodingUrl.isNullOrBlank() &&
-                (isDiscImage || source.supportsTranscoding)
+                !isDiscImage && source.transcodingUrl.isNullOrBlank() && source.supportsTranscoding
             ) {
                 add(
                     PlaybackCandidate(

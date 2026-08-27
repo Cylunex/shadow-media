@@ -97,6 +97,7 @@ PagingSource 和本地单一事实源。
 FeedSession 按 `serverId + userId + libraryId` 隔离。重新进入媒体库时保留仍存在条目的原有顺序，
 把新条目追加到尾部，并恢复上次停留位置；删除条目时同步从 FeedSession 移除。
 
-ISO/DVD 镜像不属于 Media3 可直接播放的媒体容器。解析器识别 `VideoType=Iso` 或 `container=iso`
-后跳过静态直链，构造 Emby `/Videos/{id}/master.m3u8` HLS 转码候选。转码 Seek 通过更新
-`StartTimeTicks` 重启该播放会话，并在客户端保持绝对时间轴。
+ISO/DVD 镜像不属于 Media3 可直接播放的媒体容器，Emby Server 也不支持 ISO 转码。解析器识别
+`VideoType=Iso` 或 `container=iso` 后只构造当前 Emby origin 的静态 ISO 流，并由用户明确点击后
+交给 VLC for Android 读取。启动 Intent 传递上次位置，VLC 返回位置时补报 Emby；蓝光、3D、菜单
+和远程 Range 支持取决于镜像、VLC、设备及上游存储链路。

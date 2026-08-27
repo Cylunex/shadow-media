@@ -60,7 +60,7 @@ class DefaultEmbyRepositoryTest {
     }
 
     @Test
-    fun `forces iso media source through server hls transcoding`() = runBlocking {
+    fun `keeps iso as static stream for an external disc capable player`() = runBlocking {
         val responseJson = """
             {
               "PlaySessionId": "play-iso",
@@ -71,7 +71,7 @@ class DefaultEmbyRepositoryTest {
                 "SupportsDirectPlay": true,
                 "SupportsDirectStream": true,
                 "SupportsTranscoding": true,
-                "DirectStreamUrl": "/emby/Videos/iso-1/stream.iso",
+                "DirectStreamUrl": "https://cdn.example.net/file.iso?signature=temporary",
                 "RequiredHttpHeaders": {},
                 "MediaStreams": [{"Type": "Video", "Codec": "mpeg2video"}]
               }]
@@ -82,10 +82,12 @@ class DefaultEmbyRepositoryTest {
         val plan = repository.playbackPlan(SESSION, "iso-1")
 
         assertEquals(1, plan.candidates.size)
-        assertEquals(PlayMethod.TRANSCODE, plan.primary.method)
-        assertTrue(plan.primary.url.startsWith("https://media.example.com/emby/Videos/iso-1/master.m3u8?"))
-        assertTrue(plan.primary.url.contains("VideoCodec=h264"))
-        assertTrue(plan.primary.url.contains("allowVideoStreamCopy=false"))
+        assertEquals(PlayMethod.DIRECT_STREAM, plan.primary.method)
+        assertEquals(
+            "https://media.example.com/emby/Videos/iso-1/stream.iso?" +
+                "MediaSourceId=source-iso&Static=true&PlaySessionId=play-iso",
+            plan.primary.url,
+        )
         assertFalse(plan.primary.url.contains("api_key", ignoreCase = true))
     }
 

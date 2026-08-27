@@ -23,6 +23,9 @@ Emby origin
 - 多个 Access Token 连同服务器/用户绑定信息序列化后，由 Android Keystore 中的 AES-256 GCM key 加密。
 - SharedPreferences 只保存随机 IV + ciphertext + authentication tag。
 - 播放进度 Outbox 不保存 Token、请求头或临时播放 URL，只保存补报所需的 ID、事件和位置。
+- ISO 交给 VLC 时必须让外部进程获得本次读取授权。应用只允许给当前 Emby 精确 origin 的静态
+  流临时添加 `api_key`，定向发送给官方 VLC 包；不会把 Token 添加到第三方 CDN URL，也不会
+  保存这个授权 URL。用户移除 VLC 历史记录的行为由 VLC 自身控制。
 - 日志和播放诊断不显示 Token、Authorization、Cookie、完整播放 URL 或响应头。
 
 ## HTTP

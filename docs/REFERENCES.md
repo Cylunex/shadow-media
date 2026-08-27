@@ -19,6 +19,11 @@
 以及 Emby 的
 [Playback Check-ins](https://dev.emby.media/doc/restapi/Playback-Check-ins.html)。
 
+ISO 属于特殊边界：[Emby 团队说明](https://emby.media/community/topic/125851-zidoo-emby-cannot-open-3d-iso-files-only/)
+服务器不支持 ISO 转码，只能把完整镜像交给能够直接读取它的
+播放器；[VLC for Android 官方页面](https://www.videolan.org/vlc/download-android.html)声明支持
+网络流和 DVD ISO。因此 ISO 不进入 Media3/HLS 候选链，而是定向交给官方 VLC Android 包。
+
 当前选择单活跃播放器、稳定 FeedSession、持久化进度 Outbox 和播放地址单次自动刷新。待真实
 Emby/MediaWarp/115 链路完成兼容性与资源占用采样后，再决定是否启用容量受控的 PlayerPool 与
 方向感知预加载。

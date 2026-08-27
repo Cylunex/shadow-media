@@ -14,10 +14,13 @@ import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.MediaItem
 import top.cylunex.shadowmedia.model.MediaLibrary
 import top.cylunex.shadowmedia.model.PlaybackPlan
+import top.cylunex.shadowmedia.model.PlaybackEvent
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
+import top.cylunex.shadowmedia.model.millisecondsToEmbyTicks
 import top.cylunex.shadowmedia.network.EmbyRepository
 import top.cylunex.shadowmedia.network.LoginRequest
 import top.cylunex.shadowmedia.network.PlaybackOutbox
+import top.cylunex.shadowmedia.network.PlaybackReport
 import top.cylunex.shadowmedia.network.SessionStore
 
 enum class Screen { SERVERS, LOGIN, LIBRARIES, ITEMS, PLAYER }
@@ -233,6 +236,42 @@ class MainViewModel(
             positionMs,
             snapshot.playbackRefreshAttempts + 1,
         )
+    }
+
+    fun externalPlaybackStarted(plan: PlaybackPlan, positionMs: Long) {
+        reportExternalPlayback(plan, positionMs, PlaybackEvent.STARTED)
+    }
+
+    fun externalPlaybackStopped(plan: PlaybackPlan, positionMs: Long) {
+        val positionTicks = positionMs.coerceAtLeast(0L).millisecondsToEmbyTicks()
+        update {
+            copy(
+                playbackStartPositionMs = positionMs.coerceAtLeast(0L),
+                items = items.map { item ->
+                    if (item.id == plan.itemId) item.copy(playbackPositionTicks = positionTicks) else item
+                },
+            )
+        }
+        reportExternalPlayback(plan, positionMs, PlaybackEvent.STOPPED)
+    }
+
+    private fun reportExternalPlayback(plan: PlaybackPlan, positionMs: Long, event: PlaybackEvent) {
+        val session = state.value.session ?: return
+        viewModelScope.launch {
+            playbackOutbox.submit(
+                session,
+                PlaybackReport(
+                    itemId = plan.itemId,
+                    mediaSourceId = plan.mediaSourceId,
+                    playSessionId = plan.playSessionId,
+                    positionTicks = positionMs.coerceAtLeast(0L).millisecondsToEmbyTicks(),
+                    isPaused = event == PlaybackEvent.STOPPED,
+                    canSeek = true,
+                    event = event,
+                    playMethod = plan.primary.method,
+                ),
+            )
+        }
     }
 
     private fun resolvePlayback(

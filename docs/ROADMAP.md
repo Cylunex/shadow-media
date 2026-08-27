@@ -7,7 +7,7 @@
 - [x] 远端分页获取媒体库全部视频
 - [x] PlaybackInfo → Direct Play / DirectStream → Transcode 候选链
 - [x] DirectStreamUrl 缺失时的标准静态流兜底
-- [x] ISO/DVD 镜像强制 HLS 转码与服务端 Seek
+- [x] ISO/DVD 镜像识别与 VLC 外部播放器直读、续播位置交接
 - [x] Media3 Compose Material 3 Player
 - [x] Playing / 每 10 秒 Progress / Pause / Unpause / Stopped
 - [x] 持久化播放进度 Outbox 与按服务器补报
