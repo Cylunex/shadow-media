@@ -4,11 +4,16 @@
 除单独声明的 ISO 后端外，没有复制其源码：
 
 - [NextPlayer](https://github.com/anilbeesetti/NextPlayer)：成熟的 Media3 播放器交互、字幕和
-  MediaSession 参考；其许可证为 GPL-3.0，不直接并入当前工程。
+  MediaSession 参考；其许可证为 GPL-3.0，本项目只提炼交互原则，没有复制页面源码。
+- [AFinity](https://github.com/MakD/AFinity)：活跃的 Compose + Material 3 + Jellyfin 客户端，
+  用于比较首页层级、海报网格、媒体库筛选与低干扰播放器控件。本项目采用深色低对比表面、
+  大标题和内容优先的信息层级，组件均为独立实现。
+- [JellyPlay](https://github.com/raulshma/jellyplay)：GPL-3.0 的 Material 3 Expressive 媒体客户端，
+  用于比较圆角卡片、继续播放入口、多服务状态表达和海报加载策略。
 - [SnapReel](https://github.com/shahriar-ahmed-seam/SnapReel)：垂直本地媒体浏览交互参考，
   不采用它的本地文件数据边界。
 - [clown6613/ComposeReels](https://github.com/clown6613/ComposeReels)：单播放器和单向数据流
-  的小型示例，只参考状态协调思路。
+  的 Apache-2.0 小型示例，参考底部渐变信息区、顶部悬浮操作和状态协调思路。
 - [manjees/compose-reels](https://github.com/manjees/compose-reels)：PlayerPool 机制参考；当前
   不照搬较大的默认播放器池，避免 NAS/CDN 场景并发和内存开销失控。
 - [oguzhanaslann/ComposeReels](https://github.com/oguzhanaslann/ComposeReels)：仓库规模较小且
@@ -28,3 +33,6 @@ ISO 属于特殊边界：[Emby 团队说明](https://emby.media/community/topic/
 当前选择单活跃播放器、稳定 FeedSession、持久化进度 Outbox 和播放地址单次自动刷新。待真实
 Emby/MediaWarp/115 链路完成兼容性与资源占用采样后，再决定是否启用容量受控的 PlayerPool 与
 方向感知预加载。
+
+界面中的 Emby 海报使用 Coil 加载。认证头仅在与当前 Emby 服务严格同源时附加；发生跨域重定向
+时会移除 Token、Authorization 和 Cookie，保持与播放链路一致的凭据隔离边界。

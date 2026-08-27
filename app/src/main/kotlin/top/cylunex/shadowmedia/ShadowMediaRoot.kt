@@ -8,7 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,15 +24,37 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.BugReport
+import androidx.compose.material.icons.rounded.Headphones
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -41,6 +63,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -51,9 +74,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -73,108 +100,157 @@ import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
 import top.cylunex.shadowmedia.playback.PlaybackRuntime
 import top.cylunex.shadowmedia.playback.MpvIsoPlaybackRuntime
 import top.cylunex.shadowmedia.playback.MpvIsoPlaybackState
+import top.cylunex.shadowmedia.ui.ContinueFeedCard
+import top.cylunex.shadowmedia.ui.EmbyArtwork
+import top.cylunex.shadowmedia.ui.EmptyStatePanel
+import top.cylunex.shadowmedia.ui.LibraryCard
+import top.cylunex.shadowmedia.ui.LocalEmbyImageLoader
+import top.cylunex.shadowmedia.ui.MediaPosterCard
+import top.cylunex.shadowmedia.ui.PlayerTopBar
+import top.cylunex.shadowmedia.ui.ScreenHeader
+import top.cylunex.shadowmedia.ui.ServerCard
+import top.cylunex.shadowmedia.ui.rememberEmbyImageLoader
 
 @Composable
 fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    Surface(Modifier.fillMaxSize()) {
-        when (state.screen) {
-            Screen.SERVERS -> ServerScreen(state, viewModel)
-            Screen.LOGIN -> LoginScreen(state, viewModel)
-            Screen.LIBRARIES -> LibraryScreen(state, viewModel)
-            Screen.ITEMS -> ItemScreen(state, viewModel)
-            Screen.PLAYER -> FeedScreen(state, viewModel, container)
-        }
-        if (state.isLoading && state.screen != Screen.PLAYER) LoadingOverlay()
-        state.pendingDeleteItem?.let { item ->
-            DeleteConfirmationDialog(
-                item = item,
-                isDeleting = state.isDeleting,
-                onConfirm = viewModel::confirmDelete,
-                onDismiss = viewModel::cancelDelete,
-            )
-        }
-        state.pendingRemoveSession?.let { session ->
-            RemoveServerConfirmationDialog(
-                session = session,
-                onConfirm = viewModel::confirmRemoveServer,
-                onDismiss = viewModel::cancelRemoveServer,
-            )
+    val imageLoader = rememberEmbyImageLoader(state.session, container.clientIdentity)
+    CompositionLocalProvider(LocalEmbyImageLoader provides imageLoader) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            when (state.screen) {
+                Screen.SERVERS -> ServerScreen(state, viewModel)
+                Screen.LOGIN -> LoginScreen(state, viewModel)
+                Screen.LIBRARIES -> LibraryScreen(state, viewModel)
+                Screen.ITEMS -> ItemScreen(state, viewModel)
+                Screen.PLAYER -> FeedScreen(state, viewModel, container)
+            }
+            if (state.isLoading && state.screen != Screen.PLAYER) LoadingOverlay()
+            state.pendingDeleteItem?.let { item ->
+                DeleteConfirmationDialog(
+                    item = item,
+                    isDeleting = state.isDeleting,
+                    onConfirm = viewModel::confirmDelete,
+                    onDismiss = viewModel::cancelDelete,
+                )
+            }
+            state.pendingRemoveSession?.let { session ->
+                RemoveServerConfirmationDialog(
+                    session = session,
+                    onConfirm = viewModel::confirmRemoveServer,
+                    onDismiss = viewModel::cancelRemoveServer,
+                )
+            }
         }
     }
 }
 
 @Composable
 private fun ServerScreen(state: MainUiState, viewModel: MainViewModel) {
-    ContentListHeader(
-        title = "Emby 服务器",
-        subtitle = "登录信息按服务器和用户隔离保存",
-        actionText = "添加",
-        onAction = viewModel::addServer,
-    )
-    LazyColumn(Modifier.fillMaxSize().padding(top = 88.dp)) {
-        items(state.savedSessions, key = { "${it.serverUrl}:${it.serverId}:${it.userId}" }) { session ->
-            ListCard(
-                title = session.userName,
-                subtitle = session.serverUrl,
-                onClick = { viewModel.selectServer(session) },
-                onDelete = { viewModel.requestRemoveServer(session) },
-                deleteText = "移除",
+    LazyColumn(
+        Modifier.fillMaxSize().statusBarsPadding(),
+        contentPadding = PaddingValues(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            ScreenHeader(
+                title = "你的服务器",
+                subtitle = "${state.savedSessions.size} 个已保存登录 · 凭据相互隔离",
+                actionLabel = "添加服务器",
+                onAction = viewModel::addServer,
+                actionIsAdd = true,
             )
         }
-        item { ErrorText(state.errorMessage, Modifier.padding(16.dp)) }
+        items(state.savedSessions, key = { "${it.serverUrl}:${it.serverId}:${it.userId}" }) { session ->
+            ServerCard(
+                session = session,
+                onClick = { viewModel.selectServer(session) },
+                onRemove = { viewModel.requestRemoveServer(session) },
+                modifier = Modifier.padding(horizontal = 20.dp),
+            )
+        }
+        if (state.savedSessions.isEmpty()) {
+            item { EmptyStatePanel("还没有服务器，先添加一个 Emby 登录", Modifier.padding(horizontal = 20.dp)) }
+        }
+        item { ErrorText(state.errorMessage, Modifier.padding(horizontal = 20.dp)) }
     }
 }
 
 @Composable
 private fun LoginScreen(state: MainUiState, viewModel: MainViewModel) {
     if (state.savedSessions.isNotEmpty()) BackHandler(onBack = viewModel::back)
-    Column(
-        modifier = Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
+    Box(
+        Modifier.fillMaxSize().background(
+            Brush.radialGradient(
+                colors = listOf(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.54f), Color.Transparent),
+                radius = 920f,
+            )
+        )
     ) {
-        Text("Shadow Media", style = MaterialTheme.typography.headlineLarge)
-        Text("连接 Emby，播放自己的媒体库")
-        Spacer(Modifier.height(24.dp))
-        OutlinedTextField(
-            value = state.serverUrl,
-            onValueChange = viewModel::updateServerUrl,
-            label = { Text("Emby 地址") },
-            placeholder = { Text("https://media.example.com") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
-            value = state.userName,
-            onValueChange = viewModel::updateUserName,
-            label = { Text("用户名") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
-            value = state.password,
-            onValueChange = viewModel::updatePassword,
-            label = { Text("密码") },
-            singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = state.allowInsecureHttp, onCheckedChange = viewModel::updateAllowInsecure)
-            Text("允许受信任局域网使用未加密 HTTP")
-        }
-        ErrorText(state.errorMessage)
-        Button(
-            onClick = viewModel::login,
-            enabled = !state.isLoading,
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("登录") }
-        if (state.savedSessions.isNotEmpty()) {
-            TextButton(onClick = viewModel::showServers, modifier = Modifier.fillMaxWidth()) {
-                Text("返回服务器列表")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().safeDrawingPadding(),
+            contentPadding = PaddingValues(24.dp),
+            verticalArrangement = Arrangement.Center,
+        ) {
+            item {
+                Text("SHADOW", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                Text("连接你的片库", style = MaterialTheme.typography.headlineLarge)
+                Text(
+                    "登录 Emby，开始专注、连续的私人刷片体验。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 24.dp),
+                )
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)),
+                ) {
+                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedTextField(
+                            value = state.serverUrl,
+                            onValueChange = viewModel::updateServerUrl,
+                            label = { Text("Emby 地址") },
+                            placeholder = { Text("https://media.example.com") },
+                            leadingIcon = { Icon(Icons.Rounded.Movie, null) },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = state.userName,
+                            onValueChange = viewModel::updateUserName,
+                            label = { Text("用户名") },
+                            leadingIcon = { Icon(Icons.Rounded.Person, null) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = state.password,
+                            onValueChange = viewModel::updatePassword,
+                            label = { Text("密码") },
+                            leadingIcon = { Icon(Icons.Rounded.Lock, null) },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = state.allowInsecureHttp, onCheckedChange = viewModel::updateAllowInsecure)
+                            Text(
+                                "允许受信任局域网使用 HTTP",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                        ErrorText(state.errorMessage)
+                        Button(
+                            onClick = viewModel::login,
+                            enabled = !state.isLoading,
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                        ) { Text("连接服务器") }
+                    }
+                }
+                if (state.savedSessions.isNotEmpty()) {
+                    TextButton(onClick = viewModel::showServers, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                        Text("返回服务器列表")
+                    }
+                }
             }
         }
     }
@@ -183,66 +259,77 @@ private fun LoginScreen(state: MainUiState, viewModel: MainViewModel) {
 @Composable
 private fun LibraryScreen(state: MainUiState, viewModel: MainViewModel) {
     BackHandler(onBack = viewModel::back)
-    ContentListHeader(
-        title = "选择媒体库",
-        subtitle = "${state.session?.userName.orEmpty()} · ${state.session?.serverUrl.orEmpty()}",
-        actionText = "服务器",
-        onAction = viewModel::showServers,
-    )
-    LazyColumn(Modifier.fillMaxSize().padding(top = 88.dp)) {
-        if (state.lastFeedLibraryId != null) {
-            item {
-                OutlinedButton(
-                    onClick = viewModel::resumeLastFeed,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                ) { Text("继续上次刷片") }
-            }
-        }
-        items(state.libraries, key = MediaLibrary::id) { library ->
-            ListCard(
-                title = library.name,
-                subtitle = library.collectionType ?: "媒体库",
-                onClick = { viewModel.selectLibrary(library) },
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(150.dp),
+        modifier = Modifier.fillMaxSize().statusBarsPadding(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            ScreenHeader(
+                title = "选择片库",
+                subtitle = "${state.session?.userName.orEmpty()} · ${state.session?.serverUrl.orEmpty()}",
+                actionLabel = "服务器",
+                onAction = viewModel::showServers,
             )
         }
-        if (!state.isLoading && state.libraries.isEmpty()) {
-            item { EmptyState("此账号没有可用媒体库") }
+        if (state.lastFeedLibraryId != null) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                ContinueFeedCard(state.currentIndex, viewModel::resumeLastFeed)
+            }
         }
-        item { ErrorText(state.errorMessage, Modifier.padding(16.dp)) }
+        gridItems(state.libraries, key = MediaLibrary::id) { library ->
+            LibraryCard(state.session, library) { viewModel.selectLibrary(library) }
+        }
+        if (!state.isLoading && state.libraries.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) { EmptyStatePanel("此账号没有可用媒体库") }
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) { ErrorText(state.errorMessage) }
     }
 }
 
 @Composable
 private fun ItemScreen(state: MainUiState, viewModel: MainViewModel) {
     BackHandler(onBack = viewModel::back)
-    ContentListHeader(
-        title = state.selectedLibrary?.name ?: "视频",
-        subtitle = "共 ${state.items.size} 条 · 选择一条开始刷片",
-        actionText = "媒体库",
-        onAction = viewModel::back,
-    )
-    LazyColumn(Modifier.fillMaxSize().padding(top = 88.dp)) {
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(150.dp),
+        modifier = Modifier.fillMaxSize().statusBarsPadding(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            ScreenHeader(
+                title = state.selectedLibrary?.name ?: "视频",
+                subtitle = "已加载 ${state.items.size} 条 · 上下滑动连续播放",
+                actionLabel = "媒体库",
+                onAction = viewModel::back,
+            )
+        }
         if (state.items.isNotEmpty()) {
-            item {
-                OutlinedButton(
-                    onClick = { viewModel.playAt(state.currentIndex) },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                ) { Text("从第 ${state.currentIndex + 1} 条继续刷片") }
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                ContinueFeedCard(state.currentIndex) { viewModel.playAt(state.currentIndex) }
             }
         }
-        items(state.items, key = MediaItem::id) { item ->
-            val progress = item.playbackPositionTicks.takeIf { it > 0 }?.let {
-                " · 续播 ${formatDuration(it.embyTicksToMilliseconds())}"
-            }.orEmpty()
-            ListCard(
-                title = item.name,
-                subtitle = item.episodeLabel() + progress,
+        gridItems(state.items, key = MediaItem::id) { item ->
+            val durationTicks = item.runTimeTicks ?: 0L
+            val progress = if (durationTicks > 0) {
+                (item.playbackPositionTicks.toDouble() / durationTicks).toFloat().coerceIn(0f, 1f)
+            } else 0f
+            MediaPosterCard(
+                session = state.session,
+                item = item,
+                episodeLabel = item.episodeLabel(),
+                progress = progress,
                 onClick = { viewModel.play(item) },
                 onDelete = { viewModel.requestDelete(item) },
             )
         }
-        if (!state.isLoading && state.items.isEmpty()) item { EmptyState("这个媒体库没有找到视频") }
-        item { ErrorText(state.errorMessage, Modifier.padding(16.dp)) }
+        if (!state.isLoading && state.items.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) { EmptyStatePanel("这个媒体库没有找到视频") }
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) { ErrorText(state.errorMessage) }
     }
 }
 
@@ -309,6 +396,24 @@ private fun FeedPage(
     onDelete: () -> Unit,
 ) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
+        EmbyArtwork(
+            session = state.session,
+            itemId = item.id,
+            title = item.name,
+            modifier = Modifier.fillMaxSize(),
+        )
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0f to Color.Black.copy(alpha = 0.28f),
+                        0.2f to Color.Transparent,
+                        0.56f to Color.Transparent,
+                        1f to Color.Black.copy(alpha = 0.92f),
+                    )
+                )
+            )
+        )
         if (isActive && plan != null) {
             if (plan.isDiscImage()) {
                 IsoPlayer(
@@ -328,26 +433,20 @@ private fun FeedPage(
             FeedPlaceholder(isLoading, errorMessage, onRetry)
         }
 
-        Row(
+        PlayerTopBar(
+            page = page,
+            pageCount = pageCount,
+            onBack = onBack,
+            onDelete = onDelete,
             modifier = Modifier.align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.45f))
-                .statusBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            TextButton(onClick = onBack) { Text("‹ 列表", color = Color.White) }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("${page + 1} / $pageCount", color = Color.White)
-                TextButton(onClick = onDelete) { Text("删除", color = MaterialTheme.colorScheme.error) }
-            }
-        }
+                .statusBarsPadding(),
+        )
 
         if (errorMessage != null && plan != null) {
             Card(
                 Modifier.align(Alignment.TopCenter).statusBarsPadding()
-                    .padding(start = 16.dp, end = 16.dp, top = 64.dp)
+                    .padding(start = 16.dp, end = 16.dp, top = 76.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xE81B1114)),
             ) {
                 Text(errorMessage, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
             }
@@ -357,14 +456,33 @@ private fun FeedPage(
             Column(
                 modifier = Modifier.align(Alignment.BottomStart)
                     .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = 0.52f))
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.88f))
+                        )
+                    )
                     .navigationBarsPadding()
-                    .padding(16.dp),
+                    .padding(start = 20.dp, end = 88.dp, top = 72.dp, bottom = 22.dp),
             ) {
-                Text(item.name, color = Color.White, style = MaterialTheme.typography.titleMedium)
-                Text(item.episodeLabel(), color = Color.White.copy(alpha = 0.78f))
+                Surface(shape = CircleShape, color = Color.White.copy(alpha = 0.14f)) {
+                    Text(
+                        item.type.uppercase(),
+                        color = Color.White.copy(alpha = 0.82f),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    )
+                }
+                Spacer(Modifier.height(9.dp))
+                Text(item.name, color = Color.White, style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "上下滑动切换视频",
+                    item.episodeLabel(),
+                    color = Color.White.copy(alpha = 0.74f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "上滑继续 · 长按画面可暂停",
                     color = Color.White.copy(alpha = 0.62f),
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -484,22 +602,30 @@ private fun IsoPlayer(
             }
         }
 
-        TextButton(
+        FilledTonalButton(
             onClick = { showDiagnostics = !showDiagnostics },
-            modifier = Modifier.statusBarsPadding().padding(top = 54.dp, start = 8.dp),
-        ) { Text(if (showDiagnostics) "收起诊断" else "ISO 诊断", color = Color.White) }
+            modifier = Modifier.statusBarsPadding().padding(top = 68.dp, start = 12.dp),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+        ) {
+            Icon(Icons.Rounded.BugReport, null, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.size(6.dp))
+            Text(if (showDiagnostics) "收起诊断" else "ISO 诊断")
+        }
 
         if (showDiagnostics || playbackState.error != null || launchError != null) {
             Card(
                 Modifier.fillMaxWidth().statusBarsPadding()
-                    .padding(start = 16.dp, end = 16.dp, top = 104.dp)
+                    .padding(start = 16.dp, end = 16.dp, top = 124.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xEE111820)),
             ) {
-                Column(Modifier.padding(12.dp)) {
-                    Text("${diagnostics.engine} · ${diagnostics.nativeAbi ?: "正在加载"} · 应用内播放")
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("ISO 播放链路", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                    Text("${diagnostics.engine} · ${diagnostics.nativeAbi ?: "正在加载"} · 应用内播放", color = Color.White)
                     Text(
                         "上游 ${diagnostics.source.upstreamHost ?: "等待连接"} · " +
                             "HTTP ${diagnostics.source.upstreamStatus ?: "-"} · " +
-                            "Range ${if (diagnostics.source.upstreamStatus == 206) "是" else "待确认"}"
+                            "Range ${if (diagnostics.source.upstreamStatus == 206) "是" else "待确认"}",
+                        color = Color.White.copy(alpha = 0.74f),
                     )
                     Text(
                         "请求 ${diagnostics.source.requestCount} · 缓存 " +
@@ -510,12 +636,14 @@ private fun IsoPlayer(
                             } else {
                                 "最近 Range 等待读取 · "
                             } +
-                            diagnostics.source.totalBytes.takeIf { it > 0 }?.let(::formatBytes).orEmpty()
+                            diagnostics.source.totalBytes.takeIf { it > 0 }?.let(::formatBytes).orEmpty(),
+                        color = Color.White.copy(alpha = 0.74f),
                     )
                     Text(
                         "章节 ${playbackState.chapterIndex + 1}/${playbackState.chapterCount} · " +
                             "${diagnostics.videoCodec ?: "?"}/${diagnostics.audioCodec ?: "?"} · " +
-                            "${diagnostics.hardwareDecoder ?: "软件/待定"} · 同步队列 $pendingReports"
+                            "${diagnostics.hardwareDecoder ?: "软件/待定"} · 同步队列 $pendingReports",
+                        color = Color.White.copy(alpha = 0.74f),
                     )
                     (playbackState.error ?: launchError ?: diagnostics.lastError)?.let {
                         Text(it, color = MaterialTheme.colorScheme.error)
@@ -563,11 +691,19 @@ private fun IsoPlaybackControls(
 
     Column(
         modifier = modifier.fillMaxWidth()
-            .background(Color.Black.copy(alpha = 0.72f))
+            .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
+            .background(Color(0xE611151C))
             .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 20.dp, vertical = 14.dp),
     ) {
-        Text(item.name, color = Color.White, style = MaterialTheme.typography.titleMedium)
+        Text("DISC IMAGE", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+        Text(
+            item.name,
+            color = Color.White,
+            style = MaterialTheme.typography.titleLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         Slider(
             value = positionMs.coerceIn(0L, state.durationMs.coerceAtLeast(0L)).toFloat(),
             onValueChange = {
@@ -591,25 +727,33 @@ private fun IsoPlaybackControls(
                 color = Color.White,
                 style = MaterialTheme.typography.bodySmall,
             )
-            TextButton(onClick = { if (state.isPlaying) runtime.pause() else runtime.play() }) {
-                Text(if (state.isPlaying) "暂停" else "播放", color = Color.White)
+            FilledTonalButton(onClick = { if (state.isPlaying) runtime.pause() else runtime.play() }) {
+                Icon(if (state.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null)
+                Spacer(Modifier.size(6.dp))
+                Text(if (state.isPlaying) "暂停" else "播放")
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
             TextButton(onClick = runtime::previousChapter, enabled = state.chapterCount > 0) {
-                Text("上一章", color = Color.White)
+                Icon(Icons.Rounded.SkipPrevious, null)
+                Text("上一章")
             }
             TextButton(onClick = runtime::nextChapter, enabled = state.chapterCount > 0) {
-                Text("下一章", color = Color.White)
+                Icon(Icons.Rounded.SkipNext, null)
+                Text("下一章")
             }
             TextButton(onClick = runtime::nextAudioTrack, enabled = state.audioTracks.size > 1) {
-                Text("音轨", color = Color.White)
+                Icon(Icons.Rounded.Headphones, null)
+                Text("音轨")
             }
             TextButton(onClick = runtime::nextSubtitleTrack, enabled = state.subtitleTracks.isNotEmpty()) {
-                Text("字幕", color = Color.White)
+                Icon(Icons.Rounded.Subtitles, null)
+                Text("字幕")
             }
         }
         TextButton(onClick = onExternalFallback, modifier = Modifier.align(Alignment.End)) {
+            Icon(Icons.AutoMirrored.Rounded.OpenInNew, null, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.size(5.dp))
             Text("外部 VLC 兜底", color = Color.White.copy(alpha = 0.7f))
         }
     }
@@ -667,29 +811,38 @@ private fun ActivePlayer(
     Box(Modifier.fillMaxSize()) {
         Player(player = runtime.player, modifier = Modifier.fillMaxSize())
 
-        TextButton(
+        FilledTonalButton(
             onClick = { showDiagnostics = !showDiagnostics },
-            modifier = Modifier.statusBarsPadding().padding(top = 54.dp, start = 8.dp),
-        ) { Text(if (showDiagnostics) "收起诊断" else "播放诊断", color = Color.White) }
+            modifier = Modifier.statusBarsPadding().padding(top = 68.dp, start = 12.dp),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+        ) {
+            Icon(Icons.Rounded.BugReport, null, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.size(6.dp))
+            Text(if (showDiagnostics) "收起诊断" else "播放诊断")
+        }
 
         if (showDiagnostics || diagnostics.lastError != null) {
             Card(
                 Modifier.fillMaxWidth().statusBarsPadding()
-                    .padding(start = 16.dp, end = 16.dp, top = 104.dp)
+                    .padding(start = 16.dp, end = 16.dp, top = 124.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xEE111820)),
             ) {
-                Column(Modifier.padding(12.dp)) {
-                    Text("${diagnostics.method} · ${diagnostics.requestHost}")
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("播放链路", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                    Text("${diagnostics.method} · ${diagnostics.requestHost}", color = Color.White)
                     Text(
                         "${diagnostics.videoType ?: "Video"} / ${diagnostics.container ?: "?"} · " +
                             "${diagnostics.videoCodec ?: "?"} / ${diagnostics.audioCodec ?: "?"} · " +
-                            "链路 ${diagnostics.candidateIndex + 1}/${diagnostics.candidateCount}"
+                            "链路 ${diagnostics.candidateIndex + 1}/${diagnostics.candidateCount}",
+                        color = Color.White.copy(alpha = 0.74f),
                     )
-                    Text("进度同步队列：$pendingReports")
+                    Text("进度同步队列：$pendingReports", color = Color.White.copy(alpha = 0.74f))
                     Text(
                         "媒体源 ${diagnostics.sourceCount} · " +
                             "DP ${diagnostics.supportsDirectPlay.asFlag()} · " +
                             "DS ${diagnostics.supportsDirectStream.asFlag()} · " +
-                            "TC ${diagnostics.supportsTranscoding.asFlag()}"
+                            "TC ${diagnostics.supportsTranscoding.asFlag()}",
+                        color = Color.White.copy(alpha = 0.74f),
                     )
                     diagnostics.lastError?.let {
                         Text(it, color = MaterialTheme.colorScheme.error)
@@ -733,12 +886,20 @@ private fun PlaybackControls(
 
     Column(
         modifier = modifier.fillMaxWidth()
-            .background(Color.Black.copy(alpha = 0.7f))
+            .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
+            .background(Color(0xE611151C))
             .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 20.dp, vertical = 14.dp),
     ) {
-        Text(item.name, color = Color.White, style = MaterialTheme.typography.titleMedium)
-        Text(item.episodeLabel(), color = Color.White.copy(alpha = 0.75f))
+        Text(item.type.uppercase(), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+        Text(
+            item.name,
+            color = Color.White,
+            style = MaterialTheme.typography.titleLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(item.episodeLabel(), color = Color.White.copy(alpha = 0.68f), maxLines = 1)
         Slider(
             value = positionMs.coerceIn(0L, durationMs.coerceAtLeast(0L)).toFloat(),
             onValueChange = {
@@ -766,8 +927,10 @@ private fun PlaybackControls(
             if (!canSeek) {
                 Text("当前链路不可拖动", color = Color.White.copy(alpha = 0.65f))
             }
-            TextButton(onClick = { if (isPlaying) player.pause() else player.play() }) {
-                Text(if (isPlaying) "暂停" else "播放", color = Color.White)
+            FilledTonalButton(onClick = { if (isPlaying) player.pause() else player.play() }) {
+                Icon(if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null)
+                Spacer(Modifier.size(6.dp))
+                Text(if (isPlaying) "暂停" else "播放")
             }
         }
     }
@@ -775,70 +938,42 @@ private fun PlaybackControls(
 
 @Composable
 private fun FeedPlaceholder(isLoading: Boolean, errorMessage: String?, onRetry: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        if (isLoading) {
-            CircularProgressIndicator(color = Color.White)
-            Spacer(Modifier.height(12.dp))
-            Text("正在解析播放地址…", color = Color.White)
-        } else {
-            Text("PlaybackInfo 诊断", color = Color.White, style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-            Text(errorMessage ?: "暂时无法播放这个视频", color = Color.White)
-            Text(
-                "播放地址尚未解析成功，因此这里还没有播放器级诊断。",
-                color = Color.White.copy(alpha = 0.65f),
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Spacer(Modifier.height(12.dp))
-            Button(onClick = onRetry) { Text("重试") }
-        }
-    }
-}
-
-@Composable
-private fun ContentListHeader(
-    title: String,
-    subtitle: String,
-    actionText: String,
-    onAction: () -> Unit,
-) {
-    Row(
-        Modifier.fillMaxWidth().height(88.dp).statusBarsPadding().padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleLarge)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, maxLines = 1)
-        }
-        OutlinedButton(onClick = onAction) { Text(actionText) }
-    }
-}
-
-@Composable
-private fun ListCard(
-    title: String,
-    subtitle: String,
-    onClick: () -> Unit,
-    onDelete: (() -> Unit)? = null,
-    deleteText: String = "删除",
-) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f).clickable(onClick = onClick).padding(16.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(subtitle, style = MaterialTheme.typography.bodyMedium)
-        }
-        onDelete?.let {
-            TextButton(onClick = it, modifier = Modifier.padding(end = 8.dp)) {
-                Text(deleteText, color = MaterialTheme.colorScheme.error)
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Card(
+            modifier = Modifier.padding(28.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xE611151C)),
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    Text("正在解析播放地址…", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                    Text("正在检查 Direct Play、转封装与转码链路", color = Color.White.copy(alpha = 0.6f))
+                } else {
+                    Icon(Icons.Rounded.BugReport, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(30.dp))
+                    Text("PlaybackInfo 诊断", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        errorMessage ?: "暂时无法播放这个视频",
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        "播放地址尚未解析成功，因此这里还没有播放器级诊断。",
+                        color = Color.White.copy(alpha = 0.6f),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Button(onClick = onRetry) {
+                        Icon(Icons.Rounded.Refresh, null)
+                        Spacer(Modifier.size(6.dp))
+                        Text("重新解析")
+                    }
+                }
             }
         }
     }
-    HorizontalDivider()
 }
 
 @Composable
@@ -890,19 +1025,26 @@ private fun RemoveServerConfirmationDialog(
 }
 
 @Composable
-private fun EmptyState(message: String) {
-    Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text(message) }
-}
-
-@Composable
 private fun ErrorText(message: String?, modifier: Modifier = Modifier) {
     message?.let { Text(it, modifier = modifier, color = MaterialTheme.colorScheme.error) }
 }
 
 @Composable
 private fun LoadingOverlay() {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Card { CircularProgressIndicator(Modifier.padding(20.dp).size(40.dp)) }
+    Box(
+        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.34f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+            Row(
+                Modifier.padding(horizontal = 22.dp, vertical = 18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
+                Text("正在同步媒体库…", style = MaterialTheme.typography.titleSmall)
+            }
+        }
     }
 }
 
