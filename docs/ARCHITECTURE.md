@@ -6,7 +6,8 @@ Shadow Media 是 Emby 客户端，不是媒体服务器或解码器。MoviePilot
 MediaWarp 继续负责资源入库、元数据、播放地址和 302；客户端只负责 Feed、播放编排、Media3
 以及用户状态回写。
 
-首版有意不包含 115 登录、下载、离线缓存、刮削、NFO 编辑、Jellyfin/Plex、TV 和 libmpv。
+首版有意不包含 115 登录、下载、离线缓存、刮削、NFO 编辑、Jellyfin/Plex 和 TV。libmpv 只作为
+ISO/DVD/Blu-ray 专用后端，普通视频仍由 Media3 负责。
 
 ## 分层
 
@@ -19,7 +20,8 @@ MainViewModel
    ├── EmbyRepository ── OkHttp ── Emby REST API
    ├── FeedSessionStore ── 每服/用户/媒体库的稳定顺序与当前位置
    │
-   └── PlaybackRuntime ── Media3 ── Emby / MediaWarp / CDN
+   └── PlaybackRuntime ─┬─ Media3 ───────────── 普通视频 / HLS
+                       └─ libmpv 光盘后端 ─── ISO / DVD / Blu-ray
                               │
                               └── PlaybackOutbox ── EmbyRepository playback reports
 ```
@@ -98,6 +100,21 @@ FeedSession 按 `serverId + userId + libraryId` 隔离。重新进入媒体库�
 把新条目追加到尾部，并恢复上次停留位置；删除条目时同步从 FeedSession 移除。
 
 ISO/DVD 镜像不属于 Media3 可直接播放的媒体容器，Emby Server 也不支持 ISO 转码。解析器识别
-`VideoType=Iso` 或 `container=iso` 后只构造当前 Emby origin 的静态 ISO 流，并由用户明确点击后
-交给 VLC for Android 读取。启动 Intent 传递上次位置，VLC 返回位置时补报 Emby；蓝光、3D、菜单
-和远程 Range 支持取决于镜像、VLC、设备及上游存储链路。
+`VideoType=Iso` 或 `container=iso` 后构造当前 Emby origin 的静态 ISO 流，并交给独立的
+`MpvIsoPlaybackRuntime`：
+
+```text
+libmpv + libplayer.so
+  → webhtv-dvdiso:// 会话
+  → JNI stream_cb
+  → IsoSessionManager
+  → 4 MiB × 8 页 LRU 内存缓存
+  → OkHttp 严格 Range / 302 / 精确 origin 鉴权
+  → Emby / MediaWarp / CDN
+```
+
+原生层由 libbluray/libdvdnav 解释光盘结构，因此时间轴、章节和跨 M2TS 片段拖动不依赖 Media3
+Extractor。应用自动选择最长标题，暴露播放/暂停、精确 Seek、章节、音轨与字幕循环，并通过同一
+PlaybackOutbox 上报 Emby 状态。上游必须支持语义正确的 `206 + Content-Range`；返回 200、
+长度变化或 ETag/Last-Modified 变化会立即终止，触发一次 PlaybackInfo 刷新。VLC 作为用户可选
+的外部兜底，不是默认 ISO 引擎。完整能力边界见 `docs/ISO_PLAYBACK.md`。

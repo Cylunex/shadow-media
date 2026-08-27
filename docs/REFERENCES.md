@@ -1,7 +1,7 @@
 # 参考实现与取舍
 
 本项目优先使用 AndroidX Media3 官方 API 和示例。以下项目只用于比较交互与生命周期方案，
-本轮没有复制其源码：
+除单独声明的 ISO 后端外，没有复制其源码：
 
 - [NextPlayer](https://github.com/anilbeesetti/NextPlayer)：成熟的 Media3 播放器交互、字幕和
   MediaSession 参考；其许可证为 GPL-3.0，不直接并入当前工程。
@@ -20,9 +20,10 @@
 [Playback Check-ins](https://dev.emby.media/doc/restapi/Playback-Check-ins.html)。
 
 ISO 属于特殊边界：[Emby 团队说明](https://emby.media/community/topic/125851-zidoo-emby-cannot-open-3d-iso-files-only/)
-服务器不支持 ISO 转码，只能把完整镜像交给能够直接读取它的
-播放器；[VLC for Android 官方页面](https://www.videolan.org/vlc/download-android.html)声明支持
-网络流和 DVD ISO。因此 ISO 不进入 Media3/HLS 候选链，而是定向交给官方 VLC Android 包。
+服务器不支持 ISO 转码，只能把完整镜像交给能够直接读取它的播放器。应用内 ISO 后端采用
+[WebHTV](https://github.com/fish2018/WebHTV) 的 GPL-3.0 MPV/JNI 基线及
+`webhtv-dvdiso` stream callback 设计，使用 libbluray/libdvdnav 解析光盘；来源版本、二进制
+哈希和对应源码见 `third_party/webhtv-mpv/`。VLC for Android 只保留为显式外部兜底。
 
 当前选择单活跃播放器、稳定 FeedSession、持久化进度 Outbox 和播放地址单次自动刷新。待真实
 Emby/MediaWarp/115 链路完成兼容性与资源占用采样后，再决定是否启用容量受控的 PlayerPool 与

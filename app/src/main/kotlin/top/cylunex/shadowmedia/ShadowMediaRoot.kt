@@ -3,6 +3,7 @@ package top.cylunex.shadowmedia
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
+import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -54,6 +55,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -69,6 +71,8 @@ import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.PlaybackPlan
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
 import top.cylunex.shadowmedia.playback.PlaybackRuntime
+import top.cylunex.shadowmedia.playback.MpvIsoPlaybackRuntime
+import top.cylunex.shadowmedia.playback.MpvIsoPlaybackState
 
 @Composable
 fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
@@ -307,10 +311,13 @@ private fun FeedPage(
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (isActive && plan != null) {
             if (plan.isDiscImage()) {
-                IsoExternalPlayer(
+                IsoPlayer(
                     state = state,
                     item = item,
                     plan = plan,
+                    container = container,
+                    onRetry = onRetry,
+                    onTerminalError = onTerminalError,
                     onStarted = onExternalPlaybackStarted,
                     onStopped = onExternalPlaybackStopped,
                 )
@@ -367,24 +374,46 @@ private fun FeedPage(
 }
 
 @Composable
-private fun IsoExternalPlayer(
+private fun IsoPlayer(
     state: MainUiState,
     item: MediaItem,
     plan: PlaybackPlan,
+    container: AppContainer,
+    onRetry: () -> Unit,
+    onTerminalError: (Long, String) -> Unit,
     onStarted: (PlaybackPlan, Long) -> Unit,
     onStopped: (PlaybackPlan, Long) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val session = requireNotNull(state.session)
+    val runtime = remember(plan) {
+        MpvIsoPlaybackRuntime(
+            context = context,
+            session = session,
+            plan = plan,
+            playbackOutbox = container.playbackOutbox,
+            clientIdentity = container.clientIdentity,
+            startPositionMs = state.playbackStartPositionMs,
+            onTerminalError = onTerminalError,
+        )
+    }
+    val playbackState by runtime.state.collectAsStateWithLifecycle()
+    val diagnostics by runtime.diagnostics.collectAsStateWithLifecycle()
+    val pendingReports by container.playbackOutbox.pendingCount.collectAsStateWithLifecycle()
     var launchError by remember(plan) { mutableStateOf<String?>(null) }
-    var launchedAtPosition by remember(plan) { mutableLongStateOf(state.playbackStartPositionMs) }
+    var launchedAtPosition by remember(plan) { mutableLongStateOf(0L) }
+    var showDiagnostics by remember(runtime) { mutableStateOf(false) }
+    var externalPlaybackActive by remember(runtime) { mutableStateOf(false) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        externalPlaybackActive = false
         val returnedPosition = result.data?.getLongExtra(VLC_RESULT_POSITION, -1L) ?: -1L
+        if (returnedPosition >= 0) runtime.seekTo(returnedPosition)
         onStopped(plan, returnedPosition.takeIf { it >= 0 } ?: launchedAtPosition)
     }
 
     fun launchVlc() {
-        val startPosition = state.playbackStartPositionMs.coerceAtLeast(0L)
+        val startPosition = playbackState.positionMs.coerceAtLeast(0L)
         val playbackUrl = plan.primary.url.toHttpUrl()
         val serverUrl = session.serverUrl.toHttpUrl()
         if (
@@ -404,45 +433,184 @@ private fun IsoExternalPlayer(
             putExtra("from_start", startPosition == 0L)
             putExtra("position", startPosition)
         }
+        val resumeNativeOnFailure = playbackState.isPlaying
+        runtime.pause()
         try {
             launchedAtPosition = startPosition
+            externalPlaybackActive = true
             launcher.launch(intent)
             onStarted(plan, startPosition)
             launchError = null
         } catch (_: ActivityNotFoundException) {
+            externalPlaybackActive = false
+            if (resumeNativeOnFailure) runtime.play()
             launchError = "没有找到 VLC for Android，请先安装后重试"
         }
     }
 
-    Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text("ISO 光盘镜像", color = Color.White, style = MaterialTheme.typography.headlineSmall)
-        Spacer(Modifier.height(12.dp))
-        Text(
-            "Emby 不能转码 ISO，Shadow Media 将把原始镜像交给支持 DVD ISO 的 VLC 播放。",
-            color = Color.White,
+    DisposableEffect(runtime, lifecycleOwner) {
+        var resumeAfterBackground = false
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> {
+                    resumeAfterBackground = !externalPlaybackActive && runtime.state.value.isPlaying
+                    runtime.pause()
+                }
+                Lifecycle.Event.ON_START -> if (resumeAfterBackground) {
+                    runtime.play()
+                    resumeAfterBackground = false
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            runtime.close()
+        }
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        AndroidView(
+            factory = { viewContext -> SurfaceView(viewContext).also(runtime::attach) },
+            modifier = Modifier.fillMaxSize(),
         )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "授权仅用于这次 VLC 请求；临时 URL 不会写入播放诊断或本地 Feed 数据。",
-            color = Color.White.copy(alpha = 0.65f),
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Spacer(Modifier.height(20.dp))
-        Button(onClick = ::launchVlc) { Text("用 VLC 播放 ISO") }
-        launchError?.let { error ->
-            Spacer(Modifier.height(12.dp))
-            Text(error, color = MaterialTheme.colorScheme.error)
-            OutlinedButton(
-                onClick = {
-                    context.startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse(VLC_DOWNLOAD_URL))
+
+        if (playbackState.isBuffering) {
+            Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(color = Color.White)
+                Spacer(Modifier.height(8.dp))
+                Text("正在读取 ISO ${playbackState.bufferPercent}%", color = Color.White)
+            }
+        }
+
+        TextButton(
+            onClick = { showDiagnostics = !showDiagnostics },
+            modifier = Modifier.statusBarsPadding().padding(top = 54.dp, start = 8.dp),
+        ) { Text(if (showDiagnostics) "收起诊断" else "ISO 诊断", color = Color.White) }
+
+        if (showDiagnostics || playbackState.error != null || launchError != null) {
+            Card(
+                Modifier.fillMaxWidth().statusBarsPadding()
+                    .padding(start = 16.dp, end = 16.dp, top = 104.dp)
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("${diagnostics.engine} · ${diagnostics.nativeAbi ?: "正在加载"} · 应用内播放")
+                    Text(
+                        "上游 ${diagnostics.source.upstreamHost ?: "等待连接"} · " +
+                            "HTTP ${diagnostics.source.upstreamStatus ?: "-"} · " +
+                            "Range ${if (diagnostics.source.upstreamStatus == 206) "是" else "待确认"}"
                     )
-                },
-            ) { Text("打开 VLC 下载页") }
+                    Text(
+                        "请求 ${diagnostics.source.requestCount} · 缓存 " +
+                            "${diagnostics.source.cacheHits}/${diagnostics.source.cacheMisses} · " +
+                            if (diagnostics.source.requestCount > 0) {
+                                "最近 bytes=${diagnostics.source.lastOffset}-" +
+                                    "${diagnostics.source.lastOffset + diagnostics.source.lastLength - 1} · "
+                            } else {
+                                "最近 Range 等待读取 · "
+                            } +
+                            diagnostics.source.totalBytes.takeIf { it > 0 }?.let(::formatBytes).orEmpty()
+                    )
+                    Text(
+                        "章节 ${playbackState.chapterIndex + 1}/${playbackState.chapterCount} · " +
+                            "${diagnostics.videoCodec ?: "?"}/${diagnostics.audioCodec ?: "?"} · " +
+                            "${diagnostics.hardwareDecoder ?: "软件/待定"} · 同步队列 $pendingReports"
+                    )
+                    (playbackState.error ?: launchError ?: diagnostics.lastError)?.let {
+                        Text(it, color = MaterialTheme.colorScheme.error)
+                        Row {
+                            OutlinedButton(onClick = onRetry) { Text("重新解析") }
+                            Spacer(Modifier.size(8.dp))
+                            OutlinedButton(onClick = ::launchVlc) { Text("外部 VLC 兜底") }
+                        }
+                    }
+                    if (launchError?.contains("没有找到") == true) {
+                        OutlinedButton(
+                            onClick = {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(VLC_DOWNLOAD_URL)))
+                            },
+                        ) { Text("打开 VLC 下载页") }
+                    }
+                }
+            }
+        }
+
+        IsoPlaybackControls(
+            item = item,
+            runtime = runtime,
+            state = playbackState,
+            onExternalFallback = ::launchVlc,
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
+    }
+}
+
+@Composable
+private fun IsoPlaybackControls(
+    item: MediaItem,
+    runtime: MpvIsoPlaybackRuntime,
+    state: MpvIsoPlaybackState,
+    onExternalFallback: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var positionMs by remember(runtime) { mutableLongStateOf(0L) }
+    var isScrubbing by remember(runtime) { mutableStateOf(false) }
+
+    LaunchedEffect(state.positionMs, isScrubbing) {
+        if (!isScrubbing) positionMs = state.positionMs
+    }
+
+    Column(
+        modifier = modifier.fillMaxWidth()
+            .background(Color.Black.copy(alpha = 0.72f))
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+    ) {
+        Text(item.name, color = Color.White, style = MaterialTheme.typography.titleMedium)
+        Slider(
+            value = positionMs.coerceIn(0L, state.durationMs.coerceAtLeast(0L)).toFloat(),
+            onValueChange = {
+                isScrubbing = true
+                positionMs = it.toLong()
+            },
+            onValueChangeFinished = {
+                runtime.seekTo(positionMs)
+                isScrubbing = false
+            },
+            valueRange = 0f..state.durationMs.coerceAtLeast(1L).toFloat(),
+            enabled = state.isSeekable && state.durationMs > 0,
+        )
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                "${formatDuration(positionMs)} / ${formatDuration(state.durationMs)}",
+                color = Color.White,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            TextButton(onClick = { if (state.isPlaying) runtime.pause() else runtime.play() }) {
+                Text(if (state.isPlaying) "暂停" else "播放", color = Color.White)
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            TextButton(onClick = runtime::previousChapter, enabled = state.chapterCount > 0) {
+                Text("上一章", color = Color.White)
+            }
+            TextButton(onClick = runtime::nextChapter, enabled = state.chapterCount > 0) {
+                Text("下一章", color = Color.White)
+            }
+            TextButton(onClick = runtime::nextAudioTrack, enabled = state.audioTracks.size > 1) {
+                Text("音轨", color = Color.White)
+            }
+            TextButton(onClick = runtime::nextSubtitleTrack, enabled = state.subtitleTracks.isNotEmpty()) {
+                Text("字幕", color = Color.White)
+            }
+        }
+        TextButton(onClick = onExternalFallback, modifier = Modifier.align(Alignment.End)) {
+            Text("外部 VLC 兜底", color = Color.White.copy(alpha = 0.7f))
         }
     }
 }
@@ -747,6 +915,12 @@ private fun MediaItem.episodeLabel(): String = if (seriesName != null) {
 private fun formatDuration(milliseconds: Long): String {
     val seconds = milliseconds / 1_000
     return "%d:%02d".format(seconds / 60, seconds % 60)
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024 * 1024 -> "%.1f GiB".format(bytes / (1024.0 * 1024 * 1024))
+    bytes >= 1024L * 1024 -> "%.1f MiB".format(bytes / (1024.0 * 1024))
+    else -> "$bytes B"
 }
 
 private fun Boolean.asFlag(): String = if (this) "是" else "否"

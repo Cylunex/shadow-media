@@ -3,7 +3,7 @@
 一个以 Emby 为后端、以原生播放为基础的 Android 刷片客户端。项目不登录网盘、不刮削媒体、
 不维护第二套媒体库；它只负责内容发现、播放编排、原生播放与 Emby 状态同步。
 
-当前 `0.4.1` 是可安装的刷片 MVP，已经打通这条闭环：
+当前 `0.5.0` 是可安装的刷片 MVP，已经打通这条闭环：
 
 ```text
 选择或添加多个 Emby 登录
@@ -11,7 +11,7 @@
   → 分页读取媒体库全部视频并进入 VerticalPager Feed
   → 请求 PlaybackInfo
   → Direct Play / DirectStream / 302，失败后回退 HLS 转码
-  → Media3 播放
+  → 普通媒体由 Media3 播放，ISO 由内置 libmpv 光盘引擎播放
   → Playing / Progress / Stopped 回写
 ```
 
@@ -29,8 +29,10 @@
 - 播放地址重新解析，以及不包含 Token 的播放诊断信息；
 - 播放候选全部失败时自动刷新一次 `PlaybackInfo`，并从失败位置继续；
 - 持久化播放进度 Outbox：网络失败后保留并在该服务器下次连接时补报；
-- ISO/DVD 镜像不再尝试 Emby 不支持的 HLS 转码，改为授权交给 VLC for Android 直接读取；
-- 启动 VLC 时传递续播位置，返回应用后尽量回收位置并补报 Emby 播放状态；
+- ISO/DVD/Blu-ray 镜像由内置 libmpv + libbluray/libdvdnav 光盘引擎直接读取，支持应用内续播、
+  拖动、章节、音轨/字幕切换和 Emby 进度同步；
+- ISO 远程读取采用严格 HTTP Range、容量受控的内存分页缓存和 302 后逐跳凭据隔离；VLC 仅保留
+  为显式兜底；
 - 独立可拖动进度条；转码链路通过 `StartTimeTicks` 实现服务端 Seek；
 - 列表和 Feed 均支持经二次确认后从 Emby 媒体库及服务器文件系统永久删除条目；
 - 精确 origin 鉴权隔离：Emby Token 不会跟随 302 请求发送到第三方 CDN；
@@ -44,7 +46,7 @@
 app/             应用入口、手动依赖注入、端到端验证 UI
 core/model/      与 Android 无关的领域模型
 core/network/    Emby API、DTO、仓库、Keystore 会话存储
-core/playback/   Media3、302 请求头隔离、回退与播放上报
+core/playback/   Media3、libmpv ISO 引擎、302 请求头隔离、回退与播放上报
 docs/            架构决策、播放安全与迭代路线
 ```
 
@@ -60,9 +62,11 @@ docs/            架构决策、播放安全与迭代路线
 打开应用后输入自己的 Emby 地址和用户凭据。仓库不包含真实服务地址、Token 或签名材料。
 HTTP 只应在受信任局域网内临时启用。
 
-ISO 是光盘镜像而不是普通视频容器。Emby Server 不支持 ISO 转码，Media3 也不能直接解析光盘
-结构，因此 ISO 页面会调用已安装的 VLC for Android。DVD ISO 由 VLC 官方声明支持；蓝光、3D、
-菜单和远程 Range 能力仍取决于具体镜像、VLC 版本、设备和 Emby/115 链路。
+ISO 是光盘镜像而不是普通视频容器。Emby Server 不支持 ISO 转码，Media3 也不能解析光盘结构，
+所以 ISO 页面使用内置的 GPL-3.0 libmpv 光盘后端，通过 libbluray/libdvdnav 对 Emby/MediaWarp/
+115 返回的远程镜像执行随机 Range 读取。当前自动选择最长标题，支持 DVD 与无 DRM 的 Blu-ray；
+加密商业光盘、BD-J 菜单、完整菜单导航和 x86/x86_64 设备不在支持范围。详见
+[ISO 播放说明](docs/ISO_PLAYBACK.md)。
 
 ## 安装包
 
@@ -78,5 +82,6 @@ ISO 是光盘镜像而不是普通视频容器。Emby Server 不支持 ISO 转�
 `rememberPooledPlayer` 与共享
 `DefaultPreloadManager.Builder`。最终 CDN URL 只解析当前项和后续 1–2 项，不落盘。
 
-详见 [架构说明](docs/ARCHITECTURE.md)、[参考实现与取舍](docs/REFERENCES.md) 与
-[路线图](docs/ROADMAP.md)。
+本项目整体以 GPL-3.0 发布。详见 [架构说明](docs/ARCHITECTURE.md)、
+[ISO 播放说明](docs/ISO_PLAYBACK.md)、[第三方来源](third_party/webhtv-mpv/NOTICE.md)、
+[参考实现与取舍](docs/REFERENCES.md) 与 [路线图](docs/ROADMAP.md)。

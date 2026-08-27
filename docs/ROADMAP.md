@@ -7,7 +7,8 @@
 - [x] 远端分页获取媒体库全部视频
 - [x] PlaybackInfo → Direct Play / DirectStream → Transcode 候选链
 - [x] DirectStreamUrl 缺失时的标准静态流兜底
-- [x] ISO/DVD 镜像识别与 VLC 外部播放器直读、续播位置交接
+- [x] 应用内 libmpv DVD/Blu-ray ISO 直读、续播、Seek、章节、音轨/字幕与进度同步
+- [x] ISO 严格 Range、内存页缓存、302 凭据隔离和 VLC 显式兜底
 - [x] Media3 Compose Material 3 Player
 - [x] Playing / 每 10 秒 Progress / Pause / Unpause / Stopped
 - [x] 持久化播放进度 Outbox 与按服务器补报
@@ -16,7 +17,8 @@
 - [ ] 真实设备兼容性矩阵与抓包验证
 - [x] 候选耗尽后刷新一次 PlaybackInfo 并从原位置恢复
 - [ ] ConnectivityManager 网络恢复与长暂停主动刷新
-- [ ] 音轨、内嵌字幕与外挂字幕选择
+- [x] ISO 音轨与内嵌字幕循环选择
+- [ ] 普通视频音轨、内嵌字幕与外挂字幕选择
 
 ## M1：刷片 Feed
 
@@ -44,5 +46,6 @@
 ## M3：评估扩展
 
 - [ ] 与 Shadow App 的 Deep Link / library 边界
-- [ ] 特殊 ASS 或解码失败样本是否值得增加 libmpv 后端
+- [x] libmpv 作为 ISO 专用后端
+- [ ] 是否让特殊 ASS 或 Media3 解码失败样本手动切换到 libmpv
 - [ ] Jellyfin、TV 和其他平台需求重新评估
