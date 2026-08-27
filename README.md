@@ -3,12 +3,12 @@
 一个以 Emby 为后端、以原生播放为基础的 Android 刷片客户端。项目不登录网盘、不刮削媒体、
 不维护第二套媒体库；它只负责内容发现、播放编排、原生播放与 Emby 状态同步。
 
-当前 `0.2.1` 是可安装的刷片 MVP，已经打通这条闭环：
+当前 `0.3.0` 是可安装的刷片 MVP，已经打通这条闭环：
 
 ```text
 Emby 登录
   → 选择媒体库
-  → 读取最近 20 个视频并进入 VerticalPager Feed
+  → 分页读取媒体库全部视频并进入 VerticalPager Feed
   → 请求 PlaybackInfo
   → Direct Play / DirectStream / 302，失败后回退 HLS 转码
   → Media3 播放
@@ -19,11 +19,15 @@ Emby 登录
 
 - Kotlin 2.2、Jetpack Compose、Media3 1.11 和 OkHttp 的多模块 Android 工程；
 - Emby 用户登录、媒体库、视频列表、`PlaybackInfo` 和播放状态上报接口；
+- 远端分页加载全部视频，不限制为前 20 条；
 - 全屏垂直刷片 Feed：从任意条目进入，上下滑动时按需解析并切换播放器；
 - Media3 Material 3 原生播放器与续播位置恢复；
 - Emby 只返回媒体源能力、不返回 `DirectStreamUrl` 时构造标准静态流地址，直连失败再回退转码；
 - 循环播放、系统音频焦点、拔出耳机暂停、后台暂停与前台恢复；
 - 播放地址重新解析，以及不包含 Token 的播放诊断信息；
+- ISO/DVD 镜像强制使用 Emby HLS 转码，不把光盘镜像直接交给 Media3；
+- 独立可拖动进度条；转码链路通过 `StartTimeTicks` 实现服务端 Seek；
+- 列表和 Feed 均支持经二次确认后从 Emby 媒体库及服务器文件系统永久删除条目；
 - 精确 origin 鉴权隔离：Emby Token 不会跟随 302 请求发送到第三方 CDN；
 - Android Keystore + AES-GCM 加密保存会话 Token；
 - HTTPS 默认策略，以及用户明确确认后的局域网 HTTP；
@@ -55,6 +59,9 @@ HTTP 只应在受信任局域网内临时启用。
 
 本地执行 `./gradlew assembleDebug` 会生成一个使用 Android Debug Key 签名、可直接安装测试的
 `app/build/outputs/apk/debug/app-debug.apk`。正式发布前需要配置项目专用签名，仓库不会保存私钥。
+
+删除功能调用 Emby 的文件删除接口，不是仅从 Feed 隐藏。执行前务必确认服务端备份和 Emby
+用户的删除权限。
 
 ## 下一阶段
 

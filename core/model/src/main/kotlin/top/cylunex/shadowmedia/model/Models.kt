@@ -50,6 +50,7 @@ data class PlaybackPlan(
     val playSessionId: String,
     val candidates: List<PlaybackCandidate>,
     val container: String?,
+    val videoType: String?,
     val videoCodec: String?,
     val audioCodec: String?,
     val runTimeTicks: Long?,

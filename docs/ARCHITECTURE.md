@@ -87,5 +87,10 @@ VerticalPager
 `PlayerPool` 和 `DefaultPreloadManager` 共享同一个 Builder 创建的 ExoPlayer。媒体元数据可以多取，
 但签名播放地址只解析当前和后续 1–2 条，避免 115/CDN URL 在真正播放前过期。
 
-首版不引入 Paging 3 或 Room：20 条验证列表没有离线数据一致性问题。Feed 开始分页、排重和保存
-失败记录时，再同时引入 Room、PagingSource 和本地单一事实源，避免现在留下未使用的基础设施。
+当前数据层通过 Emby `StartIndex + Limit` 远端分页，循环读取到 `TotalRecordCount`，因此媒体库内容
+不设条数上限。它暂时仍一次性保存于内存；需要增量渲染、排重和失败记录时，再引入 Room、
+PagingSource 和本地单一事实源。
+
+ISO/DVD 镜像不属于 Media3 可直接播放的媒体容器。解析器识别 `VideoType=Iso` 或 `container=iso`
+后跳过静态直链，构造 Emby `/Videos/{id}/master.m3u8` HLS 转码候选。转码 Seek 通过更新
+`StartTimeTicks` 重启该播放会话，并在客户端保持绝对时间轴。

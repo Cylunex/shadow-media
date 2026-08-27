@@ -96,6 +96,7 @@ internal data class PlaybackInfoResponseDto(
 internal data class MediaSourceDto(
     @SerialName("Id") val id: String,
     @SerialName("Container") val container: String? = null,
+    @SerialName("VideoType") val videoType: String? = null,
     @SerialName("RunTimeTicks") val runTimeTicks: Long? = null,
     @SerialName("SupportsDirectPlay") val supportsDirectPlay: Boolean = false,
     @SerialName("SupportsDirectStream") val supportsDirectStream: Boolean = false,
@@ -119,7 +120,7 @@ internal data class PlaybackReportDto(
     @SerialName("MediaSourceId") val mediaSourceId: String,
     @SerialName("PlaySessionId") val playSessionId: String,
     @SerialName("PositionTicks") val positionTicks: Long,
-    @SerialName("CanSeek") val canSeek: Boolean = true,
+    @SerialName("CanSeek") val canSeek: Boolean,
     @SerialName("IsPaused") val isPaused: Boolean,
     @SerialName("IsMuted") val isMuted: Boolean = false,
     @SerialName("PlayMethod") val playMethod: String,

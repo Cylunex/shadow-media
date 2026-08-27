@@ -53,20 +53,30 @@ class DefaultEmbyRepository(
     override suspend fun recentVideos(
         session: EmbySession,
         libraryId: String,
-        limit: Int,
     ): List<MediaItem> {
-        val url = EmbyEndpoints.endpoint(session.serverUrl, "Users", session.userId, "Items")
-            .newBuilder()
-            .addQueryParameter("ParentId", libraryId)
-            .addQueryParameter("Recursive", "true")
-            .addQueryParameter("IncludeItemTypes", "Movie,Episode,Video")
-            .addQueryParameter("Fields", "Overview,MediaSources,MediaStreams")
-            .addQueryParameter("SortBy", "DateCreated")
-            .addQueryParameter("SortOrder", "Descending")
-            .addQueryParameter("Limit", limit.coerceIn(1, 100).toString())
-            .build()
-        val result: QueryResultDto = executeJson(authenticatedRequest(session, url).get().build())
-        return result.items.map { item ->
+        val allItems = mutableListOf<BaseItemDto>()
+        var startIndex = 0
+        var totalRecordCount: Int
+        var pageItemCount: Int
+        do {
+            val url = EmbyEndpoints.endpoint(session.serverUrl, "Users", session.userId, "Items")
+                .newBuilder()
+                .addQueryParameter("ParentId", libraryId)
+                .addQueryParameter("Recursive", "true")
+                .addQueryParameter("IncludeItemTypes", "Movie,Episode,Video")
+                .addQueryParameter("SortBy", "DateCreated")
+                .addQueryParameter("SortOrder", "Descending")
+                .addQueryParameter("StartIndex", startIndex.toString())
+                .addQueryParameter("Limit", ITEMS_PAGE_SIZE.toString())
+                .build()
+            val page: QueryResultDto = executeJson(authenticatedRequest(session, url).get().build())
+            allItems += page.items
+            pageItemCount = page.items.size
+            startIndex += pageItemCount
+            totalRecordCount = page.totalRecordCount
+        } while (pageItemCount > 0 && startIndex < totalRecordCount)
+
+        return allItems.distinctBy(BaseItemDto::id).map { item ->
             MediaItem(
                 id = item.id,
                 name = item.name,
@@ -100,9 +110,11 @@ class DefaultEmbyRepository(
             ?: throw EmbyApiException(
                 "PlaybackInfo 返回 0 个 MediaSources；请检查账号播放权限、STRM 条目和服务端日志"
             )
+        val isDiscImage = source.videoType.equals("Iso", ignoreCase = true) ||
+            source.container?.split(',')?.any { it.equals("iso", ignoreCase = true) } == true
 
         val candidates = buildList {
-            source.directStreamUrl?.takeIf(String::isNotBlank)?.let { directUrl ->
+            source.directStreamUrl?.takeIf { it.isNotBlank() && !isDiscImage }?.let { directUrl ->
                 add(
                     PlaybackCandidate(
                         url = EmbyEndpoints.resolvePlaybackUrl(session.serverUrl, directUrl),
@@ -117,7 +129,7 @@ class DefaultEmbyRepository(
             }
             if (
                 source.directStreamUrl.isNullOrBlank() &&
-                (source.supportsDirectPlay || source.supportsDirectStream)
+                !isDiscImage && (source.supportsDirectPlay || source.supportsDirectStream)
             ) {
                 add(
                     PlaybackCandidate(
@@ -137,6 +149,24 @@ class DefaultEmbyRepository(
                 add(
                     PlaybackCandidate(
                         url = EmbyEndpoints.resolvePlaybackUrl(session.serverUrl, transcodingUrl),
+                        method = PlayMethod.TRANSCODE,
+                        requiredHeaders = source.requiredHttpHeaders,
+                    )
+                )
+            }
+            if (
+                source.transcodingUrl.isNullOrBlank() &&
+                (isDiscImage || source.supportsTranscoding)
+            ) {
+                add(
+                    PlaybackCandidate(
+                        url = EmbyEndpoints.hlsTranscodingUrl(
+                            serverUrl = session.serverUrl,
+                            itemId = itemId,
+                            mediaSourceId = source.id,
+                            playSessionId = response.playSessionId,
+                            deviceId = clientIdentity.deviceId,
+                        ),
                         method = PlayMethod.TRANSCODE,
                         requiredHeaders = source.requiredHttpHeaders,
                     )
@@ -168,6 +198,7 @@ class DefaultEmbyRepository(
             playSessionId = response.playSessionId,
             candidates = candidates.distinctBy { it.url },
             container = source.container,
+            videoType = source.videoType,
             videoCodec = source.mediaStreams.firstOrNull { it.type.equals("Video", true) }?.codec,
             audioCodec = source.mediaStreams.firstOrNull { it.type.equals("Audio", true) && it.isDefault }?.codec
                 ?: source.mediaStreams.firstOrNull { it.type.equals("Audio", true) }?.codec,
@@ -191,12 +222,29 @@ class DefaultEmbyRepository(
             mediaSourceId = report.plan.mediaSourceId,
             playSessionId = report.plan.playSessionId,
             positionTicks = report.positionTicks,
+            canSeek = report.canSeek,
             isPaused = report.isPaused,
             playMethod = report.playMethod.toWireName(),
             eventName = report.event.wireName,
         )
         val body = json.encodeToString(dto).toRequestBody(JSON_MEDIA_TYPE)
         executeEmpty(authenticatedRequest(session, url).post(body).build())
+        if (report.event == PlaybackEvent.STOPPED && report.playMethod == PlayMethod.TRANSCODE) {
+            val cleanupUrl = EmbyEndpoints.endpoint(session.serverUrl, "Videos", "ActiveEncodings")
+                .newBuilder()
+                .addQueryParameter("DeviceId", clientIdentity.deviceId)
+                .addQueryParameter("PlaySessionId", report.plan.playSessionId)
+                .build()
+            runCatching { executeEmpty(authenticatedRequest(session, cleanupUrl).delete().build()) }
+        }
+    }
+
+    override suspend fun deleteItem(session: EmbySession, itemId: String) {
+        val url = EmbyEndpoints.endpoint(session.serverUrl, "Items")
+            .newBuilder()
+            .addQueryParameter("Ids", itemId)
+            .build()
+        executeEmpty(authenticatedRequest(session, url).delete().build())
     }
 
     override suspend fun logout(session: EmbySession) {
@@ -242,6 +290,7 @@ class DefaultEmbyRepository(
     }
 
     companion object {
+        private const val ITEMS_PAGE_SIZE = 200
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val EMPTY_BODY = ByteArray(0).toRequestBody(null)
     }

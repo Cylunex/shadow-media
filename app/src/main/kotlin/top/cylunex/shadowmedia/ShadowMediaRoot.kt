@@ -22,6 +22,7 @@ import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -29,6 +30,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -36,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -51,7 +54,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.ui.compose.material3.Player
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.isActive
 import top.cylunex.shadowmedia.model.MediaItem
 import top.cylunex.shadowmedia.model.MediaLibrary
 import top.cylunex.shadowmedia.model.PlaybackPlan
@@ -69,6 +74,14 @@ fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
             Screen.PLAYER -> FeedScreen(state, viewModel, container)
         }
         if (state.isLoading && state.screen != Screen.PLAYER) LoadingOverlay()
+        state.pendingDeleteItem?.let { item ->
+            DeleteConfirmationDialog(
+                item = item,
+                isDeleting = state.isDeleting,
+                onConfirm = viewModel::confirmDelete,
+                onDismiss = viewModel::cancelDelete,
+            )
+        }
     }
 }
 
@@ -148,7 +161,7 @@ private fun ItemScreen(state: MainUiState, viewModel: MainViewModel) {
     BackHandler(onBack = viewModel::back)
     ContentListHeader(
         title = state.selectedLibrary?.name ?: "视频",
-        subtitle = "选择一条开始刷片，上下滑动连续播放",
+        subtitle = "共 ${state.items.size} 条 · 选择一条开始刷片",
         actionText = "媒体库",
         onAction = viewModel::back,
     )
@@ -157,7 +170,12 @@ private fun ItemScreen(state: MainUiState, viewModel: MainViewModel) {
             val progress = item.playbackPositionTicks.takeIf { it > 0 }?.let {
                 " · 续播 ${formatDuration(it.embyTicksToMilliseconds())}"
             }.orEmpty()
-            ListCard(item.name, item.episodeLabel() + progress, onClick = { viewModel.play(item) })
+            ListCard(
+                title = item.name,
+                subtitle = item.episodeLabel() + progress,
+                onClick = { viewModel.play(item) },
+                onDelete = { viewModel.requestDelete(item) },
+            )
         }
         if (!state.isLoading && state.items.isEmpty()) item { EmptyState("这个媒体库没有找到视频") }
         item { ErrorText(state.errorMessage, Modifier.padding(16.dp)) }
@@ -200,6 +218,7 @@ private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: 
             container = container,
             onBack = viewModel::back,
             onRetry = viewModel::retryPlayback,
+            onDelete = { viewModel.requestDelete(item) },
         )
     }
 }
@@ -217,6 +236,7 @@ private fun FeedPage(
     container: AppContainer,
     onBack: () -> Unit,
     onRetry: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (isActive && plan != null) {
@@ -235,19 +255,37 @@ private fun FeedPage(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             TextButton(onClick = onBack) { Text("‹ 列表", color = Color.White) }
-            Text("${page + 1} / $pageCount", color = Color.White)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("${page + 1} / $pageCount", color = Color.White)
+                TextButton(onClick = onDelete) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            }
         }
 
-        Column(
-            modifier = Modifier.align(Alignment.BottomStart)
-                .fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.52f))
-                .navigationBarsPadding()
-                .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 88.dp),
-        ) {
-            Text(item.name, color = Color.White, style = MaterialTheme.typography.titleMedium)
-            Text(item.episodeLabel(), color = Color.White.copy(alpha = 0.78f))
-            Text("上下滑动切换视频", color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall)
+        if (errorMessage != null && plan != null) {
+            Card(
+                Modifier.align(Alignment.TopCenter).statusBarsPadding()
+                    .padding(start = 16.dp, end = 16.dp, top = 64.dp)
+            ) {
+                Text(errorMessage, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
+            }
+        }
+
+        if (!isActive || plan == null) {
+            Column(
+                modifier = Modifier.align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.52f))
+                    .navigationBarsPadding()
+                    .padding(16.dp),
+            ) {
+                Text(item.name, color = Color.White, style = MaterialTheme.typography.titleMedium)
+                Text(item.episodeLabel(), color = Color.White.copy(alpha = 0.78f))
+                Text(
+                    "上下滑动切换视频",
+                    color = Color.White.copy(alpha = 0.62f),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 }
@@ -298,35 +336,109 @@ private fun ActivePlayer(
         }
     }
 
-    Player(player = runtime.player, modifier = Modifier.fillMaxSize())
+    Box(Modifier.fillMaxSize()) {
+        Player(player = runtime.player, modifier = Modifier.fillMaxSize())
 
-    TextButton(
-        onClick = { showDiagnostics = !showDiagnostics },
-        modifier = Modifier.statusBarsPadding().padding(top = 54.dp, start = 8.dp),
-    ) { Text(if (showDiagnostics) "收起诊断" else "播放诊断", color = Color.White) }
+        TextButton(
+            onClick = { showDiagnostics = !showDiagnostics },
+            modifier = Modifier.statusBarsPadding().padding(top = 54.dp, start = 8.dp),
+        ) { Text(if (showDiagnostics) "收起诊断" else "播放诊断", color = Color.White) }
 
-    if (showDiagnostics || diagnostics.lastError != null) {
-        Card(
-            Modifier.fillMaxWidth().statusBarsPadding()
-                .padding(start = 16.dp, end = 16.dp, top = 104.dp)
-        ) {
-            Column(Modifier.padding(12.dp)) {
-                Text("${diagnostics.method} · ${diagnostics.requestHost}")
-                Text(
-                    "${diagnostics.container ?: "?"} · " +
-                        "${diagnostics.videoCodec ?: "?"} / ${diagnostics.audioCodec ?: "?"} · " +
-                        "链路 ${diagnostics.candidateIndex + 1}/${diagnostics.candidateCount}"
-                )
-                Text(
-                    "媒体源 ${diagnostics.sourceCount} · " +
-                        "DP ${diagnostics.supportsDirectPlay.asFlag()} · " +
-                        "DS ${diagnostics.supportsDirectStream.asFlag()} · " +
-                        "TC ${diagnostics.supportsTranscoding.asFlag()}"
-                )
-                diagnostics.lastError?.let {
-                    Text(it, color = MaterialTheme.colorScheme.error)
-                    OutlinedButton(onClick = onRetry) { Text("重新解析播放地址") }
+        if (showDiagnostics || diagnostics.lastError != null) {
+            Card(
+                Modifier.fillMaxWidth().statusBarsPadding()
+                    .padding(start = 16.dp, end = 16.dp, top = 104.dp)
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("${diagnostics.method} · ${diagnostics.requestHost}")
+                    Text(
+                        "${diagnostics.videoType ?: "Video"} / ${diagnostics.container ?: "?"} · " +
+                            "${diagnostics.videoCodec ?: "?"} / ${diagnostics.audioCodec ?: "?"} · " +
+                            "链路 ${diagnostics.candidateIndex + 1}/${diagnostics.candidateCount}"
+                    )
+                    Text(
+                        "媒体源 ${diagnostics.sourceCount} · " +
+                            "DP ${diagnostics.supportsDirectPlay.asFlag()} · " +
+                            "DS ${diagnostics.supportsDirectStream.asFlag()} · " +
+                            "TC ${diagnostics.supportsTranscoding.asFlag()}"
+                    )
+                    diagnostics.lastError?.let {
+                        Text(it, color = MaterialTheme.colorScheme.error)
+                        OutlinedButton(onClick = onRetry) { Text("重新解析播放地址") }
+                    }
                 }
+            }
+        }
+
+        PlaybackControls(
+            item = item,
+            runtime = runtime,
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
+    }
+}
+
+@Composable
+private fun PlaybackControls(
+    item: MediaItem,
+    runtime: PlaybackRuntime,
+    modifier: Modifier = Modifier,
+) {
+    val player = runtime.player
+    var positionMs by remember(player) { mutableLongStateOf(0L) }
+    var durationMs by remember(player) { mutableLongStateOf(0L) }
+    var isPlaying by remember(player) { mutableStateOf(false) }
+    var canSeek by remember(player) { mutableStateOf(false) }
+    var isScrubbing by remember(player) { mutableStateOf(false) }
+
+    LaunchedEffect(player) {
+        while (isActive) {
+            val duration = runtime.durationMs
+            durationMs = duration
+            if (!isScrubbing) positionMs = runtime.currentPositionMs
+            isPlaying = player.isPlaying
+            canSeek = runtime.isSeekSupported && duration > 0
+            delay(250L)
+        }
+    }
+
+    Column(
+        modifier = modifier.fillMaxWidth()
+            .background(Color.Black.copy(alpha = 0.7f))
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+    ) {
+        Text(item.name, color = Color.White, style = MaterialTheme.typography.titleMedium)
+        Text(item.episodeLabel(), color = Color.White.copy(alpha = 0.75f))
+        Slider(
+            value = positionMs.coerceIn(0L, durationMs.coerceAtLeast(0L)).toFloat(),
+            onValueChange = {
+                isScrubbing = true
+                positionMs = it.toLong()
+            },
+            onValueChangeFinished = {
+                if (canSeek) runtime.seekTo(positionMs)
+                isScrubbing = false
+            },
+            valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
+            enabled = canSeek,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                "${formatDuration(positionMs)} / ${formatDuration(durationMs)}",
+                color = Color.White,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (!canSeek) {
+                Text("当前链路不可拖动", color = Color.White.copy(alpha = 0.65f))
+            }
+            TextButton(onClick = { if (isPlaying) player.pause() else player.play() }) {
+                Text(if (isPlaying) "暂停" else "播放", color = Color.White)
             }
         }
     }
@@ -379,12 +491,51 @@ private fun ContentListHeader(
 }
 
 @Composable
-private fun ListCard(title: String, subtitle: String, onClick: () -> Unit) {
-    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp)) {
-        Text(title, style = MaterialTheme.typography.titleMedium)
-        Text(subtitle, style = MaterialTheme.typography.bodyMedium)
+private fun ListCard(
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+    onDelete: (() -> Unit)? = null,
+) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).clickable(onClick = onClick).padding(16.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(subtitle, style = MaterialTheme.typography.bodyMedium)
+        }
+        onDelete?.let {
+            TextButton(onClick = it, modifier = Modifier.padding(end = 8.dp)) {
+                Text("删除", color = MaterialTheme.colorScheme.error)
+            }
+        }
     }
     HorizontalDivider()
+}
+
+@Composable
+private fun DeleteConfirmationDialog(
+    item: MediaItem,
+    isDeleting: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("永久删除？") },
+        text = {
+            Text(
+                "将从 Emby 媒体库和服务器文件系统删除“${item.name}”。" +
+                    "此操作无法在 Shadow Media 中撤销。"
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm, enabled = !isDeleting) {
+                Text(if (isDeleting) "正在删除…" else "确认删除", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !isDeleting) { Text("取消") }
+        },
+    )
 }
 
 @Composable

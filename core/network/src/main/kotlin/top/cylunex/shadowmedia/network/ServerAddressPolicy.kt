@@ -61,4 +61,28 @@ internal object EmbyEndpoints {
             .build()
             .toString()
     }
+
+    fun hlsTranscodingUrl(
+        serverUrl: String,
+        itemId: String,
+        mediaSourceId: String,
+        playSessionId: String,
+        deviceId: String,
+    ): String = endpoint(serverUrl, "Videos", itemId, "master.m3u8")
+        .newBuilder()
+        .addQueryParameter("DeviceId", deviceId)
+        .addQueryParameter("MediaSourceId", mediaSourceId)
+        .addQueryParameter("PlaySessionId", playSessionId)
+        .addQueryParameter("VideoCodec", "h264")
+        .addQueryParameter("AudioCodec", "aac")
+        .addQueryParameter("VideoBitrate", "120000000")
+        .addQueryParameter("AudioBitrate", "384000")
+        .addQueryParameter("TranscodingMaxAudioChannels", "2")
+        .addQueryParameter("SegmentContainer", "ts")
+        .addQueryParameter("MinSegments", "1")
+        .addQueryParameter("BreakOnNonKeyFrames", "true")
+        .addQueryParameter("allowVideoStreamCopy", "false")
+        .addQueryParameter("allowAudioStreamCopy", "false")
+        .build()
+        .toString()
 }

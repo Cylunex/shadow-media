@@ -4,9 +4,10 @@
 
 - [x] Emby 地址、用户名和密码登录
 - [x] Keystore 加密会话恢复
-- [x] 选择媒体库并获取 20 个视频
+- [x] 远端分页获取媒体库全部视频
 - [x] PlaybackInfo → Direct Play / DirectStream → Transcode 候选链
 - [x] DirectStreamUrl 缺失时的标准静态流兜底
+- [x] ISO/DVD 镜像强制 HLS 转码与服务端 Seek
 - [x] Media3 Compose Material 3 Player
 - [x] Playing / 每 10 秒 Progress / Pause / Unpause / Stopped
 - [x] 302 跨 origin Token 隔离
@@ -29,6 +30,8 @@
 
 - [x] 循环播放、音频焦点、耳机拔出暂停和前后台切换
 - [x] 失败诊断与重新解析播放地址
+- [x] 独立进度条与直链/转码双模式 Seek
+- [x] 二次确认后的 Emby 条目及文件删除
 - [ ] 网络恢复和错误分类
 - [ ] 诊断详情导出（自动脱敏）
 - [ ] 画中画、MediaSession、锁屏控制

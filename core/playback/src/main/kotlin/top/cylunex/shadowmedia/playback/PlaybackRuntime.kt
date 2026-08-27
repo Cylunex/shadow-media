@@ -29,6 +29,7 @@ import top.cylunex.shadowmedia.model.PlayMethod
 import top.cylunex.shadowmedia.model.PlaybackCandidate
 import top.cylunex.shadowmedia.model.PlaybackEvent
 import top.cylunex.shadowmedia.model.PlaybackPlan
+import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
 import top.cylunex.shadowmedia.model.millisecondsToEmbyTicks
 import top.cylunex.shadowmedia.network.ClientIdentity
 import top.cylunex.shadowmedia.network.EmbyRepository
@@ -40,6 +41,7 @@ data class PlaybackDiagnostics(
     val candidateCount: Int,
     val requestHost: String,
     val container: String?,
+    val videoType: String?,
     val videoCodec: String?,
     val audioCodec: String?,
     val sourceCount: Int,
@@ -70,6 +72,7 @@ class PlaybackRuntime(
         )
         .build()
     private var candidateIndex = 0
+    private var positionOffsetMs = 0L
     private var started = false
     private var progressJob: Job? = null
     private var released = false
@@ -83,25 +86,50 @@ class PlaybackRuntime(
         repeatMode = Player.REPEAT_MODE_ONE
     }
     val player: Player = exoPlayer
+    val currentPositionMs: Long
+        get() = (positionOffsetMs + player.currentPosition).coerceAtLeast(0L)
+    val durationMs: Long
+        get() = plan.runTimeTicks?.embyTicksToMilliseconds()?.takeIf { it > 0 }
+            ?: (positionOffsetMs + player.duration).coerceAtLeast(0L)
+    val isSeekSupported: Boolean
+        get() = player.isCurrentMediaItemSeekable ||
+            currentCandidate().method == PlayMethod.TRANSCODE ||
+            transcodingCandidateIndex() >= 0
 
     init {
         exoPlayer.addListener(PlayerListener())
-        exoPlayer.setMediaSource(mediaSource(plan.primary))
-        exoPlayer.seekTo(startPositionMs.coerceAtLeast(0))
-        exoPlayer.prepare()
-        exoPlayer.playWhenReady = true
+        prepareCandidate(plan.primary, startPositionMs.coerceAtLeast(0L), playWhenReady = true)
+    }
+
+    fun seekTo(positionMs: Long) {
+        if (released) return
+        val target = positionMs.coerceIn(0L, durationMs.coerceAtLeast(0L))
+        if (currentCandidate().method == PlayMethod.TRANSCODE) {
+            prepareCandidate(currentCandidate(), target, player.playWhenReady)
+        } else if (player.isCurrentMediaItemSeekable) {
+            exoPlayer.seekTo(target)
+        } else {
+            val transcodeIndex = transcodingCandidateIndex()
+            if (transcodeIndex < 0) return
+            candidateIndex = transcodeIndex
+            diagnosticsState.value = diagnostics("直链不支持拖动，已切换 Emby 转码")
+            prepareCandidate(currentCandidate(), target, player.playWhenReady)
+        }
+        reportCurrent(PlaybackEvent.TIME_UPDATE)
     }
 
     override fun close() {
         if (released) return
         released = true
         progressJob?.cancel()
-        val finalPosition = player.currentPosition.millisecondsToEmbyTicks()
+        val finalPosition = currentPositionMs.millisecondsToEmbyTicks()
         val paused = !player.isPlaying
+        val canSeek = isSeekSupported
+        val playMethod = currentCandidate().method
         exoPlayer.release()
         if (started) {
             scope.launch(Dispatchers.IO) {
-                runCatching { report(PlaybackEvent.STOPPED, finalPosition, paused) }
+                runCatching { report(PlaybackEvent.STOPPED, finalPosition, paused, canSeek, playMethod) }
                 scope.cancel()
             }
         } else {
@@ -116,6 +144,27 @@ class PlaybackRuntime(
                 .setDefaultRequestProperties(candidate.requiredHeaders)
         ).createMediaSource(MediaItem.fromUri(candidate.url))
 
+    private fun prepareCandidate(
+        candidate: PlaybackCandidate,
+        absolutePositionMs: Long,
+        playWhenReady: Boolean,
+    ) {
+        if (candidate.method == PlayMethod.TRANSCODE) {
+            positionOffsetMs = absolutePositionMs
+            val url = candidate.url.toHttpUrl().newBuilder()
+                .setQueryParameter("StartTimeTicks", absolutePositionMs.millisecondsToEmbyTicks().toString())
+                .build()
+                .toString()
+            exoPlayer.setMediaSource(mediaSource(candidate.copy(url = url)))
+        } else {
+            positionOffsetMs = 0L
+            exoPlayer.setMediaSource(mediaSource(candidate))
+            exoPlayer.seekTo(absolutePositionMs)
+        }
+        exoPlayer.prepare()
+        exoPlayer.playWhenReady = playWhenReady
+    }
+
     private fun startProgressLoop() {
         progressJob?.cancel()
         progressJob = scope.launch {
@@ -127,20 +176,31 @@ class PlaybackRuntime(
     }
 
     private fun reportCurrent(event: PlaybackEvent) {
-        val position = player.currentPosition.millisecondsToEmbyTicks()
+        val position = currentPositionMs.millisecondsToEmbyTicks()
         val paused = !player.isPlaying
-        scope.launch(Dispatchers.IO) { runCatching { report(event, position, paused) } }
+        val canSeek = isSeekSupported
+        val playMethod = currentCandidate().method
+        scope.launch(Dispatchers.IO) {
+            runCatching { report(event, position, paused, canSeek, playMethod) }
+        }
     }
 
-    private suspend fun report(event: PlaybackEvent, positionTicks: Long, paused: Boolean) {
+    private suspend fun report(
+        event: PlaybackEvent,
+        positionTicks: Long,
+        paused: Boolean,
+        canSeek: Boolean,
+        playMethod: PlayMethod,
+    ) {
         repository.reportPlayback(
             session,
             PlaybackReport(
                 plan = plan,
                 positionTicks = positionTicks,
                 isPaused = paused,
+                canSeek = canSeek,
                 event = event,
-                playMethod = currentCandidate().method,
+                playMethod = playMethod,
             ),
         )
     }
@@ -151,15 +211,17 @@ class PlaybackRuntime(
             diagnosticsState.value = diagnostics(error.message ?: error.errorCodeName)
             return false
         }
+        val absolutePosition = currentPositionMs
         candidateIndex = next
         diagnosticsState.value = diagnostics("上一播放地址失败，已切换回退链路：${error.errorCodeName}")
-        exoPlayer.setMediaSource(mediaSource(currentCandidate()), player.currentPosition)
-        exoPlayer.prepare()
-        exoPlayer.playWhenReady = true
+        prepareCandidate(currentCandidate(), absolutePosition, playWhenReady = true)
         return true
     }
 
     private fun currentCandidate(): PlaybackCandidate = plan.candidates[candidateIndex]
+
+    private fun transcodingCandidateIndex(): Int =
+        plan.candidates.indexOfFirst { it.method == PlayMethod.TRANSCODE }
 
     private fun diagnostics(error: String? = null): PlaybackDiagnostics {
         val candidate = currentCandidate()
@@ -169,6 +231,7 @@ class PlaybackRuntime(
             candidateCount = plan.candidates.size,
             requestHost = candidate.url.toHttpUrl().host,
             container = plan.container,
+            videoType = plan.videoType,
             videoCodec = plan.videoCodec,
             audioCodec = plan.audioCodec,
             sourceCount = plan.sourceCount,

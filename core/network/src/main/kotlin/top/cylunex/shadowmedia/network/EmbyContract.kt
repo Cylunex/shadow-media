@@ -18,6 +18,7 @@ data class PlaybackReport(
     val plan: PlaybackPlan,
     val positionTicks: Long,
     val isPaused: Boolean,
+    val canSeek: Boolean = true,
     val event: PlaybackEvent,
     val playMethod: PlayMethod = plan.primary.method,
 )
@@ -34,10 +35,10 @@ interface EmbyRepository {
     suspend fun recentVideos(
         session: EmbySession,
         libraryId: String,
-        limit: Int = 20,
     ): List<MediaItem>
 
     suspend fun playbackPlan(session: EmbySession, itemId: String): PlaybackPlan
     suspend fun reportPlayback(session: EmbySession, report: PlaybackReport)
+    suspend fun deleteItem(session: EmbySession, itemId: String)
     suspend fun logout(session: EmbySession)
 }

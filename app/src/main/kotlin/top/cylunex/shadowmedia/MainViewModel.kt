@@ -33,6 +33,8 @@ data class MainUiState(
     val selectedItem: MediaItem? = null,
     val currentIndex: Int = 0,
     val playbackPlan: PlaybackPlan? = null,
+    val pendingDeleteItem: MediaItem? = null,
+    val isDeleting: Boolean = false,
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
 )
@@ -43,6 +45,7 @@ class MainViewModel(
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     private var playbackRequest: Job? = null
+    private var deleteRequest: Job? = null
     val state: StateFlow<MainUiState> = mutableState.asStateFlow()
 
     init {
@@ -146,6 +149,54 @@ class MainViewModel(
         playAt(index)
     }
 
+    fun requestDelete(item: MediaItem) {
+        update { copy(pendingDeleteItem = item, errorMessage = null) }
+    }
+
+    fun cancelDelete() {
+        if (!state.value.isDeleting) update { copy(pendingDeleteItem = null) }
+    }
+
+    fun confirmDelete() {
+        val session = state.value.session ?: return
+        val item = state.value.pendingDeleteItem ?: return
+        if (state.value.isDeleting) return
+        deleteRequest = viewModelScope.launch {
+            update { copy(isDeleting = true, errorMessage = null) }
+            try {
+                repository.deleteItem(session, item.id)
+                val snapshot = state.value
+                val removedActiveItem = snapshot.screen == Screen.PLAYER && snapshot.selectedItem?.id == item.id
+                val remaining = snapshot.items.filterNot { it.id == item.id }
+                val nextIndex = snapshot.currentIndex.coerceAtMost((remaining.size - 1).coerceAtLeast(0))
+                if (removedActiveItem) playbackRequest?.cancel()
+                update {
+                    copy(
+                        screen = if (removedActiveItem && remaining.isEmpty()) Screen.ITEMS else screen,
+                        items = remaining,
+                        selectedItem = if (removedActiveItem) null else selectedItem,
+                        playbackPlan = if (removedActiveItem) null else playbackPlan,
+                        currentIndex = nextIndex,
+                        pendingDeleteItem = null,
+                        isDeleting = false,
+                        isLoading = false,
+                    )
+                }
+                if (removedActiveItem && remaining.isNotEmpty()) playAt(nextIndex)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                update {
+                    copy(
+                        pendingDeleteItem = null,
+                        isDeleting = false,
+                        errorMessage = "删除失败：${error.message ?: "未知错误"}",
+                    )
+                }
+            }
+        }
+    }
+
     fun back() {
         playbackRequest?.cancel()
         update {
@@ -165,6 +216,7 @@ class MainViewModel(
 
     fun logout() {
         playbackRequest?.cancel()
+        deleteRequest?.cancel()
         val session = state.value.session
         sessionStore.clear()
         mutableState.value = MainUiState(serverUrl = session?.serverUrl.orEmpty())
