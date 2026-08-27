@@ -1,11 +1,12 @@
 # 路线图
 
-## M0：播放兼容性验证（当前）
+## M0：可播放 MVP（当前）
 
 - [x] Emby 地址、用户名和密码登录
 - [x] Keystore 加密会话恢复
 - [x] 选择媒体库并获取 20 个视频
-- [x] PlaybackInfo → DirectStream → Transcode 候选链
+- [x] PlaybackInfo → Direct Play / DirectStream → Transcode 候选链
+- [x] DirectStreamUrl 缺失时的标准静态流兜底
 - [x] Media3 Compose Material 3 Player
 - [x] Playing / 每 10 秒 Progress / Pause / Unpause / Stopped
 - [x] 302 跨 origin Token 隔离
@@ -16,7 +17,7 @@
 
 ## M1：刷片 Feed
 
-- [ ] VerticalPager 与页面驻留策略
+- [x] VerticalPager 与单活跃播放器页面驻留策略
 - [ ] PlayerPool(3) + rememberPooledPlayer
 - [ ] DefaultPreloadManager 共享 Builder
 - [ ] 仅解析当前与后续 1–2 项播放地址
@@ -26,6 +27,8 @@
 
 ## M2：播放器完整性
 
+- [x] 循环播放、音频焦点、耳机拔出暂停和前后台切换
+- [x] 失败诊断与重新解析播放地址
 - [ ] 网络恢复和错误分类
 - [ ] 诊断详情导出（自动脱敏）
 - [ ] 画中画、MediaSession、锁屏控制

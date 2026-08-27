@@ -36,4 +36,29 @@ internal object EmbyEndpoints {
         val server = serverUrl.toHttpUrlOrNull() ?: error("Invalid server URL")
         return server.resolve(pathOrUrl)?.toString() ?: error("Invalid playback URL")
     }
+
+    fun directPlayUrl(
+        serverUrl: String,
+        itemId: String,
+        mediaSourceId: String,
+        container: String?,
+        playSessionId: String,
+    ): String {
+        val extension = container
+            ?.substringBefore(',')
+            ?.lowercase()
+            ?.takeIf { value -> value.isNotBlank() && value.all { it.isLetterOrDigit() } }
+            ?: "mp4"
+        return endpoint(serverUrl, "Videos", itemId, "stream.$extension")
+            .newBuilder()
+            .addQueryParameter("MediaSourceId", mediaSourceId)
+            .addQueryParameter("Static", "true")
+            .apply {
+                if (playSessionId.isNotBlank()) {
+                    addQueryParameter("PlaySessionId", playSessionId)
+                }
+            }
+            .build()
+            .toString()
+    }
 }

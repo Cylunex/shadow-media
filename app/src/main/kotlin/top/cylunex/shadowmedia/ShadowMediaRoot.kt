@@ -1,6 +1,7 @@
 package top.cylunex.shadowmedia
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,10 +11,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.VerticalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -25,18 +31,30 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.ui.compose.material3.Player
+import kotlinx.coroutines.flow.distinctUntilChanged
 import top.cylunex.shadowmedia.model.MediaItem
 import top.cylunex.shadowmedia.model.MediaLibrary
+import top.cylunex.shadowmedia.model.PlaybackPlan
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
 import top.cylunex.shadowmedia.playback.PlaybackRuntime
 
@@ -48,20 +66,20 @@ fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
             Screen.LOGIN -> LoginScreen(state, viewModel)
             Screen.LIBRARIES -> LibraryScreen(state, viewModel)
             Screen.ITEMS -> ItemScreen(state, viewModel)
-            Screen.PLAYER -> PlayerScreen(state, viewModel, container)
+            Screen.PLAYER -> FeedScreen(state, viewModel, container)
         }
-        if (state.isLoading) LoadingOverlay()
+        if (state.isLoading && state.screen != Screen.PLAYER) LoadingOverlay()
     }
 }
 
 @Composable
 private fun LoginScreen(state: MainUiState, viewModel: MainViewModel) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp),
         verticalArrangement = Arrangement.Center,
     ) {
         Text("Shadow Media", style = MaterialTheme.typography.headlineLarge)
-        Text("连接 Emby，先验证 PlaybackInfo → 302 → 播放上报闭环")
+        Text("连接 Emby，播放自己的媒体库")
         Spacer(Modifier.height(24.dp))
         OutlinedTextField(
             value = state.serverUrl,
@@ -98,7 +116,7 @@ private fun LoginScreen(state: MainUiState, viewModel: MainViewModel) {
             onClick = viewModel::login,
             enabled = !state.isLoading,
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("登录并读取媒体库") }
+        ) { Text("登录") }
     }
 }
 
@@ -130,19 +148,16 @@ private fun ItemScreen(state: MainUiState, viewModel: MainViewModel) {
     BackHandler(onBack = viewModel::back)
     ContentListHeader(
         title = state.selectedLibrary?.name ?: "视频",
-        subtitle = "最近新增的 20 个可播放条目",
-        actionText = "返回媒体库",
+        subtitle = "选择一条开始刷片，上下滑动连续播放",
+        actionText = "媒体库",
         onAction = viewModel::back,
     )
     LazyColumn(Modifier.fillMaxSize().padding(top = 88.dp)) {
         items(state.items, key = MediaItem::id) { item ->
-            val episode = if (item.seriesName != null) {
-                "${item.seriesName} · S${item.seasonNumber ?: 0}E${item.episodeNumber ?: 0}"
-            } else item.type
             val progress = item.playbackPositionTicks.takeIf { it > 0 }?.let {
                 " · 续播 ${formatDuration(it.embyTicksToMilliseconds())}"
             }.orEmpty()
-            ListCard(item.name, episode + progress, onClick = { viewModel.play(item) })
+            ListCard(item.name, item.episodeLabel() + progress, onClick = { viewModel.play(item) })
         }
         if (!state.isLoading && state.items.isEmpty()) item { EmptyState("这个媒体库没有找到视频") }
         item { ErrorText(state.errorMessage, Modifier.padding(16.dp)) }
@@ -150,12 +165,105 @@ private fun ItemScreen(state: MainUiState, viewModel: MainViewModel) {
 }
 
 @Composable
-private fun PlayerScreen(state: MainUiState, viewModel: MainViewModel, container: AppContainer) {
+private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: AppContainer) {
+    BackHandler(onBack = viewModel::back)
+    val pagerState = rememberPagerState(
+        initialPage = state.currentIndex.coerceIn(0, (state.items.size - 1).coerceAtLeast(0)),
+        pageCount = { state.items.size },
+    )
+
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.settledPage }
+            .distinctUntilChanged()
+            .collect(viewModel::playAt)
+    }
+
+    VerticalPager(
+        state = pagerState,
+        key = { state.items[it].id },
+        beyondViewportPageCount = 1,
+        modifier = Modifier.fillMaxSize().background(Color.Black),
+    ) { page ->
+        val item = state.items[page]
+        val plan = state.playbackPlan?.takeIf {
+            page == state.currentIndex && it.itemId == item.id
+        }
+        FeedPage(
+            item = item,
+            page = page,
+            pageCount = state.items.size,
+            plan = plan,
+            isActive = page == state.currentIndex,
+            isLoading = state.isLoading,
+            errorMessage = state.errorMessage,
+            state = state,
+            container = container,
+            onBack = viewModel::back,
+            onRetry = viewModel::retryPlayback,
+        )
+    }
+}
+
+@Composable
+private fun FeedPage(
+    item: MediaItem,
+    page: Int,
+    pageCount: Int,
+    plan: PlaybackPlan?,
+    isActive: Boolean,
+    isLoading: Boolean,
+    errorMessage: String?,
+    state: MainUiState,
+    container: AppContainer,
+    onBack: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        if (isActive && plan != null) {
+            ActivePlayer(state, item, plan, container, onRetry)
+        } else if (isActive) {
+            FeedPlaceholder(isLoading, errorMessage, onRetry)
+        }
+
+        Row(
+            modifier = Modifier.align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .background(Color.Black.copy(alpha = 0.45f))
+                .statusBarsPadding()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            TextButton(onClick = onBack) { Text("‹ 列表", color = Color.White) }
+            Text("${page + 1} / $pageCount", color = Color.White)
+        }
+
+        Column(
+            modifier = Modifier.align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .background(Color.Black.copy(alpha = 0.52f))
+                .navigationBarsPadding()
+                .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 88.dp),
+        ) {
+            Text(item.name, color = Color.White, style = MaterialTheme.typography.titleMedium)
+            Text(item.episodeLabel(), color = Color.White.copy(alpha = 0.78f))
+            Text("上下滑动切换视频", color = Color.White.copy(alpha = 0.62f), style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun ActivePlayer(
+    state: MainUiState,
+    item: MediaItem,
+    plan: PlaybackPlan,
+    container: AppContainer,
+    onRetry: () -> Unit,
+) {
     val session = requireNotNull(state.session)
-    val plan = requireNotNull(state.playbackPlan)
-    val item = requireNotNull(state.selectedItem)
     val context = androidx.compose.ui.platform.LocalContext.current
-    val runtime = androidx.compose.runtime.remember(plan) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val runtime = remember(plan) {
         PlaybackRuntime(
             context = context,
             session = session,
@@ -166,29 +274,73 @@ private fun PlayerScreen(state: MainUiState, viewModel: MainViewModel, container
         )
     }
     val diagnostics by runtime.diagnostics.collectAsStateWithLifecycle()
-    DisposableEffect(runtime) { onDispose(runtime::close) }
-    BackHandler(onBack = viewModel::back)
+    var showDiagnostics by remember(runtime) { mutableStateOf(false) }
 
-    Box(Modifier.fillMaxSize()) {
-        Player(player = runtime.player, modifier = Modifier.fillMaxSize())
-        Column(
-            Modifier.align(Alignment.TopStart).fillMaxWidth().padding(16.dp)
-        ) {
-            OutlinedButton(onClick = viewModel::back) { Text("返回") }
-            Spacer(Modifier.height(8.dp))
-            Text(item.name, color = MaterialTheme.colorScheme.onSurface)
+    DisposableEffect(runtime, lifecycleOwner) {
+        var resumeAfterBackground = false
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> {
+                    resumeAfterBackground = runtime.player.playWhenReady
+                    runtime.player.pause()
+                }
+                Lifecycle.Event.ON_START -> if (resumeAfterBackground) {
+                    runtime.player.play()
+                    resumeAfterBackground = false
+                }
+                else -> Unit
+            }
         }
-        Card(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(16.dp)) {
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            runtime.close()
+        }
+    }
+
+    Player(player = runtime.player, modifier = Modifier.fillMaxSize())
+
+    TextButton(
+        onClick = { showDiagnostics = !showDiagnostics },
+        modifier = Modifier.statusBarsPadding().padding(top = 54.dp, start = 8.dp),
+    ) { Text(if (showDiagnostics) "收起诊断" else "播放诊断", color = Color.White) }
+
+    if (showDiagnostics || diagnostics.lastError != null) {
+        Card(
+            Modifier.fillMaxWidth().statusBarsPadding()
+                .padding(start = 16.dp, end = 16.dp, top = 104.dp)
+        ) {
             Column(Modifier.padding(12.dp)) {
-                Text("播放诊断", style = MaterialTheme.typography.titleSmall)
                 Text("${diagnostics.method} · ${diagnostics.requestHost}")
                 Text(
                     "${diagnostics.container ?: "?"} · " +
                         "${diagnostics.videoCodec ?: "?"} / ${diagnostics.audioCodec ?: "?"} · " +
                         "链路 ${diagnostics.candidateIndex + 1}/${diagnostics.candidateCount}"
                 )
-                diagnostics.lastError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                diagnostics.lastError?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error)
+                    OutlinedButton(onClick = onRetry) { Text("重新解析播放地址") }
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun FeedPlaceholder(isLoading: Boolean, errorMessage: String?, onRetry: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (isLoading) {
+            CircularProgressIndicator(color = Color.White)
+            Spacer(Modifier.height(12.dp))
+            Text("正在解析播放地址…", color = Color.White)
+        } else {
+            Text(errorMessage ?: "暂时无法播放这个视频", color = Color.White)
+            Spacer(Modifier.height(12.dp))
+            Button(onClick = onRetry) { Text("重试") }
         }
     }
 }
@@ -201,7 +353,7 @@ private fun ContentListHeader(
     onAction: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().height(88.dp).padding(horizontal = 16.dp),
+        Modifier.fillMaxWidth().height(88.dp).statusBarsPadding().padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
@@ -237,6 +389,12 @@ private fun LoadingOverlay() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Card { CircularProgressIndicator(Modifier.padding(20.dp).size(40.dp)) }
     }
+}
+
+private fun MediaItem.episodeLabel(): String = if (seriesName != null) {
+    "$seriesName · S${seasonNumber ?: 0}E${episodeNumber ?: 0}"
+} else {
+    type
 }
 
 private fun formatDuration(milliseconds: Long): String {

@@ -99,7 +99,26 @@ class DefaultEmbyRepository(
                 add(
                     PlaybackCandidate(
                         url = EmbyEndpoints.resolvePlaybackUrl(session.serverUrl, directUrl),
-                        method = PlayMethod.DIRECT_STREAM,
+                        method = if (source.supportsDirectPlay) {
+                            PlayMethod.DIRECT_PLAY
+                        } else {
+                            PlayMethod.DIRECT_STREAM
+                        },
+                        requiredHeaders = source.requiredHttpHeaders,
+                    )
+                )
+            }
+            if (source.supportsDirectPlay && source.directStreamUrl.isNullOrBlank()) {
+                add(
+                    PlaybackCandidate(
+                        url = EmbyEndpoints.directPlayUrl(
+                            serverUrl = session.serverUrl,
+                            itemId = itemId,
+                            mediaSourceId = source.id,
+                            container = source.container,
+                            playSessionId = response.playSessionId,
+                        ),
+                        method = PlayMethod.DIRECT_PLAY,
                         requiredHeaders = source.requiredHttpHeaders,
                     )
                 )
@@ -114,7 +133,7 @@ class DefaultEmbyRepository(
                 )
             }
         }
-        if (candidates.isEmpty()) throw EmbyApiException("媒体源既没有直连地址，也没有转码地址")
+        if (candidates.isEmpty()) throw EmbyApiException("媒体源既不支持直连，也没有返回转码地址")
 
         return PlaybackPlan(
             itemId = itemId,

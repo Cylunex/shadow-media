@@ -51,10 +51,12 @@ MainViewModel
 
 客户端使用 `POST /Items/{Id}/PlaybackInfo`，提交用户、码率上限与首版设备能力描述。返回后：
 
-1. 优先使用 `DirectStreamUrl`；若媒体源声明 `SupportsDirectPlay`，上报为 DirectPlay；
-2. 将 `TranscodingUrl` 作为下一候选，通常为 Emby HLS；
-3. 保存 `MediaSourceId` 与 `PlaySessionId`，用相同播放方法上报状态；
-4. 不猜测 `/Videos/{id}/stream.mp4?Static=true`，也不持久化 302 后的 CDN URL。
+1. 优先使用服务端返回的 `DirectStreamUrl`；
+2. 若媒体源声明 `SupportsDirectPlay` 但没有返回直连 URL，则构造带 `MediaSourceId`、
+   `PlaySessionId` 和 `Static=true` 的标准 `/Videos/{id}/stream.{container}` 地址；
+3. 将 `TranscodingUrl` 作为下一候选，通常为 Emby HLS；
+4. 保存 `MediaSourceId` 与 `PlaySessionId`，用实际播放方法上报状态；
+5. Token 只放在同源请求头，不放进播放 URL，也不持久化 302 后的 CDN URL。
 
 接口依据：
 
@@ -67,7 +69,9 @@ MainViewModel
 
 ## Feed 播放策略
 
-端到端验证完成后，Feed 采用 Media3 1.11 官方短视频示例的组合：
+当前 MVP 已使用 `VerticalPager`，只让停稳的当前页持有一个 Media3 播放器；切页立即停止并释放
+旧播放器，PlaybackInfo 按页惰性解析。真实链路验证完成后，Feed 采用 Media3 1.11 官方短视频
+示例的完整组合：
 
 ```text
 VerticalPager

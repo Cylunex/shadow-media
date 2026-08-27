@@ -40,4 +40,19 @@ class ServerAddressPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun `builds authenticated direct play endpoint without token in url`() {
+        assertEquals(
+            "https://media.example.com/emby/Videos/item-1/stream.mkv?" +
+                "MediaSourceId=source-1&Static=true&PlaySessionId=play-1",
+            EmbyEndpoints.directPlayUrl(
+                serverUrl = "https://media.example.com",
+                itemId = "item-1",
+                mediaSourceId = "source-1",
+                container = "mkv,webm",
+                playSessionId = "play-1",
+            ),
+        )
+    }
 }

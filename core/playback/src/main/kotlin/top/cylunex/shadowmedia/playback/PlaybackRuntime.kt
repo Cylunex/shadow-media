@@ -1,6 +1,8 @@
 package top.cylunex.shadowmedia.playback
 
 import android.content.Context
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -70,7 +72,12 @@ class PlaybackRuntime(
     private val diagnosticsState = MutableStateFlow(diagnostics())
 
     val diagnostics: StateFlow<PlaybackDiagnostics> = diagnosticsState.asStateFlow()
-    private val exoPlayer = ExoPlayer.Builder(context).build()
+    private val exoPlayer = ExoPlayer.Builder(context).build().apply {
+        setAudioAttributes(AudioAttributes.DEFAULT, true)
+        setHandleAudioBecomingNoisy(true)
+        setWakeMode(C.WAKE_MODE_LOCAL)
+        repeatMode = Player.REPEAT_MODE_ONE
+    }
     val player: Player = exoPlayer
 
     init {

@@ -3,6 +3,8 @@ package top.cylunex.shadowmedia
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,6 +31,7 @@ data class MainUiState(
     val selectedLibrary: MediaLibrary? = null,
     val items: List<MediaItem> = emptyList(),
     val selectedItem: MediaItem? = null,
+    val currentIndex: Int = 0,
     val playbackPlan: PlaybackPlan? = null,
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
@@ -39,6 +42,7 @@ class MainViewModel(
     private val sessionStore: SessionStore,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
+    private var playbackRequest: Job? = null
     val state: StateFlow<MainUiState> = mutableState.asStateFlow()
 
     init {
@@ -96,21 +100,63 @@ class MainViewModel(
     }
 
     fun play(item: MediaItem) {
-        val session = state.value.session ?: return
-        viewModelScope.launch {
-            update { copy(selectedItem = item, isLoading = true, errorMessage = null) }
-            runCatching { repository.playbackPlan(session, item.id) }
-                .onSuccess { plan ->
-                    update { copy(playbackPlan = plan, screen = Screen.PLAYER, isLoading = false) }
+        val index = state.value.items.indexOfFirst { it.id == item.id }
+        if (index >= 0) playAt(index)
+    }
+
+    fun playAt(index: Int) {
+        val snapshot = state.value
+        val session = snapshot.session ?: return
+        val item = snapshot.items.getOrNull(index) ?: return
+        if (
+            snapshot.screen == Screen.PLAYER &&
+            snapshot.currentIndex == index &&
+            (snapshot.playbackPlan?.itemId == item.id || snapshot.isLoading)
+        ) return
+
+        playbackRequest?.cancel()
+        update {
+            copy(
+                screen = Screen.PLAYER,
+                selectedItem = item,
+                currentIndex = index,
+                playbackPlan = null,
+                isLoading = true,
+                errorMessage = null,
+            )
+        }
+        playbackRequest = viewModelScope.launch {
+            try {
+                val plan = repository.playbackPlan(session, item.id)
+                if (state.value.selectedItem?.id == item.id) {
+                    update { copy(playbackPlan = plan, isLoading = false) }
                 }
-                .onFailure(::showError)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (state.value.selectedItem?.id == item.id) showError(error)
+            }
         }
     }
 
+    fun retryPlayback() {
+        val index = state.value.currentIndex
+        playbackRequest?.cancel()
+        update { copy(playbackPlan = null, isLoading = false) }
+        playAt(index)
+    }
+
     fun back() {
+        playbackRequest?.cancel()
         update {
             when (screen) {
-                Screen.PLAYER -> copy(screen = Screen.ITEMS, playbackPlan = null, selectedItem = null)
+                Screen.PLAYER -> copy(
+                    screen = Screen.ITEMS,
+                    playbackPlan = null,
+                    selectedItem = null,
+                    isLoading = false,
+                    errorMessage = null,
+                )
                 Screen.ITEMS -> copy(screen = Screen.LIBRARIES, selectedLibrary = null, items = emptyList())
                 else -> this
             }
@@ -118,6 +164,7 @@ class MainViewModel(
     }
 
     fun logout() {
+        playbackRequest?.cancel()
         val session = state.value.session
         sessionStore.clear()
         mutableState.value = MainUiState(serverUrl = session?.serverUrl.orEmpty())
