@@ -91,8 +91,15 @@ class DefaultEmbyRepository(
         )
         if (response.errorCode != null) throw EmbyApiException("PlaybackInfo: ${response.errorCode}")
         val source = response.mediaSources.firstOrNull {
-            !it.directStreamUrl.isNullOrBlank() || !it.transcodingUrl.isNullOrBlank()
-        } ?: throw EmbyApiException("服务端没有返回可播放的媒体源")
+            it.supportsDirectPlay ||
+                it.supportsDirectStream ||
+                it.supportsTranscoding ||
+                !it.directStreamUrl.isNullOrBlank() ||
+                !it.transcodingUrl.isNullOrBlank()
+        } ?: response.mediaSources.firstOrNull()
+            ?: throw EmbyApiException(
+                "PlaybackInfo 返回 0 个 MediaSources；请检查账号播放权限、STRM 条目和服务端日志"
+            )
 
         val candidates = buildList {
             source.directStreamUrl?.takeIf(String::isNotBlank)?.let { directUrl ->
@@ -108,7 +115,10 @@ class DefaultEmbyRepository(
                     )
                 )
             }
-            if (source.supportsDirectPlay && source.directStreamUrl.isNullOrBlank()) {
+            if (
+                source.directStreamUrl.isNullOrBlank() &&
+                (source.supportsDirectPlay || source.supportsDirectStream)
+            ) {
                 add(
                     PlaybackCandidate(
                         url = EmbyEndpoints.directPlayUrl(
@@ -118,7 +128,7 @@ class DefaultEmbyRepository(
                             container = source.container,
                             playSessionId = response.playSessionId,
                         ),
-                        method = PlayMethod.DIRECT_PLAY,
+                        method = PlayMethod.DIRECT_STREAM,
                         requiredHeaders = source.requiredHttpHeaders,
                     )
                 )
@@ -132,8 +142,25 @@ class DefaultEmbyRepository(
                     )
                 )
             }
+            if (isEmpty()) {
+                // Some Emby versions return MediaSource capabilities but omit all derived URLs.
+                // The documented static stream endpoint is still a valid final attempt and lets
+                // Media3 surface the real HTTP/codec error instead of failing before playback.
+                add(
+                    PlaybackCandidate(
+                        url = EmbyEndpoints.directPlayUrl(
+                            serverUrl = session.serverUrl,
+                            itemId = itemId,
+                            mediaSourceId = source.id,
+                            container = source.container,
+                            playSessionId = response.playSessionId,
+                        ),
+                        method = PlayMethod.DIRECT_STREAM,
+                        requiredHeaders = source.requiredHttpHeaders,
+                    )
+                )
+            }
         }
-        if (candidates.isEmpty()) throw EmbyApiException("媒体源既不支持直连，也没有返回转码地址")
 
         return PlaybackPlan(
             itemId = itemId,
@@ -145,6 +172,10 @@ class DefaultEmbyRepository(
             audioCodec = source.mediaStreams.firstOrNull { it.type.equals("Audio", true) && it.isDefault }?.codec
                 ?: source.mediaStreams.firstOrNull { it.type.equals("Audio", true) }?.codec,
             runTimeTicks = source.runTimeTicks,
+            sourceCount = response.mediaSources.size,
+            supportsDirectPlay = source.supportsDirectPlay,
+            supportsDirectStream = source.supportsDirectStream,
+            supportsTranscoding = source.supportsTranscoding,
         )
     }
 

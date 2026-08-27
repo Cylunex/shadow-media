@@ -53,6 +53,10 @@ data class PlaybackPlan(
     val videoCodec: String?,
     val audioCodec: String?,
     val runTimeTicks: Long?,
+    val sourceCount: Int = 1,
+    val supportsDirectPlay: Boolean = false,
+    val supportsDirectStream: Boolean = false,
+    val supportsTranscoding: Boolean = false,
 ) {
     init {
         require(candidates.isNotEmpty()) { "Playback plan requires at least one candidate" }

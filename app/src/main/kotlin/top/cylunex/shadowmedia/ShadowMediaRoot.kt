@@ -317,6 +317,12 @@ private fun ActivePlayer(
                         "${diagnostics.videoCodec ?: "?"} / ${diagnostics.audioCodec ?: "?"} · " +
                         "链路 ${diagnostics.candidateIndex + 1}/${diagnostics.candidateCount}"
                 )
+                Text(
+                    "媒体源 ${diagnostics.sourceCount} · " +
+                        "DP ${diagnostics.supportsDirectPlay.asFlag()} · " +
+                        "DS ${diagnostics.supportsDirectStream.asFlag()} · " +
+                        "TC ${diagnostics.supportsTranscoding.asFlag()}"
+                )
                 diagnostics.lastError?.let {
                     Text(it, color = MaterialTheme.colorScheme.error)
                     OutlinedButton(onClick = onRetry) { Text("重新解析播放地址") }
@@ -338,7 +344,14 @@ private fun FeedPlaceholder(isLoading: Boolean, errorMessage: String?, onRetry: 
             Spacer(Modifier.height(12.dp))
             Text("正在解析播放地址…", color = Color.White)
         } else {
+            Text("PlaybackInfo 诊断", color = Color.White, style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
             Text(errorMessage ?: "暂时无法播放这个视频", color = Color.White)
+            Text(
+                "播放地址尚未解析成功，因此这里还没有播放器级诊断。",
+                color = Color.White.copy(alpha = 0.65f),
+                style = MaterialTheme.typography.bodySmall,
+            )
             Spacer(Modifier.height(12.dp))
             Button(onClick = onRetry) { Text("重试") }
         }
@@ -401,3 +414,5 @@ private fun formatDuration(milliseconds: Long): String {
     val seconds = milliseconds / 1_000
     return "%d:%02d".format(seconds / 60, seconds % 60)
 }
+
+private fun Boolean.asFlag(): String = if (this) "是" else "否"

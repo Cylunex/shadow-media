@@ -42,6 +42,10 @@ data class PlaybackDiagnostics(
     val container: String?,
     val videoCodec: String?,
     val audioCodec: String?,
+    val sourceCount: Int,
+    val supportsDirectPlay: Boolean,
+    val supportsDirectStream: Boolean,
+    val supportsTranscoding: Boolean,
     val lastError: String? = null,
 )
 
@@ -167,6 +171,10 @@ class PlaybackRuntime(
             container = plan.container,
             videoCodec = plan.videoCodec,
             audioCodec = plan.audioCodec,
+            sourceCount = plan.sourceCount,
+            supportsDirectPlay = plan.supportsDirectPlay,
+            supportsDirectStream = plan.supportsDirectStream,
+            supportsTranscoding = plan.supportsTranscoding,
             lastError = error,
         )
     }
