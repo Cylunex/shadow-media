@@ -11,6 +11,8 @@ import top.cylunex.shadowmedia.network.ClientIdentity
 import top.cylunex.shadowmedia.network.DefaultEmbyRepository
 import top.cylunex.shadowmedia.network.EmbyRepository
 import top.cylunex.shadowmedia.network.KeystoreSessionStore
+import top.cylunex.shadowmedia.network.PersistentPlaybackOutbox
+import top.cylunex.shadowmedia.network.PlaybackOutbox
 import top.cylunex.shadowmedia.network.SessionStore
 
 class ShadowMediaApplication : Application() {
@@ -31,6 +33,8 @@ class AppContainer(application: Application) {
             .build(),
         clientIdentity = clientIdentity,
     )
+    val playbackOutbox: PlaybackOutbox = PersistentPlaybackOutbox(application, embyRepository)
+    val feedSessionStore = FeedSessionStore(application)
 
     private fun persistentDeviceId(application: Application): String {
         val preferences = application.getSharedPreferences("device_identity", Context.MODE_PRIVATE)

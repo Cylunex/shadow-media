@@ -20,8 +20,9 @@ Emby origin
 ## 本地存储
 
 - 用户密码仅用于登录请求，不写磁盘；登录成功后立即从 UI state 清空。
-- Access Token 连同服务器/用户绑定信息序列化后，由 Android Keystore 中的 AES-256 GCM key 加密。
+- 多个 Access Token 连同服务器/用户绑定信息序列化后，由 Android Keystore 中的 AES-256 GCM key 加密。
 - SharedPreferences 只保存随机 IV + ciphertext + authentication tag。
+- 播放进度 Outbox 不保存 Token、请求头或临时播放 URL，只保存补报所需的 ID、事件和位置。
 - 日志和播放诊断不显示 Token、Authorization、Cookie、完整播放 URL 或响应头。
 
 ## HTTP

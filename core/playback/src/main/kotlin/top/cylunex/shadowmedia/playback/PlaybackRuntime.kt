@@ -32,7 +32,7 @@ import top.cylunex.shadowmedia.model.PlaybackPlan
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
 import top.cylunex.shadowmedia.model.millisecondsToEmbyTicks
 import top.cylunex.shadowmedia.network.ClientIdentity
-import top.cylunex.shadowmedia.network.EmbyRepository
+import top.cylunex.shadowmedia.network.PlaybackOutbox
 import top.cylunex.shadowmedia.network.PlaybackReport
 
 data class PlaybackDiagnostics(
@@ -55,9 +55,10 @@ class PlaybackRuntime(
     context: Context,
     private val session: EmbySession,
     private val plan: PlaybackPlan,
-    private val repository: EmbyRepository,
+    private val playbackOutbox: PlaybackOutbox,
     clientIdentity: ClientIdentity,
     startPositionMs: Long,
+    private val onTerminalError: (positionMs: Long, message: String) -> Unit = { _, _ -> },
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val playbackClient = OkHttpClient.Builder()
@@ -192,10 +193,12 @@ class PlaybackRuntime(
         canSeek: Boolean,
         playMethod: PlayMethod,
     ) {
-        repository.reportPlayback(
+        playbackOutbox.submit(
             session,
             PlaybackReport(
-                plan = plan,
+                itemId = plan.itemId,
+                mediaSourceId = plan.mediaSourceId,
+                playSessionId = plan.playSessionId,
                 positionTicks = positionTicks,
                 isPaused = paused,
                 canSeek = canSeek,
@@ -208,7 +211,9 @@ class PlaybackRuntime(
     private fun tryFallback(error: PlaybackException): Boolean {
         val next = candidateIndex + 1
         if (next >= plan.candidates.size || released) {
-            diagnosticsState.value = diagnostics(error.message ?: error.errorCodeName)
+            val message = error.message ?: error.errorCodeName
+            diagnosticsState.value = diagnostics(message)
+            if (!released) onTerminalError(currentPositionMs, message)
             return false
         }
         val absolutePosition = currentPositionMs

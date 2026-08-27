@@ -14,11 +14,13 @@ import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.MediaItem
 import top.cylunex.shadowmedia.model.MediaLibrary
 import top.cylunex.shadowmedia.model.PlaybackPlan
+import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
 import top.cylunex.shadowmedia.network.EmbyRepository
 import top.cylunex.shadowmedia.network.LoginRequest
+import top.cylunex.shadowmedia.network.PlaybackOutbox
 import top.cylunex.shadowmedia.network.SessionStore
 
-enum class Screen { LOGIN, LIBRARIES, ITEMS, PLAYER }
+enum class Screen { SERVERS, LOGIN, LIBRARIES, ITEMS, PLAYER }
 
 data class MainUiState(
     val screen: Screen = Screen.LOGIN,
@@ -26,14 +28,19 @@ data class MainUiState(
     val userName: String = "",
     val password: String = "",
     val allowInsecureHttp: Boolean = false,
+    val savedSessions: List<EmbySession> = emptyList(),
     val session: EmbySession? = null,
     val libraries: List<MediaLibrary> = emptyList(),
+    val lastFeedLibraryId: String? = null,
     val selectedLibrary: MediaLibrary? = null,
     val items: List<MediaItem> = emptyList(),
     val selectedItem: MediaItem? = null,
     val currentIndex: Int = 0,
     val playbackPlan: PlaybackPlan? = null,
+    val playbackStartPositionMs: Long = 0,
+    val playbackRefreshAttempts: Int = 0,
     val pendingDeleteItem: MediaItem? = null,
+    val pendingRemoveSession: EmbySession? = null,
     val isDeleting: Boolean = false,
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
@@ -42,6 +49,8 @@ data class MainUiState(
 class MainViewModel(
     private val repository: EmbyRepository,
     private val sessionStore: SessionStore,
+    private val feedSessionStore: FeedSessionStore,
+    private val playbackOutbox: PlaybackOutbox,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     private var playbackRequest: Job? = null
@@ -49,13 +58,61 @@ class MainViewModel(
     val state: StateFlow<MainUiState> = mutableState.asStateFlow()
 
     init {
-        sessionStore.load()?.let(::restoreSession)
+        val saved = sessionStore.loadAll()
+        val active = sessionStore.load()
+        if (active != null) restoreSession(active, saved) else {
+            mutableState.value = MainUiState(
+                screen = if (saved.isEmpty()) Screen.LOGIN else Screen.SERVERS,
+                savedSessions = saved,
+            )
+        }
     }
 
     fun updateServerUrl(value: String) = update { copy(serverUrl = value, errorMessage = null) }
     fun updateUserName(value: String) = update { copy(userName = value, errorMessage = null) }
     fun updatePassword(value: String) = update { copy(password = value, errorMessage = null) }
     fun updateAllowInsecure(value: Boolean) = update { copy(allowInsecureHttp = value, errorMessage = null) }
+
+    fun showServers() {
+        playbackRequest?.cancel()
+        deleteRequest?.cancel()
+        val saved = sessionStore.loadAll()
+        mutableState.value = MainUiState(
+            screen = if (saved.isEmpty()) Screen.LOGIN else Screen.SERVERS,
+            savedSessions = saved,
+        )
+    }
+
+    fun addServer() {
+        mutableState.value = MainUiState(screen = Screen.LOGIN, savedSessions = sessionStore.loadAll())
+    }
+
+    fun selectServer(session: EmbySession) {
+        if (!sessionStore.select(session)) {
+            update { copy(errorMessage = "这个服务器登录已不存在，请重新添加") }
+            return
+        }
+        restoreSession(session, sessionStore.loadAll())
+    }
+
+    fun requestRemoveServer(session: EmbySession) =
+        update { copy(pendingRemoveSession = session, errorMessage = null) }
+
+    fun cancelRemoveServer() = update { copy(pendingRemoveSession = null) }
+
+    fun confirmRemoveServer() {
+        val session = state.value.pendingRemoveSession ?: return
+        sessionStore.remove(session)
+        val remaining = sessionStore.loadAll()
+        mutableState.value = MainUiState(
+            screen = if (remaining.isEmpty()) Screen.LOGIN else Screen.SERVERS,
+            savedSessions = remaining,
+        )
+        viewModelScope.launch {
+            playbackOutbox.discard(session)
+            runCatching { repository.logout(session) }
+        }
+    }
 
     fun login() {
         val snapshot = state.value
@@ -73,18 +130,28 @@ class MainViewModel(
                 )
             }.onSuccess { session ->
                 sessionStore.save(session)
-                mutableState.value = state.value.copy(
+                mutableState.value = MainUiState(
                     session = session,
-                    password = "",
+                    savedSessions = sessionStore.loadAll(),
+                    serverUrl = session.serverUrl,
+                    userName = session.userName,
                     screen = Screen.LIBRARIES,
                     isLoading = true,
                 )
+                viewModelScope.launch { playbackOutbox.flush(session) }
                 loadLibraries(session)
             }.onFailure(::showError)
         }
     }
 
-    fun selectLibrary(library: MediaLibrary) {
+    fun selectLibrary(library: MediaLibrary) = loadLibrary(library, autoPlay = false)
+
+    fun resumeLastFeed() {
+        val library = state.value.libraries.firstOrNull { it.id == state.value.lastFeedLibraryId } ?: return
+        loadLibrary(library, autoPlay = true)
+    }
+
+    private fun loadLibrary(library: MediaLibrary, autoPlay: Boolean) {
         val session = state.value.session ?: return
         viewModelScope.launch {
             update {
@@ -97,7 +164,20 @@ class MainViewModel(
                 )
             }
             runCatching { repository.recentVideos(session, library.id) }
-                .onSuccess { items -> update { copy(items = items, isLoading = false) } }
+                .onSuccess { loadedItems ->
+                    val feed = feedSessionStore.reconcile(session, library.id, loadedItems)
+                    val byId = loadedItems.associateBy(MediaItem::id)
+                    val orderedItems = feed.orderedItemIds.mapNotNull(byId::get)
+                    update {
+                        copy(
+                            items = orderedItems,
+                            currentIndex = feed.currentIndex,
+                            lastFeedLibraryId = library.id,
+                            isLoading = false,
+                        )
+                    }
+                    if (autoPlay && orderedItems.isNotEmpty()) playAt(feed.currentIndex)
+                }
                 .onFailure(::showError)
         }
     }
@@ -112,11 +192,56 @@ class MainViewModel(
         val session = snapshot.session ?: return
         val item = snapshot.items.getOrNull(index) ?: return
         if (
-            snapshot.screen == Screen.PLAYER &&
-            snapshot.currentIndex == index &&
+            snapshot.screen == Screen.PLAYER && snapshot.currentIndex == index &&
             (snapshot.playbackPlan?.itemId == item.id || snapshot.isLoading)
         ) return
+        snapshot.selectedLibrary?.let { feedSessionStore.markCurrent(session, it.id, item.id, index) }
+        resolvePlayback(
+            session,
+            item,
+            index,
+            item.playbackPositionTicks.embyTicksToMilliseconds(),
+            refreshAttempts = 0,
+        )
+    }
 
+    fun retryPlayback() {
+        val snapshot = state.value
+        val session = snapshot.session ?: return
+        val item = snapshot.items.getOrNull(snapshot.currentIndex) ?: return
+        resolvePlayback(session, item, snapshot.currentIndex, snapshot.playbackStartPositionMs, 0)
+    }
+
+    fun recoverPlayback(positionMs: Long, message: String) {
+        val snapshot = state.value
+        if (snapshot.playbackRefreshAttempts >= MAX_PLAYBACK_REFRESHES) {
+            update {
+                copy(
+                    playbackStartPositionMs = positionMs,
+                    isLoading = false,
+                    errorMessage = "刷新 PlaybackInfo 后仍无法播放：$message",
+                )
+            }
+            return
+        }
+        val session = snapshot.session ?: return
+        val item = snapshot.selectedItem ?: return
+        resolvePlayback(
+            session,
+            item,
+            snapshot.currentIndex,
+            positionMs,
+            snapshot.playbackRefreshAttempts + 1,
+        )
+    }
+
+    private fun resolvePlayback(
+        session: EmbySession,
+        item: MediaItem,
+        index: Int,
+        startPositionMs: Long,
+        refreshAttempts: Int,
+    ) {
         playbackRequest?.cancel()
         update {
             copy(
@@ -124,15 +249,17 @@ class MainViewModel(
                 selectedItem = item,
                 currentIndex = index,
                 playbackPlan = null,
+                playbackStartPositionMs = startPositionMs,
+                playbackRefreshAttempts = refreshAttempts,
                 isLoading = true,
-                errorMessage = null,
+                errorMessage = if (refreshAttempts > 0) "播放地址失效，正在重新解析…" else null,
             )
         }
         playbackRequest = viewModelScope.launch {
             try {
                 val plan = repository.playbackPlan(session, item.id)
                 if (state.value.selectedItem?.id == item.id) {
-                    update { copy(playbackPlan = plan, isLoading = false) }
+                    update { copy(playbackPlan = plan, isLoading = false, errorMessage = null) }
                 }
             } catch (error: CancellationException) {
                 throw error
@@ -142,16 +269,7 @@ class MainViewModel(
         }
     }
 
-    fun retryPlayback() {
-        val index = state.value.currentIndex
-        playbackRequest?.cancel()
-        update { copy(playbackPlan = null, isLoading = false) }
-        playAt(index)
-    }
-
-    fun requestDelete(item: MediaItem) {
-        update { copy(pendingDeleteItem = item, errorMessage = null) }
-    }
+    fun requestDelete(item: MediaItem) = update { copy(pendingDeleteItem = item, errorMessage = null) }
 
     fun cancelDelete() {
         if (!state.value.isDeleting) update { copy(pendingDeleteItem = null) }
@@ -169,6 +287,7 @@ class MainViewModel(
                 val removedActiveItem = snapshot.screen == Screen.PLAYER && snapshot.selectedItem?.id == item.id
                 val remaining = snapshot.items.filterNot { it.id == item.id }
                 val nextIndex = snapshot.currentIndex.coerceAtMost((remaining.size - 1).coerceAtLeast(0))
+                snapshot.selectedLibrary?.let { feedSessionStore.removeItem(session, it.id, item.id) }
                 if (removedActiveItem) playbackRequest?.cancel()
                 update {
                     copy(
@@ -199,47 +318,67 @@ class MainViewModel(
 
     fun back() {
         playbackRequest?.cancel()
-        update {
-            when (screen) {
-                Screen.PLAYER -> copy(
+        when (state.value.screen) {
+            Screen.LOGIN -> if (state.value.savedSessions.isNotEmpty()) showServers()
+            Screen.PLAYER -> update {
+                copy(
                     screen = Screen.ITEMS,
                     playbackPlan = null,
                     selectedItem = null,
                     isLoading = false,
                     errorMessage = null,
                 )
-                Screen.ITEMS -> copy(screen = Screen.LIBRARIES, selectedLibrary = null, items = emptyList())
-                else -> this
             }
+            Screen.ITEMS -> update {
+                copy(screen = Screen.LIBRARIES, selectedLibrary = null, items = emptyList())
+            }
+            Screen.LIBRARIES -> showServers()
+            Screen.SERVERS -> Unit
         }
     }
 
     fun logout() {
         playbackRequest?.cancel()
         deleteRequest?.cancel()
-        val session = state.value.session
-        sessionStore.clear()
-        mutableState.value = MainUiState(serverUrl = session?.serverUrl.orEmpty())
-        if (session != null) {
-            viewModelScope.launch { runCatching { repository.logout(session) } }
+        val session = state.value.session ?: return
+        sessionStore.remove(session)
+        val remaining = sessionStore.loadAll()
+        mutableState.value = MainUiState(
+            screen = if (remaining.isEmpty()) Screen.LOGIN else Screen.SERVERS,
+            savedSessions = remaining,
+        )
+        viewModelScope.launch {
+            playbackOutbox.discard(session)
+            runCatching { repository.logout(session) }
         }
     }
 
-    private fun restoreSession(session: EmbySession) {
+    private fun restoreSession(session: EmbySession, saved: List<EmbySession>) {
         mutableState.value = MainUiState(
             screen = Screen.LIBRARIES,
             serverUrl = session.serverUrl,
             userName = session.userName,
             allowInsecureHttp = session.allowInsecureHttp,
+            savedSessions = saved,
             session = session,
             isLoading = true,
         )
+        viewModelScope.launch { playbackOutbox.flush(session) }
         viewModelScope.launch { loadLibraries(session) }
     }
 
     private suspend fun loadLibraries(session: EmbySession) {
         runCatching { repository.libraries(session) }
-            .onSuccess { libraries -> update { copy(libraries = libraries, isLoading = false) } }
+            .onSuccess { libraries ->
+                val lastFeed = feedSessionStore.lastFor(session)
+                update {
+                    copy(
+                        libraries = libraries,
+                        lastFeedLibraryId = lastFeed?.libraryId?.takeIf { id -> libraries.any { it.id == id } },
+                        isLoading = false,
+                    )
+                }
+            }
             .onFailure(::showError)
     }
 
@@ -250,11 +389,18 @@ class MainViewModel(
     private fun update(transform: MainUiState.() -> MainUiState) = mutableState.update(transform)
 
     companion object {
+        private const val MAX_PLAYBACK_REFRESHES = 1
+
         fun factory(container: AppContainer): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                    MainViewModel(container.embyRepository, container.sessionStore) as T
+                    MainViewModel(
+                        container.embyRepository,
+                        container.sessionStore,
+                        container.feedSessionStore,
+                        container.playbackOutbox,
+                    ) as T
             }
     }
 }

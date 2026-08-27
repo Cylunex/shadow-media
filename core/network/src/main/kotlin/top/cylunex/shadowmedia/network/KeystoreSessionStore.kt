@@ -11,6 +11,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import top.cylunex.shadowmedia.model.EmbySession
 
 class KeystoreSessionStore(
@@ -19,32 +20,82 @@ class KeystoreSessionStore(
 ) : SessionStore {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
-    override fun load(): EmbySession? = runCatching {
-        val encoded = preferences.getString(KEY_PAYLOAD, null) ?: return null
+    @Synchronized
+    override fun load(): EmbySession? {
+        val stored = readStored()
+        return stored.sessions.firstOrNull { it.sessionKey == stored.activeSessionKey }?.toDomain()
+            ?: stored.sessions.firstOrNull()?.toDomain()
+    }
+
+    @Synchronized
+    override fun loadAll(): List<EmbySession> = readStored().sessions.map { it.toDomain() }
+
+    @Synchronized
+    override fun save(session: EmbySession) {
+        val current = readStored()
+        val next = current.sessions.filterNot { it.sessionKey == session.sessionKey } + session.toStored()
+        writeStored(StoredSessionsDto(activeSessionKey = session.sessionKey, sessions = next))
+    }
+
+    @Synchronized
+    override fun select(session: EmbySession): Boolean {
+        val current = readStored()
+        if (current.sessions.none { it.sessionKey == session.sessionKey }) return false
+        writeStored(current.copy(activeSessionKey = session.sessionKey))
+        return true
+    }
+
+    @Synchronized
+    override fun remove(session: EmbySession) {
+        val current = readStored()
+        val remaining = current.sessions.filterNot { it.sessionKey == session.sessionKey }
+        val activeKey = current.activeSessionKey
+            ?.takeUnless { it == session.sessionKey }
+            ?.takeIf { key -> remaining.any { it.sessionKey == key } }
+            ?: remaining.firstOrNull()?.sessionKey
+        if (remaining.isEmpty()) clearAll() else writeStored(
+            StoredSessionsDto(activeSessionKey = activeKey, sessions = remaining)
+        )
+    }
+
+    @Synchronized
+    override fun clearAll() {
+        preferences.edit().remove(KEY_PAYLOAD).commit()
+    }
+
+    private fun readStored(): StoredSessionsDto = runCatching {
+        val encoded = preferences.getString(KEY_PAYLOAD, null) ?: return StoredSessionsDto()
         val bytes = Base64.decode(encoded, Base64.NO_WRAP)
         require(bytes.size > IV_SIZE) { "Invalid encrypted session" }
-        val iv = bytes.copyOfRange(0, IV_SIZE)
-        val encrypted = bytes.copyOfRange(IV_SIZE, bytes.size)
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(TAG_BITS, iv))
-        val stored = json.decodeFromString<StoredSessionDto>(cipher.doFinal(encrypted).decodeToString())
-        stored.toDomain()
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            secretKey(),
+            GCMParameterSpec(TAG_BITS, bytes.copyOfRange(0, IV_SIZE)),
+        )
+        val plaintext = cipher.doFinal(bytes.copyOfRange(IV_SIZE, bytes.size)).decodeToString()
+        val element = json.parseToJsonElement(plaintext).jsonObject
+        if ("sessions" in element) {
+            json.decodeFromString<StoredSessionsDto>(plaintext)
+        } else {
+            val legacy = json.decodeFromString<StoredSessionDto>(plaintext)
+            StoredSessionsDto(legacy.sessionKey, listOf(legacy)).also(::writeStored)
+        }
     }.getOrElse {
-        clear()
-        null
+        preferences.edit().remove(KEY_PAYLOAD).commit()
+        StoredSessionsDto()
     }
 
-    override fun save(session: EmbySession) {
+    private fun writeStored(stored: StoredSessionsDto) {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
-        val plaintext = json.encodeToString(session.toStored()).encodeToByteArray()
-        val encrypted = cipher.doFinal(plaintext)
+        val encrypted = cipher.doFinal(json.encodeToString(stored).encodeToByteArray())
         val payload = cipher.iv + encrypted
-        preferences.edit().putString(KEY_PAYLOAD, Base64.encodeToString(payload, Base64.NO_WRAP)).apply()
-    }
-
-    override fun clear() {
-        preferences.edit().remove(KEY_PAYLOAD).apply()
+        check(
+            preferences.edit()
+                .putString(KEY_PAYLOAD, Base64.encodeToString(payload, Base64.NO_WRAP))
+                .commit()
+        ) { "无法保存 Emby 登录信息" }
     }
 
     private fun secretKey(): SecretKey {
@@ -64,6 +115,9 @@ class KeystoreSessionStore(
             generateKey()
         }
     }
+
+    private val EmbySession.sessionKey: String get() = "$serverUrl|$serverId|$userId"
+    private val StoredSessionDto.sessionKey: String get() = "$serverUrl|$serverId|$userId"
 
     private fun EmbySession.toStored() = StoredSessionDto(
         serverUrl, serverId, userId, userName, accessToken, allowInsecureHttp

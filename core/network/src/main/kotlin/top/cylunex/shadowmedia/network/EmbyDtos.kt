@@ -137,3 +137,26 @@ internal data class StoredSessionDto(
     val accessToken: String,
     val allowInsecureHttp: Boolean,
 )
+
+@Serializable
+internal data class StoredSessionsDto(
+    val activeSessionKey: String? = null,
+    val sessions: List<StoredSessionDto> = emptyList(),
+)
+
+@Serializable
+internal data class PlaybackOutboxRecordDto(
+    val serverUrl: String,
+    val serverId: String,
+    val userId: String,
+    val itemId: String,
+    val mediaSourceId: String,
+    val playSessionId: String,
+    val positionTicks: Long,
+    val isPaused: Boolean,
+    val canSeek: Boolean,
+    val event: String,
+    val playMethod: String,
+    val createdAtEpochMs: Long,
+    val retryCount: Int = 0,
+)

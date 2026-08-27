@@ -3,22 +3,25 @@
 ## M0：可播放 MVP（当前）
 
 - [x] Emby 地址、用户名和密码登录
-- [x] Keystore 加密会话恢复
+- [x] Keystore 加密的多服务器/多用户会话、切换与旧数据迁移
 - [x] 远端分页获取媒体库全部视频
 - [x] PlaybackInfo → Direct Play / DirectStream → Transcode 候选链
 - [x] DirectStreamUrl 缺失时的标准静态流兜底
 - [x] ISO/DVD 镜像强制 HLS 转码与服务端 Seek
 - [x] Media3 Compose Material 3 Player
 - [x] Playing / 每 10 秒 Progress / Pause / Unpause / Stopped
+- [x] 持久化播放进度 Outbox 与按服务器补报
 - [x] 302 跨 origin Token 隔离
 - [x] 基础播放诊断
 - [ ] 真实设备兼容性矩阵与抓包验证
-- [ ] 401/403、网络切换、长暂停的 PlaybackInfo 刷新状态机
+- [x] 候选耗尽后刷新一次 PlaybackInfo 并从原位置恢复
+- [ ] ConnectivityManager 网络恢复与长暂停主动刷新
 - [ ] 音轨、内嵌字幕与外挂字幕选择
 
 ## M1：刷片 Feed
 
 - [x] VerticalPager 与单活跃播放器页面驻留策略
+- [x] 按服务器/用户/媒体库隔离的稳定 FeedSession 与上次位置恢复
 - [ ] PlayerPool(3) + rememberPooledPlayer
 - [ ] DefaultPreloadManager 共享 Builder
 - [ ] 仅解析当前与后续 1–2 项播放地址

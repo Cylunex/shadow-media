@@ -218,9 +218,9 @@ class DefaultEmbyRepository(
         }
         val url = EmbyEndpoints.endpoint(session.serverUrl, *endpoint)
         val dto = PlaybackReportDto(
-            itemId = report.plan.itemId,
-            mediaSourceId = report.plan.mediaSourceId,
-            playSessionId = report.plan.playSessionId,
+            itemId = report.itemId,
+            mediaSourceId = report.mediaSourceId,
+            playSessionId = report.playSessionId,
             positionTicks = report.positionTicks,
             canSeek = report.canSeek,
             isPaused = report.isPaused,
@@ -233,7 +233,7 @@ class DefaultEmbyRepository(
             val cleanupUrl = EmbyEndpoints.endpoint(session.serverUrl, "Videos", "ActiveEncodings")
                 .newBuilder()
                 .addQueryParameter("DeviceId", clientIdentity.deviceId)
-                .addQueryParameter("PlaySessionId", report.plan.playSessionId)
+                .addQueryParameter("PlaySessionId", report.playSessionId)
                 .build()
             runCatching { executeEmpty(authenticatedRequest(session, cleanupUrl).delete().build()) }
         }

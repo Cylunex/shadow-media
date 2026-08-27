@@ -15,18 +15,30 @@ data class LoginRequest(
 )
 
 data class PlaybackReport(
-    val plan: PlaybackPlan,
+    val itemId: String,
+    val mediaSourceId: String,
+    val playSessionId: String,
     val positionTicks: Long,
     val isPaused: Boolean,
     val canSeek: Boolean = true,
     val event: PlaybackEvent,
-    val playMethod: PlayMethod = plan.primary.method,
+    val playMethod: PlayMethod,
 )
+
+interface PlaybackOutbox {
+    val pendingCount: kotlinx.coroutines.flow.StateFlow<Int>
+    suspend fun submit(session: EmbySession, report: PlaybackReport)
+    suspend fun flush(session: EmbySession)
+    suspend fun discard(session: EmbySession)
+}
 
 interface SessionStore {
     fun load(): EmbySession?
+    fun loadAll(): List<EmbySession>
     fun save(session: EmbySession)
-    fun clear()
+    fun select(session: EmbySession): Boolean
+    fun remove(session: EmbySession)
+    fun clearAll()
 }
 
 interface EmbyRepository {

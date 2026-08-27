@@ -17,10 +17,11 @@ Compose UI
 MainViewModel
    │
    ├── EmbyRepository ── OkHttp ── Emby REST API
+   ├── FeedSessionStore ── 每服/用户/媒体库的稳定顺序与当前位置
    │
    └── PlaybackRuntime ── Media3 ── Emby / MediaWarp / CDN
                               │
-                              └── EmbyRepository playback reports
+                              └── PlaybackOutbox ── EmbyRepository playback reports
 ```
 
 - `core:model` 不依赖 Android，保存跨层稳定模型。
@@ -63,9 +64,11 @@ MainViewModel
 - <https://dev.emby.media/reference/RestAPI/MediaInfoService/postItemsByIdPlaybackinfo.html>
 - <https://dev.emby.media/doc/restapi/Playback-Check-ins.html>
 
-当前回退覆盖同一次 PlaybackInfo 返回的直连 → 转码候选。401/403、网络切换和长时间暂停后重新
-请求 PlaybackInfo 会在兼容性验证阶段加入，此时需要把播放器错误、ConnectivityManager 和应用
-前后台恢复统一接入一个恢复状态机。
+当前先遍历同一次 PlaybackInfo 返回的直连 → 转码候选；候选全部失败后自动重新请求一次
+PlaybackInfo，并从失败位置恢复。一次刷新仍失败就停止自动循环并显示诊断，避免错误链路无限重试。
+
+Playing/Progress/Stopped 先写入持久化 Outbox，再尝试发送。记录只包含服务器/用户 ID、媒体 ID、
+播放会话 ID、位置和事件，不包含 Access Token 或播放 URL；切回对应服务器时会顺序补报。
 
 ## Feed 播放策略
 
@@ -90,6 +93,9 @@ VerticalPager
 当前数据层通过 Emby `StartIndex + Limit` 远端分页，循环读取到 `TotalRecordCount`，因此媒体库内容
 不设条数上限。它暂时仍一次性保存于内存；需要增量渲染、排重和失败记录时，再引入 Room、
 PagingSource 和本地单一事实源。
+
+FeedSession 按 `serverId + userId + libraryId` 隔离。重新进入媒体库时保留仍存在条目的原有顺序，
+把新条目追加到尾部，并恢复上次停留位置；删除条目时同步从 FeedSession 移除。
 
 ISO/DVD 镜像不属于 Media3 可直接播放的媒体容器。解析器识别 `VideoType=Iso` 或 `container=iso`
 后跳过静态直链，构造 Emby `/Videos/{id}/master.m3u8` HLS 转码候选。转码 Seek 通过更新

@@ -59,6 +59,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import top.cylunex.shadowmedia.model.MediaItem
 import top.cylunex.shadowmedia.model.MediaLibrary
+import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.PlaybackPlan
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
 import top.cylunex.shadowmedia.playback.PlaybackRuntime
@@ -68,6 +69,7 @@ fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     Surface(Modifier.fillMaxSize()) {
         when (state.screen) {
+            Screen.SERVERS -> ServerScreen(state, viewModel)
             Screen.LOGIN -> LoginScreen(state, viewModel)
             Screen.LIBRARIES -> LibraryScreen(state, viewModel)
             Screen.ITEMS -> ItemScreen(state, viewModel)
@@ -82,11 +84,41 @@ fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
                 onDismiss = viewModel::cancelDelete,
             )
         }
+        state.pendingRemoveSession?.let { session ->
+            RemoveServerConfirmationDialog(
+                session = session,
+                onConfirm = viewModel::confirmRemoveServer,
+                onDismiss = viewModel::cancelRemoveServer,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ServerScreen(state: MainUiState, viewModel: MainViewModel) {
+    ContentListHeader(
+        title = "Emby 服务器",
+        subtitle = "登录信息按服务器和用户隔离保存",
+        actionText = "添加",
+        onAction = viewModel::addServer,
+    )
+    LazyColumn(Modifier.fillMaxSize().padding(top = 88.dp)) {
+        items(state.savedSessions, key = { "${it.serverUrl}:${it.serverId}:${it.userId}" }) { session ->
+            ListCard(
+                title = session.userName,
+                subtitle = session.serverUrl,
+                onClick = { viewModel.selectServer(session) },
+                onDelete = { viewModel.requestRemoveServer(session) },
+                deleteText = "移除",
+            )
+        }
+        item { ErrorText(state.errorMessage, Modifier.padding(16.dp)) }
     }
 }
 
 @Composable
 private fun LoginScreen(state: MainUiState, viewModel: MainViewModel) {
+    if (state.savedSessions.isNotEmpty()) BackHandler(onBack = viewModel::back)
     Column(
         modifier = Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp),
         verticalArrangement = Arrangement.Center,
@@ -130,18 +162,32 @@ private fun LoginScreen(state: MainUiState, viewModel: MainViewModel) {
             enabled = !state.isLoading,
             modifier = Modifier.fillMaxWidth(),
         ) { Text("登录") }
+        if (state.savedSessions.isNotEmpty()) {
+            TextButton(onClick = viewModel::showServers, modifier = Modifier.fillMaxWidth()) {
+                Text("返回服务器列表")
+            }
+        }
     }
 }
 
 @Composable
 private fun LibraryScreen(state: MainUiState, viewModel: MainViewModel) {
+    BackHandler(onBack = viewModel::back)
     ContentListHeader(
         title = "选择媒体库",
         subtitle = "${state.session?.userName.orEmpty()} · ${state.session?.serverUrl.orEmpty()}",
-        actionText = "退出登录",
-        onAction = viewModel::logout,
+        actionText = "服务器",
+        onAction = viewModel::showServers,
     )
     LazyColumn(Modifier.fillMaxSize().padding(top = 88.dp)) {
+        if (state.lastFeedLibraryId != null) {
+            item {
+                OutlinedButton(
+                    onClick = viewModel::resumeLastFeed,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                ) { Text("继续上次刷片") }
+            }
+        }
         items(state.libraries, key = MediaLibrary::id) { library ->
             ListCard(
                 title = library.name,
@@ -166,6 +212,14 @@ private fun ItemScreen(state: MainUiState, viewModel: MainViewModel) {
         onAction = viewModel::back,
     )
     LazyColumn(Modifier.fillMaxSize().padding(top = 88.dp)) {
+        if (state.items.isNotEmpty()) {
+            item {
+                OutlinedButton(
+                    onClick = { viewModel.playAt(state.currentIndex) },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                ) { Text("从第 ${state.currentIndex + 1} 条继续刷片") }
+            }
+        }
         items(state.items, key = MediaItem::id) { item ->
             val progress = item.playbackPositionTicks.takeIf { it > 0 }?.let {
                 " · 续播 ${formatDuration(it.embyTicksToMilliseconds())}"
@@ -218,6 +272,7 @@ private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: 
             container = container,
             onBack = viewModel::back,
             onRetry = viewModel::retryPlayback,
+            onTerminalError = viewModel::recoverPlayback,
             onDelete = { viewModel.requestDelete(item) },
         )
     }
@@ -236,11 +291,12 @@ private fun FeedPage(
     container: AppContainer,
     onBack: () -> Unit,
     onRetry: () -> Unit,
+    onTerminalError: (Long, String) -> Unit,
     onDelete: () -> Unit,
 ) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (isActive && plan != null) {
-            ActivePlayer(state, item, plan, container, onRetry)
+            ActivePlayer(state, item, plan, container, onRetry, onTerminalError)
         } else if (isActive) {
             FeedPlaceholder(isLoading, errorMessage, onRetry)
         }
@@ -297,6 +353,7 @@ private fun ActivePlayer(
     plan: PlaybackPlan,
     container: AppContainer,
     onRetry: () -> Unit,
+    onTerminalError: (Long, String) -> Unit,
 ) {
     val session = requireNotNull(state.session)
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -306,12 +363,14 @@ private fun ActivePlayer(
             context = context,
             session = session,
             plan = plan,
-            repository = container.embyRepository,
+            playbackOutbox = container.playbackOutbox,
             clientIdentity = container.clientIdentity,
-            startPositionMs = item.playbackPositionTicks.embyTicksToMilliseconds(),
+            startPositionMs = state.playbackStartPositionMs,
+            onTerminalError = onTerminalError,
         )
     }
     val diagnostics by runtime.diagnostics.collectAsStateWithLifecycle()
+    val pendingReports by container.playbackOutbox.pendingCount.collectAsStateWithLifecycle()
     var showDiagnostics by remember(runtime) { mutableStateOf(false) }
 
     DisposableEffect(runtime, lifecycleOwner) {
@@ -356,6 +415,7 @@ private fun ActivePlayer(
                             "${diagnostics.videoCodec ?: "?"} / ${diagnostics.audioCodec ?: "?"} · " +
                             "链路 ${diagnostics.candidateIndex + 1}/${diagnostics.candidateCount}"
                     )
+                    Text("进度同步队列：$pendingReports")
                     Text(
                         "媒体源 ${diagnostics.sourceCount} · " +
                             "DP ${diagnostics.supportsDirectPlay.asFlag()} · " +
@@ -496,6 +556,7 @@ private fun ListCard(
     subtitle: String,
     onClick: () -> Unit,
     onDelete: (() -> Unit)? = null,
+    deleteText: String = "删除",
 ) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).clickable(onClick = onClick).padding(16.dp)) {
@@ -504,7 +565,7 @@ private fun ListCard(
         }
         onDelete?.let {
             TextButton(onClick = it, modifier = Modifier.padding(end = 8.dp)) {
-                Text("删除", color = MaterialTheme.colorScheme.error)
+                Text(deleteText, color = MaterialTheme.colorScheme.error)
             }
         }
     }
@@ -535,6 +596,27 @@ private fun DeleteConfirmationDialog(
         dismissButton = {
             TextButton(onClick = onDismiss, enabled = !isDeleting) { Text("取消") }
         },
+    )
+}
+
+@Composable
+private fun RemoveServerConfirmationDialog(
+    session: EmbySession,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("移除服务器登录？") },
+        text = {
+            Text("将移除 ${session.userName} 在 ${session.serverUrl} 的本地登录信息，不会删除媒体文件。")
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("确认移除", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
 
