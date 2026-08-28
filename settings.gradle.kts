@@ -22,5 +22,7 @@ dependencyResolutionManagement {
 rootProject.name = "shadow-media"
 include(":app")
 include(":core:model")
+include(":core:provider")
+include(":core:database")
 include(":core:network")
 include(":core:playback")

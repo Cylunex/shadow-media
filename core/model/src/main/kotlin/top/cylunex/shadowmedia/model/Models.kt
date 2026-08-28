@@ -126,6 +126,101 @@ enum class PlayMethod {
     TRANSCODE,
 }
 
+enum class ProviderKind {
+    EMBY,
+    JELLYFIN,
+    PLEX,
+    LIVE_PLAYLIST,
+    XTREAM,
+    STALKER,
+    STREMIO,
+    DECLARATIVE_HTTP,
+    CATVOD_BRIDGE,
+    WEBDAV,
+    VIRTUAL_CHANNEL,
+}
+
+enum class ProviderCapability {
+    HOME,
+    BROWSE,
+    SEARCH,
+    DETAIL,
+    PLAYBACK,
+    LIVE,
+    EPG,
+    CATCH_UP,
+    DOWNLOAD,
+    FAVORITE_SYNC,
+    PROGRESS_SYNC,
+    SUBTITLES,
+}
+
+data class ProviderDescriptor(
+    val id: String,
+    val name: String,
+    val kind: ProviderKind,
+    val capabilities: Set<ProviderCapability>,
+    val enabled: Boolean = true,
+)
+
+data class MediaKey(
+    val providerId: String,
+    val itemId: String,
+) {
+    val stableId: String get() = "$providerId:$itemId"
+}
+
+data class UnifiedMediaItem(
+    val key: MediaKey,
+    val title: String,
+    val type: String,
+    val subtitle: String? = null,
+    val overview: String? = null,
+    val posterUrl: String? = null,
+    val backdropUrl: String? = null,
+    val year: Int? = null,
+    val rating: Double? = null,
+    val durationMs: Long? = null,
+    val progressMs: Long = 0,
+    val played: Boolean = false,
+    val favorite: Boolean = false,
+    val externalIds: Map<String, String> = emptyMap(),
+)
+
+data class UnifiedMediaPage(
+    val items: List<UnifiedMediaItem>,
+    val nextPageToken: String? = null,
+    val totalCount: Int? = null,
+)
+
+data class MediaDetail(
+    val item: UnifiedMediaItem,
+    val children: List<UnifiedMediaItem> = emptyList(),
+    val related: List<UnifiedMediaItem> = emptyList(),
+    val genres: List<String> = emptyList(),
+    val people: List<String> = emptyList(),
+)
+
+data class UnifiedPlaybackRequest(
+    val key: MediaKey,
+    val startPositionMs: Long = 0,
+    val preferredAudioLanguage: String? = null,
+    val preferredSubtitleLanguage: String? = null,
+)
+
+enum class FeatureId(val defaultEnabled: Boolean) {
+    LIVE_CENTER(true),
+    AGGREGATE_SEARCH(true),
+    EXTERNAL_PROVIDERS(true),
+    VIRTUAL_CHANNELS(true),
+    MEDIA_REQUESTS(true),
+    PLAYBACK_TELEMETRY(true),
+    MEDIA_MOMENTS(true),
+    SEMANTIC_SEARCH(false),
+    WATCH_PARTY(false),
+    LABS(false),
+}
+
 data class PlaybackCandidate(
     val url: String,
     val method: PlayMethod,

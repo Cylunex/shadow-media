@@ -2,7 +2,12 @@ package top.cylunex.shadowmedia
 
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.app.Activity
+import android.app.PictureInPictureParams
+import android.content.Context
+import android.content.ContextWrapper
 import android.net.Uri
+import android.util.Rational
 import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -31,6 +36,11 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,6 +54,7 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
@@ -116,6 +127,7 @@ import top.cylunex.shadowmedia.ui.LocalEmbyImageLoader
 import top.cylunex.shadowmedia.ui.MediaPosterCard
 import top.cylunex.shadowmedia.ui.PlayerTopBar
 import top.cylunex.shadowmedia.ui.ScreenHeader
+import top.cylunex.shadowmedia.ui.ShadowBackdrop
 import top.cylunex.shadowmedia.ui.ServerCard
 import top.cylunex.shadowmedia.ui.rememberEmbyImageLoader
 
@@ -124,8 +136,13 @@ fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val imageLoader = rememberEmbyImageLoader(state.session, container.clientIdentity)
     CompositionLocalProvider(LocalEmbyImageLoader provides imageLoader) {
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            when (state.screen) {
+        ShadowBackdrop(Modifier.fillMaxSize()) {
+            AnimatedContent(
+                targetState = state.screen,
+                transitionSpec = { fadeIn(tween(360)) togetherWith fadeOut(tween(180)) },
+                label = "shadow-screen",
+            ) { screen ->
+            when (screen) {
                 Screen.SERVERS -> ServerScreen(state, viewModel)
                 Screen.LOGIN -> LoginScreen(state, viewModel)
                 Screen.HOME -> MediaHomeScreen(state, viewModel)
@@ -134,9 +151,10 @@ fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
                 Screen.DETAIL -> SeriesDetailScreen(state, viewModel)
                 Screen.SOURCES -> ExternalSourcesScreen(state, viewModel)
                 Screen.EXTERNAL_ITEMS -> ExternalItemsScreen(state, viewModel)
-                Screen.EXTERNAL_PLAYER -> ExternalPlayerScreen(state, viewModel)
+                Screen.EXTERNAL_PLAYER -> ExternalPlayerScreen(state, viewModel, container)
+                Screen.SETTINGS -> SettingsScreen(viewModel)
                 Screen.PLAYER -> FeedScreen(state, viewModel, container)
-            }
+            }}
             if (state.isLoading && state.screen != Screen.PLAYER && state.screen != Screen.EXTERNAL_PLAYER) {
                 LoadingOverlay()
             }
@@ -160,7 +178,7 @@ fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
 }
 
 @Composable
-private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel) {
+private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, container: AppContainer) {
     BackHandler(onBack = viewModel::back)
     val entry = state.selectedExternalEntry
     if (entry == null) {
@@ -182,6 +200,11 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel) {
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            container.recordExternalHistory(
+                entry,
+                runtime.player.currentPosition.coerceAtLeast(0L),
+                runtime.player.duration.takeIf { it > 0 },
+            )
             runtime.close()
         }
     }
@@ -913,6 +936,8 @@ private fun ActivePlayer(
             playbackOutbox = container.playbackOutbox,
             clientIdentity = container.clientIdentity,
             startPositionMs = state.playbackStartPositionMs,
+            mediaTitle = item.name,
+            telemetrySink = container.playbackTelemetry,
             onTerminalError = onTerminalError,
         )
     }
@@ -938,6 +963,7 @@ private fun ActivePlayer(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            container.recordEmbyHistory(session, item, runtime.currentPositionMs, runtime.durationMs)
             runtime.close()
         }
     }
@@ -1001,6 +1027,8 @@ private fun PlaybackControls(
     modifier: Modifier = Modifier,
 ) {
     val player = runtime.player
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val tracks by runtime.tracks.collectAsStateWithLifecycle()
     var positionMs by remember(player) { mutableLongStateOf(0L) }
     var durationMs by remember(player) { mutableLongStateOf(0L) }
     var isPlaying by remember(player) { mutableStateOf(false) }
@@ -1065,6 +1093,31 @@ private fun PlaybackControls(
                 Icon(if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null)
                 Spacer(Modifier.size(6.dp))
                 Text(if (isPlaying) "暂停" else "播放")
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (tracks.audioTracks.size > 1) {
+                TextButton(onClick = runtime::nextAudioTrack) {
+                    Icon(Icons.Rounded.Headphones, null)
+                    Spacer(Modifier.size(6.dp))
+                    Text(tracks.audioTracks.getOrNull(tracks.selectedAudioIndex) ?: "音轨")
+                }
+            }
+            if (tracks.subtitleTracks.isNotEmpty()) {
+                TextButton(onClick = runtime::nextSubtitleTrack) {
+                    Icon(Icons.Rounded.Subtitles, null)
+                    Spacer(Modifier.size(6.dp))
+                    Text(tracks.subtitleTracks.getOrNull(tracks.selectedSubtitleIndex) ?: "字幕关闭")
+                }
+            }
+            TextButton(onClick = { context.enterShadowPictureInPicture() }) {
+                Icon(Icons.Rounded.PictureInPictureAlt, null)
+                Spacer(Modifier.size(6.dp))
+                Text("画中画")
             }
         }
     }
@@ -1200,6 +1253,21 @@ private fun formatBytes(bytes: Long): String = when {
 }
 
 private fun Boolean.asFlag(): String = if (this) "是" else "否"
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+private fun Context.enterShadowPictureInPicture() {
+    val activity = findActivity() ?: return
+    activity.enterPictureInPictureMode(
+        PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+            .build()
+    )
+}
 
 private fun MediaFilter.label(): String = when (this) {
     MediaFilter.ALL -> "全部"

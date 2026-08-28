@@ -56,34 +56,47 @@ fun ScreenHeader(
     onAction: () -> Unit,
     actionIsAdd: Boolean = false,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
-        verticalAlignment = Alignment.Bottom,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Column(Modifier.weight(1f)) {
+    Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 22.dp)) {
+        Text(
+            "SHADOW / MEDIA",
+            modifier = Modifier.align(Alignment.TopEnd),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
+            style = MaterialTheme.typography.headlineLarge,
+            fontWeight = FontWeight.Black,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
             Text(
-                "SHADOW · EMBY",
+                "PRIVATE CINEMA / CONNECTED",
                 color = MaterialTheme.colorScheme.primary,
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
             )
-            Spacer(Modifier.height(4.dp))
-            Text(title, style = MaterialTheme.typography.headlineMedium)
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(8.dp))
+            Text(title.withoutEmoji(), style = MaterialTheme.typography.headlineLarge)
+            Spacer(Modifier.height(7.dp))
             Text(
-                subtitle,
+                subtitle.withoutEmoji(),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-        }
-        FilledTonalIconButton(onClick = onAction, modifier = Modifier.size(48.dp)) {
-            Icon(
-                if (actionIsAdd) Icons.Rounded.Add else Icons.Rounded.Storage,
-                contentDescription = actionLabel,
+            Spacer(Modifier.height(13.dp))
+            Box(
+                Modifier.fillMaxWidth(0.24f).height(2.dp).background(MaterialTheme.colorScheme.primary)
             )
+            }
+            FilledTonalIconButton(onClick = onAction, modifier = Modifier.size(54.dp)) {
+                Icon(
+                    if (actionIsAdd) Icons.Rounded.Add else Icons.Rounded.Storage,
+                    contentDescription = actionLabel,
+                )
+            }
         }
     }
 }
@@ -112,14 +125,14 @@ fun ServerCard(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Text(
-                        session.userName.firstOrNull()?.uppercase() ?: "S",
+                        session.userName.withoutEmoji().firstOrNull()?.uppercase() ?: "S",
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                         style = MaterialTheme.typography.titleLarge,
                     )
                 }
             }
             Column(Modifier.weight(1f)) {
-                Text(session.userName, style = MaterialTheme.typography.titleMedium)
+                Text(session.userName.withoutEmoji(), style = MaterialTheme.typography.titleMedium)
                 Text(
                     session.serverUrl,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -153,14 +166,14 @@ fun ContinueFeedCard(currentIndex: Int, onClick: () -> Unit) {
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.92f)),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(18.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary) {
+            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.11f)) {
                 Icon(
                     Icons.Rounded.PlayArrow,
                     contentDescription = null,
@@ -169,14 +182,14 @@ fun ContinueFeedCard(currentIndex: Int, onClick: () -> Unit) {
                 )
             }
             Column(Modifier.weight(1f)) {
-                Text("继续刷片", style = MaterialTheme.typography.titleMedium)
+                Text("继续刷片", color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.titleLarge)
                 Text(
                     "从第 ${currentIndex + 1} 条接着看",
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
+                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.68f),
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
-            Text("继续", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+            Text("PLAY", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Black)
         }
     }
 }
@@ -202,7 +215,7 @@ fun LibraryCard(session: EmbySession?, library: MediaLibrary, onClick: () -> Uni
                 Icon(Icons.Rounded.Dns, contentDescription = null, tint = Color.White.copy(alpha = 0.78f))
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    library.name,
+                    library.name.withoutEmoji(),
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 2,
@@ -289,7 +302,7 @@ fun MediaPosterCard(
             }
         }
         Spacer(Modifier.height(9.dp))
-        Text(item.name, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(item.name.withoutEmoji(), style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Text(
             episodeLabel,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -352,7 +365,7 @@ fun EmptyStatePanel(message: String, modifier: Modifier = Modifier) {
                     modifier = Modifier.padding(14.dp).size(28.dp),
                 )
             }
-            Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(message.withoutEmoji(), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

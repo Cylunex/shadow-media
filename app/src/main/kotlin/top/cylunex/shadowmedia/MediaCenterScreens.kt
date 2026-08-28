@@ -39,6 +39,7 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.LiveTv
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.Button
@@ -79,6 +80,7 @@ import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
 import top.cylunex.shadowmedia.ui.EmbyArtwork
 import top.cylunex.shadowmedia.ui.EmptyStatePanel
 import top.cylunex.shadowmedia.ui.MediaPosterCard
+import top.cylunex.shadowmedia.ui.withoutEmoji
 import top.cylunex.shadowmedia.ui.ScreenHeader
 
 @Composable
@@ -103,6 +105,7 @@ internal fun MediaHomeScreen(state: MainUiState, viewModel: MainViewModel) {
                 sourceCount = state.externalSources.size,
                 onLibraries = viewModel::showLibraries,
                 onSources = viewModel::showSources,
+                onSettings = viewModel::showSettings,
             )
         }
         if (state.homeSections.isEmpty() && !state.isLoading) {
@@ -139,6 +142,7 @@ private fun MediaHubActions(
     sourceCount: Int,
     onLibraries: () -> Unit,
     onSources: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 20.dp),
@@ -149,6 +153,13 @@ private fun MediaHubActions(
             subtitle = "$libraryCount 个片库",
             icon = { Icon(Icons.Rounded.VideoLibrary, null) },
             onClick = onLibraries,
+            modifier = Modifier.weight(1f),
+        )
+        HubActionCard(
+            title = "控制台",
+            subtitle = "功能与诊断",
+            icon = { Icon(Icons.Rounded.Tune, null) },
+            onClick = onSettings,
             modifier = Modifier.weight(1f),
         )
         HubActionCard(
@@ -289,7 +300,7 @@ internal fun SeriesDetailScreen(state: MainUiState, viewModel: MainViewModel) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             ScreenHeader(
                 title = series?.name ?: "详情",
-                subtitle = listOfNotNull(series?.productionYear?.toString(), series?.communityRating?.let { "★ %.1f".format(it) })
+                subtitle = listOfNotNull(series?.productionYear?.toString(), series?.communityRating?.let { "评分 %.1f".format(it) })
                     .joinToString(" · ").ifBlank { "剧集与播放进度" },
                 actionLabel = "返回封面墙",
                 onAction = viewModel::back,
@@ -469,7 +480,7 @@ private fun ExternalSourceCard(
                 )
             }
             Column(Modifier.weight(1f)) {
-                Text(source.name, style = MaterialTheme.typography.titleMedium)
+                Text(source.name.withoutEmoji(), style = MaterialTheme.typography.titleMedium)
                 Text(
                     source.url,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -574,9 +585,9 @@ private fun ExternalMediaEntryCard(entry: ExternalMediaEntry, onPlay: () -> Unit
                 Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.padding(12.dp).size(24.dp))
             }
             Column(Modifier.weight(1f)) {
-                Text(entry.title, style = MaterialTheme.typography.titleMedium)
+                Text(entry.title.withoutEmoji(), style = MaterialTheme.typography.titleMedium)
                 entry.group?.let {
-                    Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                    Text(it.withoutEmoji(), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
                 }
                 Text(
                     entry.url,

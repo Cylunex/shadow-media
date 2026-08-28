@@ -18,7 +18,8 @@
 - [x] 候选耗尽后刷新一次 PlaybackInfo 并从原位置恢复
 - [ ] ConnectivityManager 网络恢复与长暂停主动刷新
 - [x] ISO 音轨与内嵌字幕循环选择
-- [ ] 普通视频音轨、内嵌字幕与外挂字幕选择
+- [x] 普通视频音轨与内嵌字幕循环选择
+- [ ] 外挂字幕导入、样式与延迟调节
 
 ## M1：刷片 Feed
 
@@ -29,6 +30,7 @@
 - [ ] 仅解析当前与后续 1–2 项播放地址
 - [x] 媒体中心的最近新增、收藏、继续观看投影
 - [ ] Feed 内的随机、最新、未看、收藏模式切换
+- [x] Room 历史、收藏、播放指标、线路健康和功能开关底座
 - [ ] Room 刷过记录、失败记录与 Feed 排重
 - [ ] Paging 3 分页
 
@@ -40,7 +42,8 @@
 - [x] 二次确认后的 Emby 条目及文件删除
 - [ ] 网络恢复和错误分类
 - [ ] 诊断详情导出（自动脱敏）
-- [ ] 画中画、MediaSession、锁屏控制
+- [x] 应用内画中画入口与活动 MediaSession
+- [ ] MediaSessionService、通知与锁屏控制
 - [ ] 横竖屏和全屏
 - [ ] 长按倍速、双击收藏与拖动手势
 
@@ -72,3 +75,13 @@
 - [ ] 是否让特殊 ASS 或 Media3 解码失败样本手动切换到 libmpv
 - [ ] Android TV 独立 UI 模块与 D-pad 焦点恢复
 - [ ] Jellyfin、Plex 和其他平台 Provider 需求重新评估
+
+## M6：扩展平台
+
+- [x] 统一 MediaProvider / MediaKey / UnifiedMediaItem / PlaybackRequest
+- [x] ProviderRegistry 与能力声明
+- [x] Room 2.8 数据库和 PagingSource
+- [x] 功能开关控制台
+- [x] 播放遥测与线路健康数据模型
+- [ ] EmbyProvider 迁移到统一协议
+- [ ] 直播、Stremio、声明式 HTTP 与 CatVod Bridge Provider

@@ -6,6 +6,10 @@ import android.os.Build
 import androidx.core.content.edit
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import top.cylunex.shadowmedia.network.ClientIdentity
 import top.cylunex.shadowmedia.network.DefaultEmbyRepository
@@ -16,12 +20,24 @@ import top.cylunex.shadowmedia.network.PlaybackOutbox
 import top.cylunex.shadowmedia.network.SafeExternalSourceRepository
 import top.cylunex.shadowmedia.network.SessionStore
 import top.cylunex.shadowmedia.network.SharedPreferencesExternalSourceStore
+import top.cylunex.shadowmedia.database.LocalMediaStateRepository
+import top.cylunex.shadowmedia.database.ShadowMediaDatabase
+import top.cylunex.shadowmedia.provider.InMemoryProviderRegistry
+import top.cylunex.shadowmedia.database.MediaHistoryEntity
+import top.cylunex.shadowmedia.model.EmbySession
+import top.cylunex.shadowmedia.model.ExternalMediaEntry
+import top.cylunex.shadowmedia.model.MediaItem
 
 class ShadowMediaApplication : Application() {
     val container: AppContainer by lazy { AppContainer(this) }
 }
 
 class AppContainer(application: Application) {
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val database = ShadowMediaDatabase.create(application)
+    val localMediaState = LocalMediaStateRepository(database.dao())
+    val providerRegistry = InMemoryProviderRegistry()
+    val playbackTelemetry = RoomPlaybackTelemetrySink(localMediaState, applicationScope)
     val clientIdentity = ClientIdentity(
         deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
         deviceId = persistentDeviceId(application),
@@ -44,6 +60,43 @@ class AppContainer(application: Application) {
             .build()
     )
     val externalSourceStore = SharedPreferencesExternalSourceStore(application)
+
+    fun recordEmbyHistory(session: EmbySession, item: MediaItem, positionMs: Long, durationMs: Long?) {
+        applicationScope.launch {
+            localMediaState.recordHistory(
+                MediaHistoryEntity(
+                    stableKey = "emby:${session.serverId}:${session.userId}:${item.id}",
+                    providerId = "emby:${session.serverId}:${session.userId}",
+                    itemId = item.id,
+                    title = item.name,
+                    subtitle = item.seriesName,
+                    positionMs = positionMs,
+                    durationMs = durationMs,
+                    completed = durationMs?.let { it > 0 && positionMs >= it * 0.92 } ?: false,
+                    lastPlayedAtEpochMs = System.currentTimeMillis(),
+                )
+            )
+        }
+    }
+
+    fun recordExternalHistory(entry: ExternalMediaEntry, positionMs: Long, durationMs: Long?) {
+        applicationScope.launch {
+            localMediaState.recordHistory(
+                MediaHistoryEntity(
+                    stableKey = "external:${entry.sourceId}:${entry.id}",
+                    providerId = "external:${entry.sourceId}",
+                    itemId = entry.id,
+                    title = entry.title,
+                    subtitle = entry.group,
+                    posterUrl = entry.logoUrl,
+                    positionMs = positionMs,
+                    durationMs = durationMs,
+                    completed = durationMs?.let { it > 0 && positionMs >= it * 0.92 } ?: false,
+                    lastPlayedAtEpochMs = System.currentTimeMillis(),
+                )
+            )
+        }
+    }
 
     private fun persistentDeviceId(application: Application): String {
         val preferences = application.getSharedPreferences("device_identity", Context.MODE_PRIVATE)

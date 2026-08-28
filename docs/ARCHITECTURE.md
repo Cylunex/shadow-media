@@ -31,6 +31,9 @@ MainViewModel
 ```
 
 - `core:model` 不依赖 Android，保存跨层稳定模型。
+- `core:provider` 定义统一的首页、浏览、搜索、详情和播放解析协议；具体 Provider 不向 UI 暴露网络 DTO。
+- `core:database` 使用 Room 保存跨 Provider 历史、收藏、搜索、媒体时刻、播放指标和线路健康度，
+  并提供 Paging 数据源。服务端仍是 Emby 收藏和进度的权威，本地库用于聚合与离线状态。
 - `core:network` 是远端数据源和会话数据源的唯一入口。
 - `core:playback` 拥有播放器生命周期、播放候选回退和状态上报。
 - `app` 是 composition root，当前使用手动构造器注入；规模增加后再评估 Hilt。

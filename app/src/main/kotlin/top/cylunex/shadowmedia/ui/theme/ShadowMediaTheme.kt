@@ -1,6 +1,5 @@
 package top.cylunex.shadowmedia.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
@@ -15,25 +14,25 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.RoundedCornerShape
 
 private val ShadowDarkColors = darkColorScheme(
-    primary = Color(0xFF8AD8FF),
-    onPrimary = Color(0xFF002F43),
-    primaryContainer = Color(0xFF12394B),
-    onPrimaryContainer = Color(0xFFC6EAFF),
-    secondary = Color(0xFFC8BFFF),
-    onSecondary = Color(0xFF2E285F),
-    secondaryContainer = Color(0xFF342E64),
-    onSecondaryContainer = Color(0xFFE5DFFF),
-    tertiary = Color(0xFF72DFB3),
-    onTertiary = Color(0xFF003827),
+    primary = Color(0xFFE4FF71),
+    onPrimary = Color(0xFF1B2100),
+    primaryContainer = Color(0xFF303A0A),
+    onPrimaryContainer = Color(0xFFEDFF9D),
+    secondary = Color(0xFFA7C7FF),
+    onSecondary = Color(0xFF082044),
+    secondaryContainer = Color(0xFF162D50),
+    onSecondaryContainer = Color(0xFFD6E4FF),
+    tertiary = Color(0xFF7DE1C3),
+    onTertiary = Color(0xFF00382C),
     error = Color(0xFFFFB4AB),
     errorContainer = Color(0xFF5B1D1D),
-    background = Color(0xFF080A0E),
-    onBackground = Color(0xFFE8EDF5),
-    surface = Color(0xFF0F131A),
-    onSurface = Color(0xFFE8EDF5),
-    surfaceVariant = Color(0xFF1A202A),
-    onSurfaceVariant = Color(0xFFB6C1CE),
-    outline = Color(0xFF3E4854),
+    background = Color(0xFF050608),
+    onBackground = Color(0xFFF0F2F5),
+    surface = Color(0xFF101216),
+    onSurface = Color(0xFFF0F2F5),
+    surfaceVariant = Color(0xFF191C22),
+    onSurfaceVariant = Color(0xFFB8BDC7),
+    outline = Color(0xFF444A55),
 )
 
 private val ShadowLightColors = lightColorScheme(
@@ -53,17 +52,19 @@ private val ShadowLightColors = lightColorScheme(
 )
 
 private val ShadowTypography = Typography(
-    headlineLarge = TextStyle(fontSize = 34.sp, lineHeight = 40.sp, fontWeight = FontWeight.Bold),
-    headlineMedium = TextStyle(fontSize = 28.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold),
-    titleLarge = TextStyle(fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold),
+    displayLarge = TextStyle(fontSize = 58.sp, lineHeight = 58.sp, fontWeight = FontWeight.Black, letterSpacing = (-2).sp),
+    displayMedium = TextStyle(fontSize = 44.sp, lineHeight = 46.sp, fontWeight = FontWeight.Black, letterSpacing = (-1.4).sp),
+    headlineLarge = TextStyle(fontSize = 36.sp, lineHeight = 39.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.8).sp),
+    headlineMedium = TextStyle(fontSize = 30.sp, lineHeight = 34.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.5).sp),
+    titleLarge = TextStyle(fontSize = 23.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold),
     titleMedium = TextStyle(fontSize = 17.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold),
-    labelLarge = TextStyle(fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold),
+    labelLarge = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp),
 )
 
 @Composable
 fun ShadowMediaTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) ShadowDarkColors else ShadowLightColors,
+        colorScheme = ShadowDarkColors,
         typography = ShadowTypography,
         shapes = Shapes(
             extraSmall = RoundedCornerShape(8.dp),

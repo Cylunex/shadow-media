@@ -14,8 +14,8 @@ android {
         applicationId = "top.cylunex.shadowmedia"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.6.2"
+        versionCode = 11
+        versionName = "0.7.0"
     }
 
     buildFeatures {
@@ -46,6 +46,8 @@ kotlin {
 
 dependencies {
     implementation(project(":core:model"))
+    implementation(project(":core:provider"))
+    implementation(project(":core:database"))
     implementation(project(":core:network"))
     implementation(project(":core:playback"))
 
@@ -65,6 +67,7 @@ dependencies {
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
     implementation(libs.media3.ui.compose.material3)
+    implementation(libs.paging.compose)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)

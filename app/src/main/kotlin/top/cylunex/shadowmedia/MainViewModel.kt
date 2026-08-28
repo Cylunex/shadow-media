@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.BrowseRequest
@@ -31,9 +33,11 @@ import top.cylunex.shadowmedia.network.LoginRequest
 import top.cylunex.shadowmedia.network.PlaybackOutbox
 import top.cylunex.shadowmedia.network.PlaybackReport
 import top.cylunex.shadowmedia.network.SessionStore
+import top.cylunex.shadowmedia.database.LocalMediaStateRepository
+import top.cylunex.shadowmedia.model.FeatureId
 
 enum class Screen {
-    SERVERS, LOGIN, HOME, LIBRARIES, ITEMS, DETAIL, SOURCES, EXTERNAL_ITEMS, EXTERNAL_PLAYER, PLAYER
+    SERVERS, LOGIN, HOME, LIBRARIES, ITEMS, DETAIL, SOURCES, EXTERNAL_ITEMS, EXTERNAL_PLAYER, SETTINGS, PLAYER
 }
 
 data class MainUiState(
@@ -86,11 +90,18 @@ class MainViewModel(
     private val playbackOutbox: PlaybackOutbox,
     private val externalSourceRepository: ExternalSourceRepository,
     private val externalSourceStore: ExternalSourceStore,
+    private val localMediaState: LocalMediaStateRepository,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     private var playbackRequest: Job? = null
     private var deleteRequest: Job? = null
     val state: StateFlow<MainUiState> = mutableState.asStateFlow()
+    val featureFlags: StateFlow<Map<FeatureId, Boolean>> = localMediaState.featureFlags()
+        .stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            FeatureId.entries.associateWith { it.defaultEnabled },
+        )
 
     init {
         val saved = sessionStore.loadAll()
@@ -202,6 +213,12 @@ class MainViewModel(
             sourceUrl = "",
             errorMessage = null,
         )
+    }
+
+    fun showSettings() = update { copy(screen = Screen.SETTINGS, errorMessage = null) }
+
+    fun setFeatureEnabled(feature: FeatureId, enabled: Boolean) {
+        viewModelScope.launch { localMediaState.setFeatureEnabled(feature, enabled) }
     }
 
     fun selectLibrary(library: MediaLibrary) {
@@ -711,7 +728,7 @@ class MainViewModel(
                     items = emptyList(),
                 )
             }
-            Screen.LIBRARIES, Screen.SOURCES -> showHome()
+            Screen.LIBRARIES, Screen.SOURCES, Screen.SETTINGS -> showHome()
             Screen.HOME -> showServers()
             Screen.SERVERS -> Unit
         }
@@ -787,6 +804,7 @@ class MainViewModel(
                         container.playbackOutbox,
                         container.externalSourceRepository,
                         container.externalSourceStore,
+                        container.localMediaState,
                     ) as T
             }
     }
