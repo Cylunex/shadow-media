@@ -135,6 +135,7 @@ internal class EmbyMediaProvider(
         progressMs = item.playbackPositionTicks / 10_000,
         played = item.played,
         favorite = item.favorite,
+        externalIds = item.externalIds,
     )
 }
 

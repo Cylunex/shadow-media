@@ -50,6 +50,7 @@ import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material.icons.rounded.Subscriptions
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.VideoLibrary
@@ -102,6 +103,7 @@ import top.cylunex.shadowmedia.model.ExternalSourceSummary
 import top.cylunex.shadowmedia.model.LiveChannel
 import top.cylunex.shadowmedia.model.LiveProgram
 import top.cylunex.shadowmedia.model.UnifiedMediaItem
+import top.cylunex.shadowmedia.model.IntegrationKind
 import top.cylunex.shadowmedia.model.MediaItem
 import top.cylunex.shadowmedia.model.MediaSection
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
@@ -304,6 +306,19 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                             Spacer(Modifier.width(8.dp))
                             Text("发送到其他设备")
                         }
+                        if (
+                            detail.item.externalIds.keys.any { it.equals("Tmdb", true) } &&
+                            state.integrations.any { it.kind == IntegrationKind.SEERR }
+                        ) {
+                            OutlinedButton(
+                                onClick = viewModel::requestSelectedMedia,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Icon(Icons.Rounded.Subscriptions, null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("加入想看 / 订阅")
+                            }
+                        }
                     }
                 }
             }
@@ -363,6 +378,9 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
         }
         state.errorMessage?.let { message ->
             item { Text(message, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 20.dp)) }
+        }
+        state.integrationMessage?.let { message ->
+            item { Text(message.withoutEmoji(), color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(horizontal = 20.dp)) }
         }
     }
 }

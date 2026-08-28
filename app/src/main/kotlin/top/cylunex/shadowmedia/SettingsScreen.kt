@@ -25,6 +25,8 @@ import androidx.compose.material.icons.rounded.MovieFilter
 import androidx.compose.material.icons.rounded.Science
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Subscriptions
+import androidx.compose.material.icons.rounded.SettingsEthernet
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -57,6 +59,15 @@ internal fun SettingsScreen(viewModel: MainViewModel) {
                 actionLabel = "返回媒体中心",
                 onAction = viewModel::back,
             )
+        }
+        item {
+            FilledTonalButton(
+                onClick = viewModel::showIntegrations,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            ) {
+                Icon(Icons.Rounded.SettingsEthernet, null)
+                Text("  管理 MoviePilot、Seerr 与频道服务")
+            }
         }
         item {
             Text(

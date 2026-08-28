@@ -90,3 +90,6 @@
 - [ ] Stremio 与 CatVod Bridge Provider
 - [x] 跨 Provider 聚合搜索、部分失败隔离与统一详情
 - [x] 跨设备 Deep Link 接力与自动画中画
+- [x] MoviePilot、Seerr、Tunarr、Dispatcharr 加密连接与健康探测
+- [x] Seerr 标准想看请求与 TMDB ID 映射
+- [x] Tunarr/Dispatcharr M3U、XMLTV 导入直播中心

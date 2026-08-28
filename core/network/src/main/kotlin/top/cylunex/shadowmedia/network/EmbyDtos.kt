@@ -45,6 +45,7 @@ internal data class BaseItemDto(
     @SerialName("SeriesId") val seriesId: String? = null,
     @SerialName("ImageTags") val imageTags: Map<String, String> = emptyMap(),
     @SerialName("BackdropImageTags") val backdropImageTags: List<String> = emptyList(),
+    @SerialName("ProviderIds") val providerIds: Map<String, String> = emptyMap(),
     @SerialName("UserData") val userData: UserDataDto? = null,
 )
 

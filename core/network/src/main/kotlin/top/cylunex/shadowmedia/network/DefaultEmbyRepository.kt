@@ -428,6 +428,7 @@ class DefaultEmbyRepository(
         seriesId = seriesId,
         imageTag = imageTags["Primary"],
         backdropImageTag = backdropImageTags.firstOrNull(),
+        externalIds = providerIds,
     )
 
     companion object {
@@ -436,7 +437,7 @@ class DefaultEmbyRepository(
         private const val HOME_SECTION_LIMIT = 24
         private const val HOME_ITEMS_PER_LIBRARY = 10
         private const val CATALOG_FIELDS =
-            "Overview,ProductionYear,CommunityRating,SeriesId,ImageTags,BackdropImageTags"
+            "Overview,ProductionYear,CommunityRating,SeriesId,ImageTags,BackdropImageTags,ProviderIds"
         private val PLAYABLE_ITEM_TYPES = setOf("Movie", "Episode", "Video")
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val EMPTY_BODY = ByteArray(0).toRequestBody(null)

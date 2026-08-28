@@ -170,6 +170,7 @@ fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
                 Screen.EXTERNAL_PLAYER -> ExternalPlayerScreen(state, viewModel, container)
                 Screen.DISCOVER -> DiscoverScreen(state, viewModel)
                 Screen.PROVIDER_DETAIL -> UnifiedDetailScreen(state, viewModel)
+                Screen.INTEGRATIONS -> IntegrationScreen(state, viewModel)
                 Screen.SETTINGS -> SettingsScreen(viewModel)
                 Screen.PLAYER -> FeedScreen(state, viewModel, container)
             }}

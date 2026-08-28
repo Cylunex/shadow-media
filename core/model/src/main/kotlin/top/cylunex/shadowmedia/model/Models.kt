@@ -36,6 +36,7 @@ data class MediaItem(
     val seriesId: String? = null,
     val imageTag: String? = null,
     val backdropImageTag: String? = null,
+    val externalIds: Map<String, String> = emptyMap(),
 )
 
 enum class MediaSort(val wireName: String) {
@@ -268,6 +269,54 @@ enum class FeatureId(val defaultEnabled: Boolean) {
     SEMANTIC_SEARCH(false),
     WATCH_PARTY(false),
     LABS(false),
+}
+
+enum class IntegrationKind {
+    MOVIEPILOT,
+    SEERR,
+    TUNARR,
+    DISPATCHARR,
+}
+
+data class IntegrationConnection(
+    val id: String,
+    val name: String,
+    val kind: IntegrationKind,
+    val baseUrl: String,
+    val apiToken: String = "",
+    val allowInsecureHttp: Boolean = false,
+    val playlistUrl: String? = null,
+    val epgUrl: String? = null,
+) {
+    override fun toString(): String =
+        "IntegrationConnection(id=$id, name=$name, kind=$kind, baseUrl=$baseUrl, " +
+            "apiToken=<redacted>, allowInsecureHttp=$allowInsecureHttp)"
+}
+
+enum class IntegrationHealth {
+    ONLINE,
+    AUTH_REQUIRED,
+    OFFLINE,
+}
+
+data class IntegrationStatus(
+    val connectionId: String,
+    val health: IntegrationHealth,
+    val latencyMs: Long? = null,
+    val version: String? = null,
+    val message: String,
+    val checkedAtEpochMs: Long,
+)
+
+enum class AvailabilityState {
+    IN_EMBY,
+    EXTERNAL_PLAYABLE,
+    REQUESTABLE,
+    REQUESTED,
+    ACQUIRING,
+    IMPORTING,
+    AVAILABLE,
+    UNAVAILABLE,
 }
 
 data class PlaybackCandidate(
