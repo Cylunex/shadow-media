@@ -19,11 +19,12 @@ Compose UI
 MainViewModel
    │
    ├── EmbyRepository ── Catalog / 收藏 / PlaybackInfo ── Emby REST API
-   ├── ExternalSourceRepository ── 配置安全检查（不执行代码）
-   ├── ExternalSourceStore ── 用户订阅元数据
+   ├── ExternalSourceRepository ── 配置导入 / M3U、TXT 解析（不执行代码）
+   ├── ExternalSourceStore ── 加密订阅正文与摘要
    ├── FeedSessionStore ── 每服/用户/媒体库的稳定顺序与当前位置
    │
    └── PlaybackRuntime ─┬─ Media3 ───────────── 普通视频 / HLS
+                       ├─ 隔离 Media3 ───────── 外部视频源（无 Emby 凭据）
                        └─ libmpv 光盘后端 ─── ISO / DVD / Blu-ray
                               │
                               └── PlaybackOutbox ── EmbyRepository playback reports

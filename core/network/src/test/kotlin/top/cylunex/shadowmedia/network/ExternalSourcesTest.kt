@@ -11,7 +11,7 @@ class ExternalSourcesTest {
 
     @Test
     fun `inspects tvbox config without executing runtime sites`() {
-        val source = repository.inspectPayload(
+        val source = repository.importPayload(
             "https://config.example.com/tv.json",
             """
                 {
@@ -26,34 +26,61 @@ class ExternalSourcesTest {
             """.trimIndent(),
         )
 
-        assertEquals(ExternalSourceKind.TVBOX_CONFIG, source.kind)
-        assertEquals("My sources", source.name)
-        assertEquals(3, source.siteCount)
-        assertEquals(1, source.safeSiteCount)
-        assertEquals(2, source.runtimeRequiredCount)
-        assertEquals(1, source.liveCount)
+        assertEquals(ExternalSourceKind.TVBOX_CONFIG, source.summary.kind)
+        assertEquals("My sources", source.summary.name)
+        assertEquals(3, source.summary.siteCount)
+        assertEquals(1, source.summary.safeSiteCount)
+        assertEquals(2, source.summary.runtimeRequiredCount)
+        assertEquals(1, source.summary.liveCount)
+        assertTrue(repository.entries(source).isEmpty())
     }
 
     @Test
     fun `counts m3u channels as live subscription`() {
-        val source = repository.inspectPayload(
+        val source = repository.importPayload(
             "https://live.example.com/channels.m3u",
             """
                 #EXTM3U
-                #EXTINF:-1 group-title="News",Channel One
-                https://stream.example.com/one.m3u8
+                #EXTINF:-1 tvg-logo="/one.png" group-title="News",Channel One
+                one.m3u8|User-Agent=Shadow%20Test&Referer=https%3A%2F%2Fexample.com
                 #EXTINF:-1 group-title="News",Channel Two
                 https://stream.example.com/two.m3u8
             """.trimIndent(),
         )
 
-        assertEquals(ExternalSourceKind.LIVE_PLAYLIST, source.kind)
-        assertEquals(2, source.liveCount)
-        assertTrue(source.id.isNotBlank())
+        val entries = repository.entries(source)
+        assertEquals(ExternalSourceKind.LIVE_PLAYLIST, source.summary.kind)
+        assertEquals(2, source.summary.liveCount)
+        assertEquals("Channel One", entries.first().title)
+        assertEquals("News", entries.first().group)
+        assertEquals("https://live.example.com/one.m3u8", entries.first().url)
+        assertEquals("https://live.example.com/one.png", entries.first().logoUrl)
+        assertEquals("Shadow Test", entries.first().requestHeaders["User-Agent"])
+        assertTrue(source.summary.id.isNotBlank())
+    }
+
+    @Test
+    fun `parses grouped tvbox txt entries`() {
+        val source = repository.importPayload(
+            "content://documents/video-source.txt",
+            """
+                电影,#genre#
+                测试电影,https://video.example.com/movie.mp4
+                直播,#genre#
+                测试频道,https://video.example.com/live.m3u8
+            """.trimIndent(),
+            "我的视频源.txt",
+        )
+
+        val entries = repository.entries(source)
+        assertEquals("我的视频源.txt", source.summary.name)
+        assertEquals(2, entries.size)
+        assertEquals("电影", entries[0].group)
+        assertEquals("测试电影", entries[0].title)
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun `rejects unknown executable style payload`() {
-        repository.inspectPayload("https://config.example.com/source", "function init() { return 1 }")
+        repository.importPayload("https://config.example.com/source", "function init() { return 1 }")
     }
 }

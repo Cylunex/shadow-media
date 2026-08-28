@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.BrowseRequest
 import top.cylunex.shadowmedia.model.ExternalSourceSummary
+import top.cylunex.shadowmedia.model.ExternalMediaEntry
 import top.cylunex.shadowmedia.model.MediaItem
 import top.cylunex.shadowmedia.model.MediaFilter
 import top.cylunex.shadowmedia.model.MediaLibrary
@@ -31,7 +32,9 @@ import top.cylunex.shadowmedia.network.PlaybackOutbox
 import top.cylunex.shadowmedia.network.PlaybackReport
 import top.cylunex.shadowmedia.network.SessionStore
 
-enum class Screen { SERVERS, LOGIN, HOME, LIBRARIES, ITEMS, DETAIL, SOURCES, PLAYER }
+enum class Screen {
+    SERVERS, LOGIN, HOME, LIBRARIES, ITEMS, DETAIL, SOURCES, EXTERNAL_ITEMS, EXTERNAL_PLAYER, PLAYER
+}
 
 data class MainUiState(
     val screen: Screen = Screen.LOGIN,
@@ -61,6 +64,9 @@ data class MainUiState(
     val sourceUrl: String = "",
     val sourceAllowInsecureHttp: Boolean = false,
     val isInspectingSource: Boolean = false,
+    val selectedExternalSource: ExternalSourceSummary? = null,
+    val externalEntries: List<ExternalMediaEntry> = emptyList(),
+    val selectedExternalEntry: ExternalMediaEntry? = null,
     val selectedItem: MediaItem? = null,
     val currentIndex: Int = 0,
     val playbackPlan: PlaybackPlan? = null,
@@ -547,9 +553,9 @@ class MainViewModel(
         viewModelScope.launch {
             update { copy(isInspectingSource = true, errorMessage = null) }
             runCatching {
-                externalSourceRepository.inspect(snapshot.sourceUrl, snapshot.sourceAllowInsecureHttp)
-            }.onSuccess { source ->
-                externalSourceStore.save(source)
+                externalSourceRepository.importFromUrl(snapshot.sourceUrl, snapshot.sourceAllowInsecureHttp)
+            }.onSuccess { imported ->
+                externalSourceStore.save(imported)
                 update {
                     copy(
                         externalSources = externalSourceStore.loadAll(),
@@ -563,6 +569,58 @@ class MainViewModel(
                 showError(it)
             }
         }
+    }
+
+    fun importLocalExternalSource(sourceUri: String, displayName: String, payload: String) {
+        if (state.value.isInspectingSource) return
+        viewModelScope.launch {
+            update { copy(isInspectingSource = true, errorMessage = null) }
+            runCatching {
+                externalSourceRepository.importPayload(sourceUri, payload, displayName)
+            }.onSuccess { imported ->
+                externalSourceStore.save(imported)
+                update {
+                    copy(
+                        externalSources = externalSourceStore.loadAll(),
+                        isInspectingSource = false,
+                        errorMessage = null,
+                    )
+                }
+            }.onFailure {
+                update { copy(isInspectingSource = false) }
+                showError(it)
+            }
+        }
+    }
+
+    fun reportExternalSourceError(message: String) = update {
+        copy(isInspectingSource = false, errorMessage = message)
+    }
+
+    fun openExternalSource(source: ExternalSourceSummary) {
+        val imported = externalSourceStore.load(source.id)
+        if (imported == null || imported.payload.isBlank()) {
+            update { copy(errorMessage = "这个订阅来自旧版本，请移除后重新导入") }
+            return
+        }
+        val entries = runCatching { externalSourceRepository.entries(imported) }
+            .getOrElse {
+                showError(it)
+                return
+            }
+        update {
+            copy(
+                screen = Screen.EXTERNAL_ITEMS,
+                selectedExternalSource = source,
+                externalEntries = entries,
+                selectedExternalEntry = null,
+                errorMessage = null,
+            )
+        }
+    }
+
+    fun playExternalEntry(entry: ExternalMediaEntry) = update {
+        copy(screen = Screen.EXTERNAL_PLAYER, selectedExternalEntry = entry, errorMessage = null)
     }
 
     fun removeExternalSource(sourceId: String) {
@@ -627,6 +685,18 @@ class MainViewModel(
                     playbackPlan = null,
                     selectedItem = null,
                     isLoading = false,
+                    errorMessage = null,
+                )
+            }
+            Screen.EXTERNAL_PLAYER -> update {
+                copy(screen = Screen.EXTERNAL_ITEMS, selectedExternalEntry = null, errorMessage = null)
+            }
+            Screen.EXTERNAL_ITEMS -> update {
+                copy(
+                    screen = Screen.SOURCES,
+                    selectedExternalSource = null,
+                    externalEntries = emptyList(),
+                    selectedExternalEntry = null,
                     errorMessage = null,
                 )
             }

@@ -2,14 +2,14 @@
 
 ## 当前实现
 
-`0.6.0` 把原来的“媒体库列表 → Feed”扩展成两个互不混淆的入口：
+`0.6.1` 把原来的“媒体库列表 → Feed”扩展成两个互不混淆的入口：
 
 ```text
 媒体中心
 ├── Emby 首页：继续观看 / 最近新增 / 我的收藏
 ├── 媒体库：分页封面墙 / 搜索 / 筛选 / 排序 / 剧集详情
 ├── 刷片：仍读取完整可播放视频集合并维护 FeedSession
-└── 影视仓：用户自带配置的安全检查与订阅管理
+└── 影视仓：URL/本地文件导入、视频列表与隔离播放
 ```
 
 封面墙每次向 Emby 请求 60 条，继续滚动时使用 `StartIndex` 加载下一页。搜索、收藏、已看、未看、
@@ -24,10 +24,14 @@ Series，进入详情后再读取 Episode；电影和家庭视频可直接进入
 - M3U；
 - 包含 `#genre#` 的 TVBox TXT 直播列表。
 
-检查器只下载最多 2 MiB 的配置正文，要求 HTTPS；局域网 HTTP 必须由用户逐次明确允许。HTTPS
-重定向不得降级为 HTTP。检查结果只保存 URL、名称、站点/直播数量和运行时需求，不保存配置正文；
-包含 URL 的订阅元数据使用 Android Keystore + AES-GCM 加密，也不会向请求附加任何 Emby Header、
-Token 或 Cookie。
+导入器只读取最多 2 MiB 的配置正文，远程地址要求 HTTPS；局域网 HTTP 必须由用户明确允许。
+HTTPS 重定向不得降级为 HTTP。URL 与配置正文均使用 Android Keystore + AES-GCM 加密保存，本地
+文件通过系统文件选择器读取后不依赖持续文件权限。旧版只保存摘要的订阅会提示重新导入。
+
+M3U 与 TXT 会转换为最多 5000 个标准视频条目，支持 `#EXTINF`、`group-title`、`tvg-logo`、
+TVBox `#genre#` 分组、相对播放地址，以及播放地址 `|` 后的 User-Agent/Referer/Origin。点击条目后
+使用独立 Media3 + OkHttp 播放链路；该客户端没有 Emby 拦截器、Cookie Jar、会话存储或进度上报，
+因此不会向视频源或跳转 CDN 泄露 Emby 凭据。
 
 `api` 为 HTTP(S) 的站点会计入远程 API；其他站点标记为“需要隔离运行时”。当前不会执行：
 
@@ -39,13 +43,13 @@ Token 或 Cookie。
 
 ## 后续 Provider 边界
 
-下一阶段先实现不执行代码的声明式 Provider 和直播 Provider：
+下一阶段在现有直播 Provider 上继续实现不执行代码的声明式 Provider：
 
 ```text
 ExternalSourceSubscription
         │
         ├── DeclarativeHttpProvider ── 分类 / 搜索 / 详情 / resolve
-        └── LivePlaylistProvider ───── M3U / TXT / XMLTV
+        └── LivePlaylistProvider ───── M3U / TXT（已实现）/ XMLTV
 ```
 
 需要完整 CatVod 兼容时，运行时必须位于独立 APK 或 NAS 服务中。主应用只接收标准化的 home、search、

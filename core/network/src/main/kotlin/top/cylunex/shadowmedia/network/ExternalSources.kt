@@ -7,6 +7,8 @@ import android.util.Base64
 import java.io.IOException
 import java.security.MessageDigest
 import java.security.KeyStore
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -25,13 +27,15 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import top.cylunex.shadowmedia.model.ExternalSourceKind
+import top.cylunex.shadowmedia.model.ExternalSourceImport
+import top.cylunex.shadowmedia.model.ExternalMediaEntry
 import top.cylunex.shadowmedia.model.ExternalSourceSummary
 
 class SafeExternalSourceRepository(
     private val client: OkHttpClient,
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) : ExternalSourceRepository {
-    override suspend fun inspect(url: String, allowInsecureHttp: Boolean): ExternalSourceSummary =
+    override suspend fun importFromUrl(url: String, allowInsecureHttp: Boolean): ExternalSourceImport =
         withContext(Dispatchers.IO) {
             val sourceUrl = url.trim().toHttpUrlOrNull() ?: throw IllegalArgumentException("配置地址格式无效")
             require(sourceUrl.username.isEmpty() && sourceUrl.password.isEmpty()) { "配置地址不能包含账号密码" }
@@ -52,33 +56,41 @@ class SafeExternalSourceRepository(
                 if (body.contentLength() > MAX_CONFIG_BYTES) throw IOException("配置超过 2 MiB 安全上限")
                 val bytes = body.source().readByteArray(MAX_CONFIG_BYTES + 1L)
                 if (bytes.size > MAX_CONFIG_BYTES) throw IOException("配置超过 2 MiB 安全上限")
-                inspectPayload(response.request.url.toString(), bytes.decodeToString())
+                importPayload(response.request.url.toString(), bytes.decodeToString())
             }
         }
 
-    internal fun inspectPayload(url: String, payload: String): ExternalSourceSummary {
+    override fun importPayload(url: String, payload: String, displayName: String?): ExternalSourceImport {
         val normalized = payload.removePrefix("\uFEFF").trim()
         require(normalized.isNotEmpty()) { "配置内容为空" }
-        return if (normalized.startsWith("{")) {
-            inspectJson(url, normalized)
-        } else if (normalized.startsWith("#EXTM3U", ignoreCase = true) || "#genre#" in normalized) {
-            val channelCount = normalized.lineSequence().count {
-                it.trimStart().startsWith("#EXTINF", ignoreCase = true) || "#genre#" in it
-            }
-            ExternalSourceSummary(
+        require(normalized.encodeToByteArray().size <= MAX_CONFIG_BYTES) { "配置超过 2 MiB 安全上限" }
+        val summary = if (normalized.startsWith("{")) {
+            inspectJson(url, normalized, displayName)
+        } else if (looksLikePlaylist(normalized)) {
+            val placeholder = ExternalSourceSummary(
                 id = url.stableId(),
-                name = url.toHttpUrlOrNull()?.host ?: "直播订阅",
+                name = displayName?.trim()?.takeIf(String::isNotEmpty)
+                    ?: url.toHttpUrlOrNull()?.host
+                    ?: "本地视频源",
                 url = url,
                 kind = ExternalSourceKind.LIVE_PLAYLIST,
-                liveCount = channelCount,
                 inspectedAtEpochMs = System.currentTimeMillis(),
             )
+            placeholder.copy(liveCount = parsePlaylist(placeholder, normalized).size)
         } else {
             throw IllegalArgumentException("暂不支持此配置格式；首版支持 TVBox JSON、M3U 与 TXT")
         }
+        return ExternalSourceImport(summary, normalized)
     }
 
-    private fun inspectJson(url: String, payload: String): ExternalSourceSummary {
+    override fun entries(source: ExternalSourceImport): List<ExternalMediaEntry> =
+        if (source.summary.kind == ExternalSourceKind.LIVE_PLAYLIST) {
+            parsePlaylist(source.summary, source.payload)
+        } else {
+            emptyList()
+        }
+
+    private fun inspectJson(url: String, payload: String, displayName: String?): ExternalSourceSummary {
         val root = json.parseToJsonElement(payload).jsonObject
         val sites = root["sites"] as? JsonArray ?: JsonArray(emptyList())
         val lives = root["lives"]
@@ -92,7 +104,8 @@ class SafeExternalSourceRepository(
             null -> 0
             else -> 1
         }
-        val name = root["name"]?.jsonPrimitive?.contentOrNull
+        val name = displayName?.trim()?.takeIf(String::isNotEmpty)
+            ?: root["name"]?.jsonPrimitive?.contentOrNull
             ?.trim()?.takeIf(String::isNotEmpty)
             ?: url.toHttpUrlOrNull()?.host
             ?: "影视仓配置"
@@ -109,6 +122,119 @@ class SafeExternalSourceRepository(
         )
     }
 
+    private fun looksLikePlaylist(payload: String): Boolean {
+        if (payload.startsWith("#EXTM3U", ignoreCase = true) || payload.contains("#genre#", ignoreCase = true)) {
+            return true
+        }
+        return payload.lineSequence()
+            .map(String::trim)
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+            .take(10)
+            .any { line ->
+                val candidate = line.substringAfter(',', "").substringBefore('|').trim()
+                candidate.startsWith("https://") || candidate.startsWith("http://")
+            }
+    }
+
+    private fun parsePlaylist(
+        source: ExternalSourceSummary,
+        payload: String,
+    ): List<ExternalMediaEntry> {
+        val result = mutableListOf<ExternalMediaEntry>()
+        var pendingTitle: String? = null
+        var pendingGroup: String? = null
+        var pendingLogo: String? = null
+        var txtGroup: String? = null
+
+        payload.lineSequence().forEach { rawLine ->
+            if (result.size >= MAX_PLAYLIST_ENTRIES) return@forEach
+            val line = rawLine.trim()
+            when {
+                line.isEmpty() || line.equals("#EXTM3U", ignoreCase = true) -> Unit
+                line.startsWith("#EXTINF", ignoreCase = true) -> {
+                    val attributes = ATTRIBUTE_PATTERN.findAll(line)
+                        .associate { it.groupValues[1].lowercase() to it.groupValues[2] }
+                    pendingTitle = line.substringAfterLast(',', "").trim()
+                        .ifEmpty { attributes["tvg-name"].orEmpty() }
+                    pendingGroup = attributes["group-title"]?.trim()?.takeIf(String::isNotEmpty)
+                    pendingLogo = attributes["tvg-logo"]?.trim()?.takeIf(String::isNotEmpty)
+                }
+                line.contains("#genre#", ignoreCase = true) -> {
+                    txtGroup = line.substringBefore(',').trim().takeIf(String::isNotEmpty)
+                }
+                line.startsWith("#") -> Unit
+                pendingTitle != null -> {
+                    createEntry(
+                        source = source,
+                        title = pendingTitle.orEmpty(),
+                        rawUrl = line,
+                        group = pendingGroup,
+                        logoUrl = pendingLogo,
+                    )?.let(result::add)
+                    pendingTitle = null
+                    pendingGroup = null
+                    pendingLogo = null
+                }
+                ',' in line -> {
+                    createEntry(
+                        source = source,
+                        title = line.substringBefore(',').trim(),
+                        rawUrl = line.substringAfter(',').trim(),
+                        group = txtGroup,
+                        logoUrl = null,
+                    )?.let(result::add)
+                }
+            }
+        }
+        return result.distinctBy(ExternalMediaEntry::url)
+    }
+
+    private fun createEntry(
+        source: ExternalSourceSummary,
+        title: String,
+        rawUrl: String,
+        group: String?,
+        logoUrl: String?,
+    ): ExternalMediaEntry? {
+        val address = rawUrl.substringBefore('|').trim()
+        val resolved = source.url.toHttpUrlOrNull()?.resolve(address)?.toString()
+            ?: address.toHttpUrlOrNull()?.toString()
+            ?: return null
+        val headers = parseRequestHeaders(rawUrl.substringAfter('|', ""))
+        val resolvedLogo = logoUrl?.let { source.url.toHttpUrlOrNull()?.resolve(it)?.toString() ?: it }
+        val entryTitle = title.ifBlank {
+            resolved.toHttpUrlOrNull()?.pathSegments?.lastOrNull()?.takeIf(String::isNotEmpty)
+                ?: resolved.toHttpUrlOrNull()?.host
+                ?: "未命名视频"
+        }
+        return ExternalMediaEntry(
+            id = "${source.id}:$entryTitle:$resolved".stableId(),
+            sourceId = source.id,
+            title = entryTitle,
+            url = resolved,
+            group = group,
+            logoUrl = resolvedLogo,
+            requestHeaders = headers,
+        )
+    }
+
+    private fun parseRequestHeaders(suffix: String): Map<String, String> = suffix
+        .split('&')
+        .mapNotNull { part ->
+            val name = part.substringBefore('=', "").trim().lowercase()
+            val value = part.substringAfter('=', "").trim()
+            val canonicalName = when (name) {
+                "user-agent", "http-user-agent" -> "User-Agent"
+                "referer", "referrer" -> "Referer"
+                "origin" -> "Origin"
+                else -> null
+            }
+            canonicalName?.let {
+                it to runCatching { URLDecoder.decode(value, StandardCharsets.UTF_8.name()) }.getOrDefault(value)
+            }
+        }
+        .toMap()
+
     private fun String.stableId(): String = MessageDigest.getInstance("SHA-256")
         .digest(toByteArray())
         .take(12)
@@ -116,6 +242,8 @@ class SafeExternalSourceRepository(
 
     private companion object {
         const val MAX_CONFIG_BYTES = 2 * 1024 * 1024
+        const val MAX_PLAYLIST_ENTRIES = 5_000
+        val ATTRIBUTE_PATTERN = Regex("""([A-Za-z0-9_-]+)="([^"]*)"""")
     }
 }
 
@@ -133,16 +261,24 @@ class SharedPreferencesExternalSourceStore(
         .sortedByDescending(ExternalSourceSummary::inspectedAtEpochMs)
 
     @Synchronized
-    override fun save(source: ExternalSourceSummary) {
-        val updated = (loadAll().filterNot { it.id == source.id } + source)
-            .sortedByDescending(ExternalSourceSummary::inspectedAtEpochMs)
-        writeStored(StoredExternalSourcesDto(updated.map(StoredExternalSourceDto::fromModel)))
+    override fun load(sourceId: String): ExternalSourceImport? = readStored()
+        ?.sources
+        ?.firstOrNull { it.id == sourceId }
+        ?.toImport()
+
+    @Synchronized
+    override fun save(source: ExternalSourceImport) {
+        require(source.payload.encodeToByteArray().size <= MAX_STORED_PAYLOAD_BYTES) { "配置超过存储上限" }
+        val updated = (readStored()?.sources.orEmpty().filterNot { it.id == source.summary.id } +
+            StoredExternalSourceDto.fromModel(source))
+            .sortedByDescending(StoredExternalSourceDto::inspectedAtEpochMs)
+        writeStored(StoredExternalSourcesDto(updated))
     }
 
     @Synchronized
     override fun remove(sourceId: String) {
-        val updated = loadAll().filterNot { it.id == sourceId }
-        writeStored(StoredExternalSourcesDto(updated.map(StoredExternalSourceDto::fromModel)))
+        val updated = readStored()?.sources.orEmpty().filterNot { it.id == sourceId }
+        writeStored(StoredExternalSourcesDto(updated))
     }
 
     private fun readStored(): StoredExternalSourcesDto? = runCatching {
@@ -198,6 +334,7 @@ class SharedPreferencesExternalSourceStore(
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val IV_SIZE = 12
         const val TAG_BITS = 128
+        const val MAX_STORED_PAYLOAD_BYTES = 2 * 1024 * 1024
     }
 }
 
@@ -215,6 +352,7 @@ private data class StoredExternalSourceDto(
     val safeSiteCount: Int,
     val runtimeRequiredCount: Int,
     val inspectedAtEpochMs: Long,
+    val payload: String = "",
 ) {
     fun toModel(): ExternalSourceSummary = ExternalSourceSummary(
         id = id,
@@ -228,17 +366,20 @@ private data class StoredExternalSourceDto(
         inspectedAtEpochMs = inspectedAtEpochMs,
     )
 
+    fun toImport(): ExternalSourceImport = ExternalSourceImport(toModel(), payload)
+
     companion object {
-        fun fromModel(source: ExternalSourceSummary): StoredExternalSourceDto = StoredExternalSourceDto(
-            id = source.id,
-            name = source.name,
-            url = source.url,
-            kind = source.kind.name,
-            siteCount = source.siteCount,
-            liveCount = source.liveCount,
-            safeSiteCount = source.safeSiteCount,
-            runtimeRequiredCount = source.runtimeRequiredCount,
-            inspectedAtEpochMs = source.inspectedAtEpochMs,
+        fun fromModel(source: ExternalSourceImport): StoredExternalSourceDto = StoredExternalSourceDto(
+            id = source.summary.id,
+            name = source.summary.name,
+            url = source.summary.url,
+            kind = source.summary.kind.name,
+            siteCount = source.summary.siteCount,
+            liveCount = source.summary.liveCount,
+            safeSiteCount = source.summary.safeSiteCount,
+            runtimeRequiredCount = source.summary.runtimeRequiredCount,
+            inspectedAtEpochMs = source.summary.inspectedAtEpochMs,
+            payload = source.payload,
         )
     }
 }

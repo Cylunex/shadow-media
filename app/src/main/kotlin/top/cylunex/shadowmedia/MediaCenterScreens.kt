@@ -1,6 +1,11 @@
 package top.cylunex.shadowmedia
 
+import android.content.ContentResolver
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,6 +35,7 @@ import androidx.compose.material.icons.rounded.AddLink
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.LiveTv
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Security
@@ -44,10 +50,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -55,6 +63,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
+import java.io.IOException
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import top.cylunex.shadowmedia.model.ExternalMediaEntry
 import top.cylunex.shadowmedia.model.ExternalSourceKind
 import top.cylunex.shadowmedia.model.ExternalSourceSummary
 import top.cylunex.shadowmedia.model.MediaItem
@@ -312,6 +328,21 @@ internal fun SeriesDetailScreen(state: MainUiState, viewModel: MainViewModel) {
 @Composable
 internal fun ExternalSourcesScreen(state: MainUiState, viewModel: MainViewModel) {
     BackHandler(onBack = viewModel::back)
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                runCatching { readExternalSourceFile(context.contentResolver, uri) }
+                    .onSuccess { (name, payload) ->
+                        viewModel.importLocalExternalSource(uri.toString(), name, payload)
+                    }
+                    .onFailure { error ->
+                        viewModel.reportExternalSourceError(error.message ?: "无法读取这个文件")
+                    }
+            }
+        }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
         contentPadding = PaddingValues(bottom = 32.dp),
@@ -320,7 +351,7 @@ internal fun ExternalSourcesScreen(state: MainUiState, viewModel: MainViewModel)
         item {
             ScreenHeader(
                 title = "影视仓",
-                subtitle = "自带配置 · 安全检查 · 不内置内容源",
+                subtitle = "URL / 本地文件 · 导入后直接浏览",
                 actionLabel = "返回媒体中心",
                 onAction = viewModel::back,
             )
@@ -335,7 +366,7 @@ internal fun ExternalSourcesScreen(state: MainUiState, viewModel: MainViewModel)
                     Column {
                         Text("安全子集", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "当前读取 TVBox JSON、M3U 和 TXT 的结构与数量，不执行未知 JAR、QuickJS、Python 或 WebView 嗅探。",
+                            "M3U/TXT 会解析为可播放列表；TVBox JSON 安全导入配置，但不执行未知 JAR、QuickJS、Python 或 WebView 嗅探。",
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f),
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -369,7 +400,26 @@ internal fun ExternalSourcesScreen(state: MainUiState, viewModel: MainViewModel)
                     enabled = state.sourceUrl.isNotBlank() && !state.isInspectingSource,
                     modifier = Modifier.fillMaxWidth().height(50.dp),
                 ) {
-                    Text(if (state.isInspectingSource) "正在检查配置…" else "检查并添加")
+                    Text(if (state.isInspectingSource) "正在导入…" else "从 URL 导入")
+                }
+                OutlinedButton(
+                    onClick = {
+                        filePicker.launch(
+                            arrayOf(
+                                "application/json",
+                                "application/x-mpegURL",
+                                "audio/x-mpegurl",
+                                "text/plain",
+                                "*/*",
+                            )
+                        )
+                    },
+                    enabled = !state.isInspectingSource,
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                ) {
+                    Icon(Icons.Rounded.FolderOpen, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("从本地文件导入")
                 }
                 state.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
@@ -383,14 +433,23 @@ internal fun ExternalSourcesScreen(state: MainUiState, viewModel: MainViewModel)
             }
         }
         items(state.externalSources, key = ExternalSourceSummary::id) { source ->
-            ExternalSourceCard(source, onRemove = { viewModel.removeExternalSource(source.id) })
+            ExternalSourceCard(
+                source = source,
+                onOpen = { viewModel.openExternalSource(source) },
+                onRemove = { viewModel.removeExternalSource(source.id) },
+            )
         }
     }
 }
 
 @Composable
-private fun ExternalSourceCard(source: ExternalSourceSummary, onRemove: () -> Unit) {
+private fun ExternalSourceCard(
+    source: ExternalSourceSummary,
+    onOpen: () -> Unit,
+    onRemove: () -> Unit,
+) {
     Card(
+        onClick = onOpen,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
     ) {
@@ -438,6 +497,122 @@ private fun ExternalSourceCard(source: ExternalSourceSummary, onRemove: () -> Un
         }
     }
 }
+
+@Composable
+internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
+    BackHandler(onBack = viewModel::back)
+    val source = state.selectedExternalSource
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+        contentPadding = PaddingValues(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            ScreenHeader(
+                title = source?.name ?: "视频源",
+                subtitle = if (state.externalEntries.isEmpty()) "已安全导入配置" else "${state.externalEntries.size} 个可播放条目",
+                actionLabel = "返回影视仓",
+                onAction = viewModel::back,
+            )
+        }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Rounded.Security, null, tint = MaterialTheme.colorScheme.primary)
+                    Text(
+                        "外部播放使用独立网络客户端，不携带 Emby Token、Cookie 或播放进度。",
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+        if (state.externalEntries.isEmpty()) {
+            item {
+                EmptyStatePanel(
+                    if (source?.kind == ExternalSourceKind.TVBOX_CONFIG) {
+                        "配置已导入。它没有可直接播放的 M3U/TXT 条目；需要脚本的站点仍不会在主应用中执行。"
+                    } else {
+                        "这个视频源没有找到有效的 HTTP(S) 播放地址"
+                    },
+                    Modifier.padding(horizontal = 20.dp),
+                )
+            }
+        }
+        items(state.externalEntries, key = ExternalMediaEntry::id) { entry ->
+            ExternalMediaEntryCard(entry) { viewModel.playExternalEntry(entry) }
+        }
+    }
+}
+
+@Composable
+private fun ExternalMediaEntryCard(entry: ExternalMediaEntry, onPlay: () -> Unit) {
+    Card(
+        onClick = onPlay,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer) {
+                Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.padding(12.dp).size(24.dp))
+            }
+            Column(Modifier.weight(1f)) {
+                Text(entry.title, style = MaterialTheme.typography.titleMedium)
+                entry.group?.let {
+                    Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                }
+                Text(
+                    entry.url,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Icon(Icons.Rounded.PlayArrow, "播放")
+        }
+    }
+}
+
+private suspend fun readExternalSourceFile(
+    resolver: ContentResolver,
+    uri: Uri,
+): Pair<String, String> = withContext(Dispatchers.IO) {
+    val displayName = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+        if (cursor.moveToFirst()) cursor.getString(0) else null
+    } ?: uri.lastPathSegment ?: "本地视频源"
+    val bytes = resolver.openInputStream(uri)?.use { it.readLimitedBytes(MAX_EXTERNAL_SOURCE_BYTES) }
+        ?: throw IOException("无法打开这个文件")
+    displayName to bytes.decodeToString()
+}
+
+private fun InputStream.readLimitedBytes(maxBytes: Int): ByteArray {
+    val output = ByteArrayOutputStream(minOf(maxBytes, EXTERNAL_SOURCE_BUFFER_SIZE))
+    val buffer = ByteArray(EXTERNAL_SOURCE_BUFFER_SIZE)
+    var total = 0
+    while (true) {
+        val read = read(buffer)
+        if (read < 0) break
+        total += read
+        if (total > maxBytes) throw IOException("配置超过 2 MiB 安全上限")
+        output.write(buffer, 0, read)
+    }
+    return output.toByteArray()
+}
+
+private const val MAX_EXTERNAL_SOURCE_BYTES = 2 * 1024 * 1024
+private const val EXTERNAL_SOURCE_BUFFER_SIZE = 8 * 1024
 
 private fun episodeLabel(item: MediaItem): String = if (item.seriesName != null) {
     "${item.seriesName} · S${item.seasonNumber ?: 0}E${item.episodeNumber ?: 0}"

@@ -104,6 +104,21 @@ data class ExternalSourceSummary(
     val inspectedAtEpochMs: Long,
 )
 
+data class ExternalSourceImport(
+    val summary: ExternalSourceSummary,
+    val payload: String,
+)
+
+data class ExternalMediaEntry(
+    val id: String,
+    val sourceId: String,
+    val title: String,
+    val url: String,
+    val group: String? = null,
+    val logoUrl: String? = null,
+    val requestHeaders: Map<String, String> = emptyMap(),
+)
+
 enum class PlayMethod {
     DIRECT_PLAY,
     DIRECT_STREAM,

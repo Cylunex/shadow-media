@@ -36,6 +36,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.Headphones
@@ -104,6 +105,7 @@ import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.PlaybackPlan
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
 import top.cylunex.shadowmedia.playback.PlaybackRuntime
+import top.cylunex.shadowmedia.playback.ExternalPlaybackRuntime
 import top.cylunex.shadowmedia.playback.MpvIsoPlaybackRuntime
 import top.cylunex.shadowmedia.playback.MpvIsoPlaybackState
 import top.cylunex.shadowmedia.ui.ContinueFeedCard
@@ -131,9 +133,13 @@ fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
                 Screen.ITEMS -> ItemScreen(state, viewModel)
                 Screen.DETAIL -> SeriesDetailScreen(state, viewModel)
                 Screen.SOURCES -> ExternalSourcesScreen(state, viewModel)
+                Screen.EXTERNAL_ITEMS -> ExternalItemsScreen(state, viewModel)
+                Screen.EXTERNAL_PLAYER -> ExternalPlayerScreen(state, viewModel)
                 Screen.PLAYER -> FeedScreen(state, viewModel, container)
             }
-            if (state.isLoading && state.screen != Screen.PLAYER) LoadingOverlay()
+            if (state.isLoading && state.screen != Screen.PLAYER && state.screen != Screen.EXTERNAL_PLAYER) {
+                LoadingOverlay()
+            }
             state.pendingDeleteItem?.let { item ->
                 DeleteConfirmationDialog(
                     item = item,
@@ -148,6 +154,71 @@ fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
                     onConfirm = viewModel::confirmRemoveServer,
                     onDismiss = viewModel::cancelRemoveServer,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel) {
+    BackHandler(onBack = viewModel::back)
+    val entry = state.selectedExternalEntry
+    if (entry == null) {
+        EmptyStatePanel("播放条目已不存在")
+        return
+    }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val runtime = remember(entry.id) { ExternalPlaybackRuntime(context.applicationContext, entry) }
+    val playbackError by runtime.error.collectAsStateWithLifecycle()
+    DisposableEffect(runtime, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> runtime.player.pause()
+                Lifecycle.Event.ON_START -> runtime.player.play()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            runtime.close()
+        }
+    }
+
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        Player(player = runtime.player, modifier = Modifier.fillMaxSize())
+        Row(
+            modifier = Modifier.align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .background(Color.Black.copy(alpha = 0.58f))
+                .statusBarsPadding()
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = viewModel::back) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回", tint = Color.White)
+            }
+            Column(Modifier.weight(1f)) {
+                Text(entry.title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    "外部源 · 无 Emby 凭据",
+                    color = Color.White.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+        playbackError?.let { message ->
+            Card(
+                modifier = Modifier.align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xE81B1114)),
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("播放失败", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                    Text(message, color = Color.White.copy(alpha = 0.84f), style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
     }
