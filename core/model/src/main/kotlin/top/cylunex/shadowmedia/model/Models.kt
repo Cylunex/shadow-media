@@ -102,6 +102,7 @@ data class ExternalSourceSummary(
     val safeSiteCount: Int = 0,
     val runtimeRequiredCount: Int = 0,
     val inspectedAtEpochMs: Long,
+    val allowInsecureHttp: Boolean = false,
 )
 
 data class ExternalSourceImport(
@@ -118,7 +119,46 @@ data class ExternalMediaEntry(
     val group: String? = null,
     val logoUrl: String? = null,
     val requestHeaders: Map<String, String> = emptyMap(),
+    val epgId: String? = null,
+    val epgUrl: String? = null,
+    val catchupSource: String? = null,
+    val catchupDays: Int? = null,
 )
+
+data class LiveChannel(
+    val id: String,
+    val title: String,
+    val group: String? = null,
+    val logoUrl: String? = null,
+    val epgId: String? = null,
+    val streams: List<ExternalMediaEntry>,
+)
+
+data class LiveProgram(
+    val sourceId: String,
+    val channelId: String,
+    val title: String,
+    val description: String? = null,
+    val category: String? = null,
+    val startEpochMs: Long,
+    val endEpochMs: Long,
+    val iconUrl: String? = null,
+)
+
+fun List<ExternalMediaEntry>.toLiveChannels(): List<LiveChannel> = groupBy { entry ->
+    entry.epgId?.takeIf(String::isNotBlank)
+        ?: "${entry.group.orEmpty()}:${entry.title.trim().lowercase()}"
+}.map { (key, streams) ->
+    val first = streams.first()
+    LiveChannel(
+        id = "${first.sourceId}:$key",
+        title = first.title,
+        group = first.group,
+        logoUrl = streams.firstNotNullOfOrNull(ExternalMediaEntry::logoUrl),
+        epgId = streams.firstNotNullOfOrNull(ExternalMediaEntry::epgId),
+        streams = streams.distinctBy(ExternalMediaEntry::url),
+    )
+}
 
 enum class PlayMethod {
     DIRECT_PLAY,

@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Upsert
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -33,6 +34,9 @@ interface ShadowMediaDao {
 
     @Query("SELECT * FROM media_favorites ORDER BY addedAtEpochMs DESC")
     fun favoritesPagingSource(): PagingSource<Int, MediaFavoriteEntity>
+
+    @Query("SELECT stableKey FROM media_favorites WHERE providerId = :providerId")
+    suspend fun favoriteKeys(providerId: String): List<String>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun addRecentSearch(search: RecentSearchEntity)
@@ -103,4 +107,32 @@ interface ShadowMediaDao {
 
     @Query("SELECT * FROM local_profiles ORDER BY lastUsedAtEpochMs DESC")
     fun observeProfiles(): Flow<List<LocalProfileEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertEpgPrograms(programs: List<EpgProgramEntity>)
+
+    @Query("DELETE FROM epg_programs WHERE sourceId = :sourceId")
+    suspend fun deleteEpgSource(sourceId: String)
+
+    @Query("DELETE FROM epg_programs WHERE endEpochMs < :cutoffEpochMs")
+    suspend fun pruneEpg(cutoffEpochMs: Long)
+
+    @Query(
+        """
+        SELECT * FROM epg_programs
+        WHERE sourceId = :sourceId AND endEpochMs >= :fromEpochMs AND startEpochMs <= :toEpochMs
+        ORDER BY channelId, startEpochMs
+        """
+    )
+    fun observeEpg(
+        sourceId: String,
+        fromEpochMs: Long,
+        toEpochMs: Long,
+    ): Flow<List<EpgProgramEntity>>
+
+    @Transaction
+    suspend fun replaceEpg(sourceId: String, programs: List<EpgProgramEntity>) {
+        deleteEpgSource(sourceId)
+        programs.chunked(1_000).forEach { insertEpgPrograms(it) }
+    }
 }

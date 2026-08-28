@@ -4,11 +4,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -16,6 +19,8 @@ import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.BrowseRequest
 import top.cylunex.shadowmedia.model.ExternalSourceSummary
 import top.cylunex.shadowmedia.model.ExternalMediaEntry
+import top.cylunex.shadowmedia.model.LiveChannel
+import top.cylunex.shadowmedia.model.LiveProgram
 import top.cylunex.shadowmedia.model.MediaItem
 import top.cylunex.shadowmedia.model.MediaFilter
 import top.cylunex.shadowmedia.model.MediaLibrary
@@ -35,6 +40,10 @@ import top.cylunex.shadowmedia.network.PlaybackReport
 import top.cylunex.shadowmedia.network.SessionStore
 import top.cylunex.shadowmedia.database.LocalMediaStateRepository
 import top.cylunex.shadowmedia.model.FeatureId
+import top.cylunex.shadowmedia.model.toLiveChannels
+import top.cylunex.shadowmedia.network.CatchupUrlResolver
+import top.cylunex.shadowmedia.network.LiveGuideRepository
+import top.cylunex.shadowmedia.database.MediaFavoriteEntity
 
 enum class Screen {
     SERVERS, LOGIN, HOME, LIBRARIES, ITEMS, DETAIL, SOURCES, EXTERNAL_ITEMS, EXTERNAL_PLAYER, SETTINGS, PLAYER
@@ -70,6 +79,13 @@ data class MainUiState(
     val isInspectingSource: Boolean = false,
     val selectedExternalSource: ExternalSourceSummary? = null,
     val externalEntries: List<ExternalMediaEntry> = emptyList(),
+    val liveChannels: List<LiveChannel> = emptyList(),
+    val livePrograms: Map<String, List<LiveProgram>> = emptyMap(),
+    val liveFavoriteKeys: Set<String> = emptySet(),
+    val externalQuery: String = "",
+    val externalGroup: String? = null,
+    val isLoadingGuide: Boolean = false,
+    val liveGuideMessage: String? = null,
     val selectedExternalEntry: ExternalMediaEntry? = null,
     val selectedItem: MediaItem? = null,
     val currentIndex: Int = 0,
@@ -91,10 +107,12 @@ class MainViewModel(
     private val externalSourceRepository: ExternalSourceRepository,
     private val externalSourceStore: ExternalSourceStore,
     private val localMediaState: LocalMediaStateRepository,
+    private val liveGuideRepository: LiveGuideRepository,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     private var playbackRequest: Job? = null
     private var deleteRequest: Job? = null
+    private var liveGuideRequest: Job? = null
     val state: StateFlow<MainUiState> = mutableState.asStateFlow()
     val featureFlags: StateFlow<Map<FeatureId, Boolean>> = localMediaState.featureFlags()
         .stateIn(
@@ -630,9 +648,54 @@ class MainViewModel(
                 screen = Screen.EXTERNAL_ITEMS,
                 selectedExternalSource = source,
                 externalEntries = entries,
+                liveChannels = entries.toLiveChannels(),
+                livePrograms = emptyMap(),
+                liveFavoriteKeys = emptySet(),
+                externalQuery = "",
+                externalGroup = null,
+                liveGuideMessage = null,
                 selectedExternalEntry = null,
                 errorMessage = null,
             )
+        }
+        loadLiveMetadata(source, entries)
+    }
+
+    fun updateExternalQuery(value: String) = update { copy(externalQuery = value) }
+
+    fun setExternalGroup(value: String?) = update { copy(externalGroup = value) }
+
+    fun toggleLiveFavorite(channel: LiveChannel) {
+        val source = state.value.selectedExternalSource ?: return
+        val providerId = "external:${source.id}"
+        val stableKey = "$providerId:${channel.id}"
+        viewModelScope.launch {
+            if (stableKey in state.value.liveFavoriteKeys) {
+                localMediaState.removeFavorite(stableKey)
+                update { copy(liveFavoriteKeys = liveFavoriteKeys - stableKey) }
+            } else {
+                localMediaState.addFavorite(
+                    MediaFavoriteEntity(
+                        stableKey = stableKey,
+                        providerId = providerId,
+                        itemId = channel.id,
+                        title = channel.title,
+                        subtitle = channel.group,
+                        posterUrl = channel.logoUrl,
+                        addedAtEpochMs = System.currentTimeMillis(),
+                    )
+                )
+                update { copy(liveFavoriteKeys = liveFavoriteKeys + stableKey) }
+            }
+        }
+    }
+
+    fun playCatchup(entry: ExternalMediaEntry, program: LiveProgram) {
+        val resolved = CatchupUrlResolver.resolve(entry, program)
+        if (resolved == null) {
+            update { copy(errorMessage = "这个频道的回看模板无法解析") }
+        } else {
+            playExternalEntry(resolved)
         }
     }
 
@@ -643,6 +706,67 @@ class MainViewModel(
     fun removeExternalSource(sourceId: String) {
         externalSourceStore.remove(sourceId)
         update { copy(externalSources = externalSourceStore.loadAll()) }
+    }
+
+    private fun loadLiveMetadata(source: ExternalSourceSummary, entries: List<ExternalMediaEntry>) {
+        liveGuideRequest?.cancel()
+        liveGuideRequest = viewModelScope.launch {
+            val providerId = "external:${source.id}"
+            val now = System.currentTimeMillis()
+            val cached = localMediaState.epg(
+                source.id,
+                now - 6L * 60 * 60 * 1_000,
+                now + 3L * 24 * 60 * 60 * 1_000,
+            ).first()
+            val favorites = localMediaState.favoriteKeys(providerId)
+            update {
+                copy(
+                    livePrograms = cached.groupBy(LiveProgram::channelId),
+                    liveFavoriteKeys = favorites,
+                )
+            }
+
+            val guideUrls = entries.mapNotNull(ExternalMediaEntry::epgUrl)
+                .map(String::trim)
+                .filter { it.isNotEmpty() && '{' !in it }
+                .distinct()
+            if (guideUrls.isEmpty()) {
+                update { copy(liveGuideMessage = "订阅未提供标准 XMLTV 节目单") }
+                return@launch
+            }
+            update { copy(isLoadingGuide = true, liveGuideMessage = null) }
+            val results = supervisorScope {
+                guideUrls.map { url ->
+                    async {
+                        runCatching {
+                            liveGuideRepository.load(source.id, url, source.allowInsecureHttp)
+                        }
+                    }
+                }.map { it.await() }
+            }
+            val programs = results.flatMap { result -> result.getOrElse { emptyList() } }
+                .distinctBy { "${it.channelId}:${it.startEpochMs}" }
+                .map { it.copy(sourceId = source.id) }
+            if (programs.isNotEmpty()) {
+                localMediaState.replaceEpg(source.id, programs)
+                update {
+                    copy(
+                        livePrograms = programs.groupBy(LiveProgram::channelId),
+                        isLoadingGuide = false,
+                        liveGuideMessage = "节目单已更新 · ${programs.size} 个节目",
+                    )
+                }
+            } else {
+                val firstError = results.firstNotNullOfOrNull { it.exceptionOrNull()?.message }
+                update {
+                    copy(
+                        isLoadingGuide = false,
+                        liveGuideMessage = firstError?.let { "节目单更新失败：$it" }
+                            ?: "节目单没有匹配当前时间范围的节目",
+                    )
+                }
+            }
+        }
     }
 
     fun cancelDelete() {
@@ -709,10 +833,13 @@ class MainViewModel(
                 copy(screen = Screen.EXTERNAL_ITEMS, selectedExternalEntry = null, errorMessage = null)
             }
             Screen.EXTERNAL_ITEMS -> update {
+                liveGuideRequest?.cancel()
                 copy(
                     screen = Screen.SOURCES,
                     selectedExternalSource = null,
                     externalEntries = emptyList(),
+                    liveChannels = emptyList(),
+                    livePrograms = emptyMap(),
                     selectedExternalEntry = null,
                     errorMessage = null,
                 )
@@ -805,6 +932,7 @@ class MainViewModel(
                         container.externalSourceRepository,
                         container.externalSourceStore,
                         container.localMediaState,
+                        container.liveGuideRepository,
                     ) as T
             }
     }

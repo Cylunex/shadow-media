@@ -37,8 +37,13 @@ import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.LiveTv
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.StarBorder
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.VideoLibrary
@@ -47,8 +52,10 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
@@ -56,11 +63,17 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -68,12 +81,17 @@ import androidx.compose.ui.platform.LocalContext
 import java.io.IOException
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.cylunex.shadowmedia.model.ExternalMediaEntry
 import top.cylunex.shadowmedia.model.ExternalSourceKind
 import top.cylunex.shadowmedia.model.ExternalSourceSummary
+import top.cylunex.shadowmedia.model.LiveChannel
+import top.cylunex.shadowmedia.model.LiveProgram
 import top.cylunex.shadowmedia.model.MediaItem
 import top.cylunex.shadowmedia.model.MediaSection
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
@@ -82,6 +100,7 @@ import top.cylunex.shadowmedia.ui.EmptyStatePanel
 import top.cylunex.shadowmedia.ui.MediaPosterCard
 import top.cylunex.shadowmedia.ui.withoutEmoji
 import top.cylunex.shadowmedia.ui.ScreenHeader
+import coil3.compose.AsyncImage
 
 @Composable
 internal fun MediaHomeScreen(state: MainUiState, viewModel: MainViewModel) {
@@ -517,6 +536,28 @@ private fun ExternalSourceCard(
 internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
     BackHandler(onBack = viewModel::back)
     val source = state.selectedExternalSource
+    val groups = remember(state.liveChannels) {
+        state.liveChannels.mapNotNull(LiveChannel::group).distinct().sorted()
+    }
+    val favoritePrefix = "external:${source?.id}:"
+    val filteredChannels = remember(
+        state.liveChannels,
+        state.externalQuery,
+        state.externalGroup,
+        state.liveFavoriteKeys,
+    ) {
+        state.liveChannels.filter { channel ->
+            val matchesQuery = state.externalQuery.isBlank() ||
+                channel.title.contains(state.externalQuery, true) ||
+                channel.group.orEmpty().contains(state.externalQuery, true)
+            val matchesGroup = when (state.externalGroup) {
+                null -> true
+                LIVE_FAVORITES_FILTER -> "$favoritePrefix${channel.id}" in state.liveFavoriteKeys
+                else -> channel.group == state.externalGroup
+            }
+            matchesQuery && matchesGroup
+        }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
         contentPadding = PaddingValues(bottom = 32.dp),
@@ -524,11 +565,51 @@ internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
     ) {
         item {
             ScreenHeader(
-                title = source?.name ?: "视频源",
-                subtitle = if (state.externalEntries.isEmpty()) "已安全导入配置" else "${state.externalEntries.size} 个可播放条目",
+                title = source?.name ?: "直播中心",
+                subtitle = if (state.liveChannels.isEmpty()) "已安全导入配置" else
+                    "${state.liveChannels.size} 个频道 · ${state.externalEntries.size} 条线路",
                 actionLabel = "返回影视仓",
                 onAction = viewModel::back,
             )
+        }
+        item {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                OutlinedTextField(
+                    value = state.externalQuery,
+                    onValueChange = viewModel::updateExternalQuery,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("搜索频道") },
+                    leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    item {
+                        FilterChip(
+                            selected = state.externalGroup == null,
+                            onClick = { viewModel.setExternalGroup(null) },
+                            label = { Text("全部") },
+                        )
+                    }
+                    item {
+                        FilterChip(
+                            selected = state.externalGroup == LIVE_FAVORITES_FILTER,
+                            onClick = { viewModel.setExternalGroup(LIVE_FAVORITES_FILTER) },
+                            label = { Text("收藏") },
+                            leadingIcon = { Icon(Icons.Rounded.Star, null, Modifier.size(18.dp)) },
+                        )
+                    }
+                    items(groups, key = { it }) { group ->
+                        FilterChip(
+                            selected = state.externalGroup == group,
+                            onClick = { viewModel.setExternalGroup(group) },
+                            label = { Text(group.withoutEmoji()) },
+                        )
+                    }
+                }
+            }
         }
         item {
             Card(
@@ -536,13 +617,18 @@ internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
             ) {
                 Row(
-                    Modifier.fillMaxWidth().padding(16.dp),
+                    Modifier.fillMaxWidth().padding(14.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(Icons.Rounded.Security, null, tint = MaterialTheme.colorScheme.primary)
+                    Icon(
+                        if (state.isLoadingGuide) Icons.Rounded.LiveTv else Icons.Rounded.Security,
+                        null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
                     Text(
-                        "外部播放使用独立网络客户端，不携带 Emby Token、Cookie 或播放进度。",
+                        state.liveGuideMessage ?: if (state.isLoadingGuide) "正在同步 XMLTV 节目单"
+                        else "独立网络沙箱播放，不携带 Emby 凭据",
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -563,44 +649,135 @@ internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
                 )
             }
         }
-        items(state.externalEntries, key = ExternalMediaEntry::id) { entry ->
-            ExternalMediaEntryCard(entry) { viewModel.playExternalEntry(entry) }
+        if (state.liveChannels.isNotEmpty() && filteredChannels.isEmpty()) {
+            item { EmptyStatePanel("没有符合当前筛选条件的频道", Modifier.padding(horizontal = 20.dp)) }
+        }
+        items(filteredChannels, key = LiveChannel::id) { channel ->
+            val programs = channel.epgId?.let(state.livePrograms::get).orEmpty()
+            val stableKey = "$favoritePrefix${channel.id}"
+            LiveChannelCard(
+                channel = channel,
+                programs = programs,
+                favorite = stableKey in state.liveFavoriteKeys,
+                onPlay = viewModel::playExternalEntry,
+                onFavorite = { viewModel.toggleLiveFavorite(channel) },
+                onCatchup = viewModel::playCatchup,
+            )
         }
     }
 }
 
 @Composable
-private fun ExternalMediaEntryCard(entry: ExternalMediaEntry, onPlay: () -> Unit) {
+private fun LiveChannelCard(
+    channel: LiveChannel,
+    programs: List<LiveProgram>,
+    favorite: Boolean,
+    onPlay: (ExternalMediaEntry) -> Unit,
+    onFavorite: () -> Unit,
+    onCatchup: (ExternalMediaEntry, LiveProgram) -> Unit,
+) {
+    var selectedStream by remember(channel.id, channel.streams.size) { mutableIntStateOf(0) }
+    val stream = channel.streams.getOrElse(selectedStream) { channel.streams.first() }
+    val now = System.currentTimeMillis()
+    val current = programs.firstOrNull { now in it.startEpochMs until it.endEpochMs }
+    val next = programs.firstOrNull { it.startEpochMs >= (current?.endEpochMs ?: now) }
+    val catchup = programs.filter { it.endEpochMs <= now }.takeLast(3)
     Card(
-        onClick = onPlay,
+        onClick = { onPlay(stream) },
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
     ) {
-        Row(
-            Modifier.fillMaxWidth().padding(16.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer) {
-                Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.padding(12.dp).size(24.dp))
-            }
-            Column(Modifier.weight(1f)) {
-                Text(entry.title.withoutEmoji(), style = MaterialTheme.typography.titleMedium)
-                entry.group?.let {
-                    Text(it.withoutEmoji(), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    modifier = Modifier.size(58.dp).clip(MaterialTheme.shapes.medium),
+                ) {
+                    if (channel.logoUrl != null) {
+                        AsyncImage(
+                            model = channel.logoUrl,
+                            contentDescription = channel.title,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.padding(6.dp),
+                        )
+                    } else {
+                        Icon(Icons.Rounded.LiveTv, null, modifier = Modifier.padding(15.dp))
+                    }
                 }
+                Column(Modifier.weight(1f)) {
+                    Text(channel.title.withoutEmoji(), style = MaterialTheme.typography.titleMedium)
+                    channel.group?.let {
+                        Text(it.withoutEmoji(), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                    }
+                    Text(
+                        current?.let { "直播中 · ${it.title.withoutEmoji()}" } ?: "实时直播",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                IconButton(onClick = onFavorite) {
+                    Icon(
+                        if (favorite) Icons.Rounded.Star else Icons.Rounded.StarBorder,
+                        if (favorite) "取消收藏" else "收藏频道",
+                        tint = if (favorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Icon(Icons.Rounded.PlayArrow, "播放")
+            }
+            current?.let { program ->
+                val progress = ((now - program.startEpochMs).toFloat() /
+                    (program.endEpochMs - program.startEpochMs).coerceAtLeast(1)).coerceIn(0f, 1f)
+                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(formatLiveTime(program.startEpochMs), style = MaterialTheme.typography.labelSmall)
+                    Text(formatLiveTime(program.endEpochMs), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            next?.let {
                 Text(
-                    entry.url,
+                    "接下来 ${formatLiveTime(it.startEpochMs)} · ${it.title.withoutEmoji()}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Icon(Icons.Rounded.PlayArrow, "播放")
+            if (channel.streams.size > 1) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(channel.streams.indices.toList(), key = { channel.streams[it].id }) { index ->
+                        FilterChip(
+                            selected = selectedStream == index,
+                            onClick = { selectedStream = index },
+                            label = { Text("线路 ${index + 1}") },
+                            leadingIcon = if (index == selectedStream) {
+                                { Icon(Icons.Rounded.SwapHoriz, null, Modifier.size(18.dp)) }
+                            } else null,
+                        )
+                    }
+                }
+            }
+            if (stream.catchupSource != null && catchup.isNotEmpty()) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(catchup, key = { it.startEpochMs }) { program ->
+                        FilledTonalButton(onClick = { onCatchup(stream, program) }) {
+                            Icon(Icons.Rounded.History, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("${formatLiveTime(program.startEpochMs)} ${program.title.withoutEmoji()}", maxLines = 1)
+                        }
+                    }
+                }
+            }
         }
     }
 }
+
+private fun formatLiveTime(epochMs: Long): String =
+    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(epochMs))
+
+private const val LIVE_FAVORITES_FILTER = "__favorites__"
 
 private suspend fun readExternalSourceFile(
     resolver: ContentResolver,

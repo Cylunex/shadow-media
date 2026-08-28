@@ -18,6 +18,8 @@ import top.cylunex.shadowmedia.network.KeystoreSessionStore
 import top.cylunex.shadowmedia.network.PersistentPlaybackOutbox
 import top.cylunex.shadowmedia.network.PlaybackOutbox
 import top.cylunex.shadowmedia.network.SafeExternalSourceRepository
+import top.cylunex.shadowmedia.network.DefaultLiveGuideRepository
+import top.cylunex.shadowmedia.network.LiveGuideRepository
 import top.cylunex.shadowmedia.network.SessionStore
 import top.cylunex.shadowmedia.network.SharedPreferencesExternalSourceStore
 import top.cylunex.shadowmedia.database.LocalMediaStateRepository
@@ -53,12 +55,12 @@ class AppContainer(application: Application) {
     )
     val playbackOutbox: PlaybackOutbox = PersistentPlaybackOutbox(application, embyRepository)
     val feedSessionStore = FeedSessionStore(application)
-    val externalSourceRepository = SafeExternalSourceRepository(
-        OkHttpClient.Builder()
+    private val externalClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(45, TimeUnit.SECONDS)
             .build()
-    )
+    val externalSourceRepository = SafeExternalSourceRepository(externalClient)
+    val liveGuideRepository: LiveGuideRepository = DefaultLiveGuideRepository(externalClient)
     val externalSourceStore = SharedPreferencesExternalSourceStore(application)
 
     fun recordEmbyHistory(session: EmbySession, item: MediaItem, positionMs: Long, durationMs: Long?) {

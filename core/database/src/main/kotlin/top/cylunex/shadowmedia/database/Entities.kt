@@ -107,3 +107,23 @@ data class LocalProfileEntity(
     val isChild: Boolean = false,
     val lastUsedAtEpochMs: Long,
 )
+
+@Entity(
+    tableName = "epg_programs",
+    indices = [
+        Index(value = ["sourceId"]),
+        Index(value = ["channelId", "startEpochMs"]),
+        Index(value = ["endEpochMs"]),
+    ],
+)
+data class EpgProgramEntity(
+    @PrimaryKey val id: String,
+    val sourceId: String,
+    val channelId: String,
+    val title: String,
+    val description: String? = null,
+    val category: String? = null,
+    val startEpochMs: Long,
+    val endEpochMs: Long,
+    val iconUrl: String? = null,
+)

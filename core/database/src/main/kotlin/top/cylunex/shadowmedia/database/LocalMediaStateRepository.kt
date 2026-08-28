@@ -5,6 +5,7 @@ import androidx.paging.PagingConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import top.cylunex.shadowmedia.model.FeatureId
+import top.cylunex.shadowmedia.model.LiveProgram
 
 class LocalMediaStateRepository(private val dao: ShadowMediaDao) {
     val history = Pager(PagingConfig(pageSize = 40, prefetchDistance = 12)) {
@@ -37,6 +38,12 @@ class LocalMediaStateRepository(private val dao: ShadowMediaDao) {
     }
 
     suspend fun recordHistory(item: MediaHistoryEntity) = dao.upsertHistory(item)
+
+    suspend fun favoriteKeys(providerId: String): Set<String> = dao.favoriteKeys(providerId).toSet()
+
+    suspend fun addFavorite(item: MediaFavoriteEntity) = dao.upsertFavorite(item)
+
+    suspend fun removeFavorite(stableKey: String) = dao.removeFavorite(stableKey)
 
     suspend fun addSearch(query: String, providerId: String? = null) {
         val normalized = query.trim()
@@ -76,4 +83,40 @@ class LocalMediaStateRepository(private val dao: ShadowMediaDao) {
     suspend fun sourceHealth(sourceKey: String): SourceHealthEntity? = dao.sourceHealth(sourceKey)
 
     suspend fun upsertSourceHealth(health: SourceHealthEntity) = dao.upsertSourceHealth(health)
+
+    fun epg(sourceId: String, fromEpochMs: Long, toEpochMs: Long): Flow<List<LiveProgram>> =
+        dao.observeEpg(sourceId, fromEpochMs, toEpochMs).map { rows ->
+            rows.map { row ->
+                LiveProgram(
+                    sourceId = row.sourceId,
+                    channelId = row.channelId,
+                    title = row.title,
+                    description = row.description,
+                    category = row.category,
+                    startEpochMs = row.startEpochMs,
+                    endEpochMs = row.endEpochMs,
+                    iconUrl = row.iconUrl,
+                )
+            }
+        }
+
+    suspend fun replaceEpg(sourceId: String, programs: List<LiveProgram>) {
+        dao.replaceEpg(
+            sourceId,
+            programs.map { program ->
+                EpgProgramEntity(
+                    id = "${program.sourceId}:${program.channelId}:${program.startEpochMs}",
+                    sourceId = program.sourceId,
+                    channelId = program.channelId,
+                    title = program.title,
+                    description = program.description,
+                    category = program.category,
+                    startEpochMs = program.startEpochMs,
+                    endEpochMs = program.endEpochMs,
+                    iconUrl = program.iconUrl,
+                )
+            },
+        )
+        dao.pruneEpg(System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1_000)
+    }
 }

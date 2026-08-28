@@ -65,13 +65,16 @@ class SafeExternalSourceRepository(
                 val bytes = body.readLimitedBytes(MAX_CONFIG_BYTES)
                 importPayload(response.request.url.toString(), bytes.decodeToString())
             }
+            val policyAware = imported.copy(
+                summary = imported.summary.copy(allowInsecureHttp = allowInsecureHttp)
+            )
             if (
-                imported.summary.kind == ExternalSourceKind.TVBOX_CONFIG ||
-                imported.summary.kind == ExternalSourceKind.DECLARATIVE
+                policyAware.summary.kind == ExternalSourceKind.TVBOX_CONFIG ||
+                policyAware.summary.kind == ExternalSourceKind.DECLARATIVE
             ) {
-                imported.copy(resolvedEntries = resolveTvBoxEntries(imported, allowInsecureHttp))
+                policyAware.copy(resolvedEntries = resolveTvBoxEntries(policyAware, allowInsecureHttp))
             } else {
-                imported
+                policyAware
             }
         }
 
@@ -224,6 +227,9 @@ class SafeExternalSourceRepository(
                 } else {
                     entry.requestHeaders + ("User-Agent" to live.userAgent)
                 },
+                epgUrl = entry.epgUrl ?: live.epgUrl?.let { epg ->
+                    parent.url.toHttpUrlOrNull()?.resolve(epg)?.toString() ?: epg
+                },
             )
         }
     }
@@ -271,6 +277,7 @@ class SafeExternalSourceRepository(
                     name = item["name"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty(),
                     url = url,
                     userAgent = item["ua"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf(String::isNotEmpty),
+                    epgUrl = item["epg"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf(String::isNotEmpty),
                 )
             }
             .take(MAX_NESTED_LIVE_SOURCES)
@@ -370,13 +377,25 @@ class SafeExternalSourceRepository(
         var pendingTitle: String? = null
         var pendingGroup: String? = null
         var pendingLogo: String? = null
+        var pendingEpgId: String? = null
+        var pendingCatchupSource: String? = null
+        var pendingCatchupDays: Int? = null
+        var playlistEpgUrl: String? = null
         var txtGroup: String? = null
 
         payload.lineSequence().forEach { rawLine ->
             if (result.size >= MAX_PLAYLIST_ENTRIES) return@forEach
             val line = rawLine.trim()
             when {
-                line.isEmpty() || line.equals("#EXTM3U", ignoreCase = true) -> Unit
+                line.isEmpty() -> Unit
+                line.startsWith("#EXTM3U", ignoreCase = true) -> {
+                    val attributes = ATTRIBUTE_PATTERN.findAll(line)
+                        .associate { it.groupValues[1].lowercase() to it.groupValues[2] }
+                    playlistEpgUrl = sequenceOf(attributes["x-tvg-url"], attributes["url-tvg"])
+                        .firstOrNull { !it.isNullOrBlank() }
+                        ?.substringBefore(',')
+                        ?.trim()
+                }
                 line.startsWith("#EXTINF", ignoreCase = true) -> {
                     val attributes = ATTRIBUTE_PATTERN.findAll(line)
                         .associate { it.groupValues[1].lowercase() to it.groupValues[2] }
@@ -384,6 +403,10 @@ class SafeExternalSourceRepository(
                         .ifEmpty { attributes["tvg-name"].orEmpty() }
                     pendingGroup = attributes["group-title"]?.trim()?.takeIf(String::isNotEmpty)
                     pendingLogo = attributes["tvg-logo"]?.trim()?.takeIf(String::isNotEmpty)
+                    pendingEpgId = attributes["tvg-id"]?.trim()?.takeIf(String::isNotEmpty)
+                    pendingCatchupSource = attributes["catchup-source"]?.trim()?.takeIf(String::isNotEmpty)
+                    pendingCatchupDays = attributes["catchup-days"]?.toIntOrNull()
+                        ?: attributes["timeshift"]?.toIntOrNull()
                 }
                 line.contains("#genre#", ignoreCase = true) -> {
                     txtGroup = line.substringBefore(',').trim().takeIf(String::isNotEmpty)
@@ -396,10 +419,17 @@ class SafeExternalSourceRepository(
                         rawUrl = line,
                         group = pendingGroup,
                         logoUrl = pendingLogo,
+                        epgId = pendingEpgId,
+                        epgUrl = playlistEpgUrl,
+                        catchupSource = pendingCatchupSource,
+                        catchupDays = pendingCatchupDays,
                     )?.let(result::add)
                     pendingTitle = null
                     pendingGroup = null
                     pendingLogo = null
+                    pendingEpgId = null
+                    pendingCatchupSource = null
+                    pendingCatchupDays = null
                 }
                 ',' in line -> {
                     createEntry(
@@ -408,6 +438,10 @@ class SafeExternalSourceRepository(
                         rawUrl = line.substringAfter(',').trim(),
                         group = txtGroup,
                         logoUrl = null,
+                        epgId = null,
+                        epgUrl = playlistEpgUrl,
+                        catchupSource = null,
+                        catchupDays = null,
                     )?.let(result::add)
                 }
             }
@@ -421,6 +455,10 @@ class SafeExternalSourceRepository(
         rawUrl: String,
         group: String?,
         logoUrl: String?,
+        epgId: String?,
+        epgUrl: String?,
+        catchupSource: String?,
+        catchupDays: Int?,
     ): ExternalMediaEntry? {
         val address = rawUrl.substringBefore('|').trim()
         val resolved = source.url.toHttpUrlOrNull()?.resolve(address)?.toString()
@@ -441,6 +479,10 @@ class SafeExternalSourceRepository(
             group = group,
             logoUrl = resolvedLogo,
             requestHeaders = headers,
+            epgId = epgId,
+            epgUrl = epgUrl?.let { source.url.toHttpUrlOrNull()?.resolve(it)?.toString() ?: it },
+            catchupSource = catchupSource,
+            catchupDays = catchupDays,
         )
     }
 
@@ -480,6 +522,7 @@ private data class TvBoxRemoteSource(
     val name: String,
     val url: String,
     val userAgent: String?,
+    val epgUrl: String?,
 )
 
 class SharedPreferencesExternalSourceStore(
@@ -587,6 +630,7 @@ private data class StoredExternalSourceDto(
     val safeSiteCount: Int,
     val runtimeRequiredCount: Int,
     val inspectedAtEpochMs: Long,
+    val allowInsecureHttp: Boolean = false,
     val payload: String = "",
     val resolvedEntries: List<StoredExternalMediaEntryDto> = emptyList(),
 ) {
@@ -600,6 +644,7 @@ private data class StoredExternalSourceDto(
         safeSiteCount = safeSiteCount,
         runtimeRequiredCount = runtimeRequiredCount,
         inspectedAtEpochMs = inspectedAtEpochMs,
+        allowInsecureHttp = allowInsecureHttp,
     )
 
     fun toImport(): ExternalSourceImport = ExternalSourceImport(
@@ -619,6 +664,7 @@ private data class StoredExternalSourceDto(
             safeSiteCount = source.summary.safeSiteCount,
             runtimeRequiredCount = source.summary.runtimeRequiredCount,
             inspectedAtEpochMs = source.summary.inspectedAtEpochMs,
+            allowInsecureHttp = source.summary.allowInsecureHttp,
             payload = source.payload,
             resolvedEntries = source.resolvedEntries.map(StoredExternalMediaEntryDto::fromModel),
         )
@@ -634,6 +680,10 @@ private data class StoredExternalMediaEntryDto(
     val group: String? = null,
     val logoUrl: String? = null,
     val requestHeaders: Map<String, String> = emptyMap(),
+    val epgId: String? = null,
+    val epgUrl: String? = null,
+    val catchupSource: String? = null,
+    val catchupDays: Int? = null,
 ) {
     fun toModel(): ExternalMediaEntry = ExternalMediaEntry(
         id = id,
@@ -643,6 +693,10 @@ private data class StoredExternalMediaEntryDto(
         group = group,
         logoUrl = logoUrl,
         requestHeaders = requestHeaders,
+        epgId = epgId,
+        epgUrl = epgUrl,
+        catchupSource = catchupSource,
+        catchupDays = catchupDays,
     )
 
     companion object {
@@ -654,6 +708,10 @@ private data class StoredExternalMediaEntryDto(
             group = entry.group,
             logoUrl = entry.logoUrl,
             requestHeaders = entry.requestHeaders,
+            epgId = entry.epgId,
+            epgUrl = entry.epgUrl,
+            catchupSource = entry.catchupSource,
+            catchupDays = entry.catchupDays,
         )
     }
 }
