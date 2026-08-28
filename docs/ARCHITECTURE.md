@@ -39,9 +39,10 @@ MainViewModel
 - `app` 是 composition root，当前使用手动构造器注入；规模增加后再评估 Hilt。
 - UI 使用单向数据流，Composable 不直接访问网络数据源。
 
-`MediaItem`、`MediaPage`、`MediaSection`、`BrowseRequest` 和 `PlaybackCandidate` 是当前统一内容模型
-的第一阶段。首页、封面墙和 Feed 都消费相同的 EmbyRepository 投影；直播与声明式外部 Provider
-后续复用这些稳定模型，不另造 TVBoxEngine。
+`MediaProvider`、`MediaKey`、`UnifiedMediaItem`、`MediaDetail` 和 `UnifiedPlaybackRequest` 构成跨源协议。
+Emby、直播列表和声明式 HTTP CMS 均通过 `ProviderRegistry` 注册；聚合搜索并发查询声明了 SEARCH
+能力的 Provider，单源故障只形成可见诊断，不会清空其他结果。需要 JAR、QuickJS 或 Python 的站点
+仍不进入主进程，后续只通过隔离的 CatVod Bridge 接入。
 
 这一结构遵循 Android 官方的 UI/data 分层、repository、单向数据流和 screen-level ViewModel
 建议：<https://developer.android.com/topic/architecture/recommendations>。

@@ -40,13 +40,25 @@ import top.cylunex.shadowmedia.network.PlaybackReport
 import top.cylunex.shadowmedia.network.SessionStore
 import top.cylunex.shadowmedia.database.LocalMediaStateRepository
 import top.cylunex.shadowmedia.model.FeatureId
+import top.cylunex.shadowmedia.model.MediaDetail
+import top.cylunex.shadowmedia.model.MediaKey
+import top.cylunex.shadowmedia.model.ProviderDescriptor
+import top.cylunex.shadowmedia.model.UnifiedMediaItem
+import top.cylunex.shadowmedia.model.UnifiedPlaybackRequest
 import top.cylunex.shadowmedia.model.toLiveChannels
 import top.cylunex.shadowmedia.network.CatchupUrlResolver
 import top.cylunex.shadowmedia.network.LiveGuideRepository
+import top.cylunex.shadowmedia.network.TvBoxHttpMediaProvider
 import top.cylunex.shadowmedia.database.MediaFavoriteEntity
+import top.cylunex.shadowmedia.provider.AggregateSearchEngine
+import top.cylunex.shadowmedia.provider.InMemoryProviderRegistry
+import top.cylunex.shadowmedia.provider.ProviderSearchFailure
+import top.cylunex.shadowmedia.provider.ProviderSearchRequest
+import okhttp3.OkHttpClient
 
 enum class Screen {
-    SERVERS, LOGIN, HOME, LIBRARIES, ITEMS, DETAIL, SOURCES, EXTERNAL_ITEMS, EXTERNAL_PLAYER, SETTINGS, PLAYER
+    SERVERS, LOGIN, HOME, LIBRARIES, ITEMS, DETAIL, SOURCES, EXTERNAL_ITEMS, EXTERNAL_PLAYER,
+    DISCOVER, PROVIDER_DETAIL, SETTINGS, PLAYER
 }
 
 data class MainUiState(
@@ -87,6 +99,13 @@ data class MainUiState(
     val isLoadingGuide: Boolean = false,
     val liveGuideMessage: String? = null,
     val selectedExternalEntry: ExternalMediaEntry? = null,
+    val externalPlayerReturnScreen: Screen = Screen.EXTERNAL_ITEMS,
+    val providerDescriptors: List<ProviderDescriptor> = emptyList(),
+    val discoverQuery: String = "",
+    val discoverResults: List<UnifiedMediaItem> = emptyList(),
+    val providerSearchFailures: List<ProviderSearchFailure> = emptyList(),
+    val selectedUnifiedDetail: MediaDetail? = null,
+    val isSearchingProviders: Boolean = false,
     val selectedItem: MediaItem? = null,
     val currentIndex: Int = 0,
     val playbackPlan: PlaybackPlan? = null,
@@ -108,11 +127,15 @@ class MainViewModel(
     private val externalSourceStore: ExternalSourceStore,
     private val localMediaState: LocalMediaStateRepository,
     private val liveGuideRepository: LiveGuideRepository,
+    private val providerRegistry: InMemoryProviderRegistry,
+    private val aggregateSearchEngine: AggregateSearchEngine,
+    private val externalClient: OkHttpClient,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     private var playbackRequest: Job? = null
     private var deleteRequest: Job? = null
     private var liveGuideRequest: Job? = null
+    private var providerSearchRequest: Job? = null
     val state: StateFlow<MainUiState> = mutableState.asStateFlow()
     val featureFlags: StateFlow<Map<FeatureId, Boolean>> = localMediaState.featureFlags()
         .stateIn(
@@ -203,6 +226,7 @@ class MainViewModel(
                     externalSources = externalSourceStore.loadAll(),
                     isLoading = true,
                 )
+                syncProviders()
                 viewModelScope.launch { playbackOutbox.flush(session) }
                 loadLibraries(session)
             }.onFailure(::showError)
@@ -234,6 +258,101 @@ class MainViewModel(
     }
 
     fun showSettings() = update { copy(screen = Screen.SETTINGS, errorMessage = null) }
+
+    fun showDiscover() {
+        syncProviders()
+        update { copy(screen = Screen.DISCOVER, errorMessage = null) }
+    }
+
+    fun updateDiscoverQuery(value: String) = update { copy(discoverQuery = value, errorMessage = null) }
+
+    fun searchProviders() {
+        val query = state.value.discoverQuery.trim()
+        if (query.isEmpty() || state.value.isSearchingProviders) return
+        providerSearchRequest?.cancel()
+        providerSearchRequest = viewModelScope.launch {
+            update {
+                copy(
+                    isSearchingProviders = true,
+                    discoverResults = emptyList(),
+                    providerSearchFailures = emptyList(),
+                    errorMessage = null,
+                )
+            }
+            localMediaState.addSearch(query)
+            runCatching {
+                aggregateSearchEngine.search(
+                    providerRegistry.providers.first(),
+                    ProviderSearchRequest(query = query, pageSize = 60),
+                )
+            }.onSuccess { result ->
+                update {
+                    copy(
+                        discoverResults = result.items,
+                        providerSearchFailures = result.failures,
+                        isSearchingProviders = false,
+                    )
+                }
+            }.onFailure {
+                update { copy(isSearchingProviders = false) }
+                showError(it)
+            }
+        }
+    }
+
+    fun openUnifiedItem(item: UnifiedMediaItem) {
+        val provider = providerRegistry.provider(item.key.providerId) ?: return
+        viewModelScope.launch {
+            update { copy(screen = Screen.PROVIDER_DETAIL, selectedUnifiedDetail = null, isLoading = true, errorMessage = null) }
+            runCatching { provider.detail(item.key) }
+                .onSuccess { detail -> update { copy(selectedUnifiedDetail = detail, isLoading = false) } }
+                .onFailure(::showError)
+        }
+    }
+
+    fun playUnifiedItem(item: UnifiedMediaItem) {
+        val provider = providerRegistry.provider(item.key.providerId) ?: return
+        if (provider is EmbyMediaProvider) {
+            val embyItem = provider.mediaItem(item.key) ?: item.toEmbyMediaItem()
+            update {
+                copy(
+                    items = listOf(embyItem),
+                    playerReturnScreen = screen,
+                    feedMode = false,
+                )
+            }
+            playAt(0)
+            return
+        }
+        viewModelScope.launch {
+            update { copy(isLoading = true, errorMessage = null) }
+            runCatching { provider.resolve(UnifiedPlaybackRequest(item.key, item.progressMs)) }
+                .onSuccess { candidates ->
+                    val candidate = candidates.firstOrNull()
+                    if (candidate == null) {
+                        update { copy(isLoading = false, errorMessage = "这个 Provider 没有返回可播放线路") }
+                    } else {
+                        update {
+                            copy(
+                                screen = Screen.EXTERNAL_PLAYER,
+                                externalPlayerReturnScreen = Screen.PROVIDER_DETAIL,
+                                selectedExternalEntry = ExternalMediaEntry(
+                                    id = item.key.itemId,
+                                    sourceId = item.key.providerId,
+                                    title = item.title,
+                                    url = candidate.url,
+                                    group = provider.descriptor.name,
+                                    logoUrl = item.posterUrl,
+                                    requestHeaders = candidate.requiredHeaders,
+                                ),
+                                isLoading = false,
+                            )
+                        }
+                    }
+                }
+                .onFailure(::showError)
+        }
+    }
 
     fun setFeatureEnabled(feature: FeatureId, enabled: Boolean) {
         viewModelScope.launch { localMediaState.setFeatureEnabled(feature, enabled) }
@@ -591,6 +710,7 @@ class MainViewModel(
                 externalSourceRepository.importFromUrl(snapshot.sourceUrl, snapshot.sourceAllowInsecureHttp)
             }.onSuccess { imported ->
                 externalSourceStore.save(imported)
+                syncProviders()
                 update {
                     copy(
                         externalSources = externalSourceStore.loadAll(),
@@ -614,6 +734,7 @@ class MainViewModel(
                 externalSourceRepository.importPayload(sourceUri, payload, displayName)
             }.onSuccess { imported ->
                 externalSourceStore.save(imported)
+                syncProviders()
                 update {
                     copy(
                         externalSources = externalSourceStore.loadAll(),
@@ -700,12 +821,36 @@ class MainViewModel(
     }
 
     fun playExternalEntry(entry: ExternalMediaEntry) = update {
-        copy(screen = Screen.EXTERNAL_PLAYER, selectedExternalEntry = entry, errorMessage = null)
+        copy(
+            screen = Screen.EXTERNAL_PLAYER,
+            externalPlayerReturnScreen = Screen.EXTERNAL_ITEMS,
+            selectedExternalEntry = entry,
+            errorMessage = null,
+        )
     }
 
     fun removeExternalSource(sourceId: String) {
         externalSourceStore.remove(sourceId)
+        syncProviders()
         update { copy(externalSources = externalSourceStore.loadAll()) }
+    }
+
+    private fun syncProviders() {
+        val providers = buildList {
+            state.value.session?.let { add(EmbyMediaProvider(it, repository)) }
+            externalSourceStore.loadAll().forEach { summary ->
+                val imported = externalSourceStore.load(summary.id) ?: return@forEach
+                val entries = runCatching { externalSourceRepository.entries(imported) }.getOrDefault(emptyList())
+                if (entries.isNotEmpty()) add(LiveMediaProvider(summary, entries))
+                externalSourceRepository.catalogSites(imported).forEach { site ->
+                    if (count { it is TvBoxHttpMediaProvider } < MAX_HTTP_PROVIDERS) {
+                        add(TvBoxHttpMediaProvider(site, externalClient))
+                    }
+                }
+            }
+        }
+        providerRegistry.replace(providers)
+        update { copy(providerDescriptors = providers.map { it.descriptor }) }
     }
 
     private fun loadLiveMetadata(source: ExternalSourceSummary, entries: List<ExternalMediaEntry>) {
@@ -830,7 +975,7 @@ class MainViewModel(
                 )
             }
             Screen.EXTERNAL_PLAYER -> update {
-                copy(screen = Screen.EXTERNAL_ITEMS, selectedExternalEntry = null, errorMessage = null)
+                copy(screen = externalPlayerReturnScreen, selectedExternalEntry = null, errorMessage = null)
             }
             Screen.EXTERNAL_ITEMS -> update {
                 liveGuideRequest?.cancel()
@@ -847,6 +992,9 @@ class MainViewModel(
             Screen.DETAIL -> update {
                 copy(screen = Screen.ITEMS, selectedSeries = null, detailEpisodes = emptyList())
             }
+            Screen.PROVIDER_DETAIL -> update {
+                copy(screen = Screen.DISCOVER, selectedUnifiedDetail = null, errorMessage = null)
+            }
             Screen.ITEMS -> update {
                 copy(
                     screen = Screen.LIBRARIES,
@@ -855,7 +1003,7 @@ class MainViewModel(
                     items = emptyList(),
                 )
             }
-            Screen.LIBRARIES, Screen.SOURCES, Screen.SETTINGS -> showHome()
+            Screen.LIBRARIES, Screen.SOURCES, Screen.DISCOVER, Screen.SETTINGS -> showHome()
             Screen.HOME -> showServers()
             Screen.SERVERS -> Unit
         }
@@ -871,6 +1019,7 @@ class MainViewModel(
             screen = if (remaining.isEmpty()) Screen.LOGIN else Screen.SERVERS,
             savedSessions = remaining,
         )
+        syncProviders()
         viewModelScope.launch {
             playbackOutbox.discard(session)
             runCatching { repository.logout(session) }
@@ -919,6 +1068,7 @@ class MainViewModel(
     companion object {
         private const val MAX_PLAYBACK_REFRESHES = 1
         private const val WALL_PAGE_SIZE = 60
+        private const val MAX_HTTP_PROVIDERS = 16
 
         fun factory(container: AppContainer): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
@@ -933,6 +1083,9 @@ class MainViewModel(
                         container.externalSourceStore,
                         container.localMediaState,
                         container.liveGuideRepository,
+                        container.providerRegistry,
+                        container.aggregateSearchEngine,
+                        container.externalClient,
                     ) as T
             }
     }
@@ -945,3 +1098,19 @@ private fun MediaLibrary.wallItemTypes(): Set<String> = when (collectionType?.lo
     "music" -> setOf("MusicAlbum", "MusicVideo")
     else -> setOf("Movie", "Episode", "Video", "Series")
 }
+
+private fun UnifiedMediaItem.toEmbyMediaItem() = MediaItem(
+    id = key.itemId,
+    name = title,
+    type = type,
+    seriesName = subtitle,
+    seasonNumber = null,
+    episodeNumber = null,
+    runTimeTicks = durationMs?.times(10_000),
+    playbackPositionTicks = progressMs * 10_000,
+    played = played,
+    favorite = favorite,
+    overview = overview,
+    productionYear = year,
+    communityRating = rating,
+)

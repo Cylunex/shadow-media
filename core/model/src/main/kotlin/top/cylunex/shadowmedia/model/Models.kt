@@ -109,6 +109,15 @@ data class ExternalSourceImport(
     val summary: ExternalSourceSummary,
     val payload: String,
     val resolvedEntries: List<ExternalMediaEntry> = emptyList(),
+    val resolvedCatalogSites: List<ExternalCatalogSite> = emptyList(),
+)
+
+data class ExternalCatalogSite(
+    val id: String,
+    val sourceId: String,
+    val name: String,
+    val apiUrl: String,
+    val allowInsecureHttp: Boolean,
 )
 
 data class ExternalMediaEntry(

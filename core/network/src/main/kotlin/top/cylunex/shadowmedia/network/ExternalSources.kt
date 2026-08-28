@@ -34,6 +34,7 @@ import okhttp3.Request
 import top.cylunex.shadowmedia.model.ExternalSourceKind
 import top.cylunex.shadowmedia.model.ExternalSourceImport
 import top.cylunex.shadowmedia.model.ExternalMediaEntry
+import top.cylunex.shadowmedia.model.ExternalCatalogSite
 import top.cylunex.shadowmedia.model.ExternalSourceSummary
 
 class SafeExternalSourceRepository(
@@ -72,7 +73,10 @@ class SafeExternalSourceRepository(
                 policyAware.summary.kind == ExternalSourceKind.TVBOX_CONFIG ||
                 policyAware.summary.kind == ExternalSourceKind.DECLARATIVE
             ) {
-                policyAware.copy(resolvedEntries = resolveTvBoxEntries(policyAware, allowInsecureHttp))
+                policyAware.copy(
+                    resolvedEntries = resolveTvBoxEntries(policyAware, allowInsecureHttp),
+                    resolvedCatalogSites = resolveTvBoxCatalogSites(policyAware, allowInsecureHttp),
+                )
             } else {
                 policyAware
             }
@@ -111,6 +115,60 @@ class SafeExternalSourceRepository(
         } else {
             emptyList()
         }
+
+    override fun catalogSites(source: ExternalSourceImport): List<ExternalCatalogSite> {
+        if (source.resolvedCatalogSites.isNotEmpty()) return source.resolvedCatalogSites
+        if (!source.payload.trimStart().startsWith("{")) return emptyList()
+        val root = runCatching { parseJsonObject(source.payload) }.getOrNull() ?: return emptyList()
+        val sites = root["sites"] as? JsonArray ?: return emptyList()
+        return sites.mapNotNull { element ->
+            val item = element as? JsonObject ?: return@mapNotNull null
+            val rawApi = item["api"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            if (!rawApi.startsWith("https://") && !rawApi.startsWith("http://")) return@mapNotNull null
+            val api = source.summary.url.toHttpUrlOrNull()?.resolve(rawApi)
+                ?: rawApi.toHttpUrlOrNull()
+                ?: return@mapNotNull null
+            if (api.username.isNotEmpty() || api.password.isNotEmpty() || isLoopbackHost(api.host)) {
+                return@mapNotNull null
+            }
+            if (api.scheme != "https" && !(api.scheme == "http" && source.summary.allowInsecureHttp)) {
+                return@mapNotNull null
+            }
+            val key = item["key"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val name = item["name"]?.jsonPrimitive?.contentOrNull?.trim()
+                ?.takeIf(String::isNotEmpty) ?: key.ifEmpty { api.host }
+            ExternalCatalogSite(
+                id = "${source.summary.id}:${key.ifEmpty { api.toString().stableId() }}",
+                sourceId = source.summary.id,
+                name = name,
+                apiUrl = api.toString(),
+                allowInsecureHttp = source.summary.allowInsecureHttp,
+            )
+        }.distinctBy(ExternalCatalogSite::id).take(MAX_CATALOG_SITES)
+    }
+
+    private suspend fun resolveTvBoxCatalogSites(
+        source: ExternalSourceImport,
+        allowInsecureHttp: Boolean,
+    ): List<ExternalCatalogSite> = supervisorScope {
+        val direct = catalogSites(source)
+        val nested = remoteSources(source.payload, "urls").map { reference ->
+            async(Dispatchers.IO) {
+                val imported = runCatching {
+                    fetchNestedImport(source.summary.url, reference, allowInsecureHttp)
+                }.getOrNull() ?: return@async emptyList()
+                catalogSites(imported).map { site ->
+                    site.copy(
+                        id = "${source.summary.id}:${site.id}",
+                        sourceId = source.summary.id,
+                        name = listOf(reference.name, site.name).filter(String::isNotBlank).joinToString(" · "),
+                        allowInsecureHttp = allowInsecureHttp,
+                    )
+                }
+            }
+        }.awaitAll().flatten()
+        (direct + nested).distinctBy(ExternalCatalogSite::apiUrl).take(MAX_CATALOG_SITES)
+    }
 
     private fun inspectJson(url: String, payload: String, displayName: String?): ExternalSourceSummary {
         val root = parseJsonObject(payload)
@@ -512,6 +570,7 @@ class SafeExternalSourceRepository(
         const val MAX_CONFIG_BYTES = 2 * 1024 * 1024
         const val MAX_PLAYLIST_ENTRIES = 5_000
         const val MAX_NESTED_LIVE_SOURCES = 8
+        const val MAX_CATALOG_SITES = 48
         const val NESTED_SOURCE_TIMEOUT_SECONDS = 8L
         const val SOURCE_BUFFER_SIZE = 8 * 1024
         val ATTRIBUTE_PATTERN = Regex("""([A-Za-z0-9_-]+)="([^"]*)"""")
@@ -633,6 +692,7 @@ private data class StoredExternalSourceDto(
     val allowInsecureHttp: Boolean = false,
     val payload: String = "",
     val resolvedEntries: List<StoredExternalMediaEntryDto> = emptyList(),
+    val resolvedCatalogSites: List<StoredExternalCatalogSiteDto> = emptyList(),
 ) {
     fun toModel(): ExternalSourceSummary = ExternalSourceSummary(
         id = id,
@@ -651,6 +711,7 @@ private data class StoredExternalSourceDto(
         summary = toModel(),
         payload = payload,
         resolvedEntries = resolvedEntries.map(StoredExternalMediaEntryDto::toModel),
+        resolvedCatalogSites = resolvedCatalogSites.map(StoredExternalCatalogSiteDto::toModel),
     )
 
     companion object {
@@ -667,6 +728,28 @@ private data class StoredExternalSourceDto(
             allowInsecureHttp = source.summary.allowInsecureHttp,
             payload = source.payload,
             resolvedEntries = source.resolvedEntries.map(StoredExternalMediaEntryDto::fromModel),
+            resolvedCatalogSites = source.resolvedCatalogSites.map(StoredExternalCatalogSiteDto::fromModel),
+        )
+    }
+}
+
+@Serializable
+private data class StoredExternalCatalogSiteDto(
+    val id: String,
+    val sourceId: String,
+    val name: String,
+    val apiUrl: String,
+    val allowInsecureHttp: Boolean,
+) {
+    fun toModel() = ExternalCatalogSite(id, sourceId, name, apiUrl, allowInsecureHttp)
+
+    companion object {
+        fun fromModel(site: ExternalCatalogSite) = StoredExternalCatalogSiteDto(
+            site.id,
+            site.sourceId,
+            site.name,
+            site.apiUrl,
+            site.allowInsecureHttp,
         )
     }
 }

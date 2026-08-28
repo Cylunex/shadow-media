@@ -25,6 +25,7 @@ import top.cylunex.shadowmedia.network.SharedPreferencesExternalSourceStore
 import top.cylunex.shadowmedia.database.LocalMediaStateRepository
 import top.cylunex.shadowmedia.database.ShadowMediaDatabase
 import top.cylunex.shadowmedia.provider.InMemoryProviderRegistry
+import top.cylunex.shadowmedia.provider.AggregateSearchEngine
 import top.cylunex.shadowmedia.database.MediaHistoryEntity
 import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.ExternalMediaEntry
@@ -39,6 +40,7 @@ class AppContainer(application: Application) {
     private val database = ShadowMediaDatabase.create(application)
     val localMediaState = LocalMediaStateRepository(database.dao())
     val providerRegistry = InMemoryProviderRegistry()
+    val aggregateSearchEngine = AggregateSearchEngine()
     val playbackTelemetry = RoomPlaybackTelemetrySink(localMediaState, applicationScope)
     val clientIdentity = ClientIdentity(
         deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
@@ -55,7 +57,7 @@ class AppContainer(application: Application) {
     )
     val playbackOutbox: PlaybackOutbox = PersistentPlaybackOutbox(application, embyRepository)
     val feedSessionStore = FeedSessionStore(application)
-    private val externalClient = OkHttpClient.Builder()
+    val externalClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(45, TimeUnit.SECONDS)
             .build()

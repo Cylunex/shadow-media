@@ -34,6 +34,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AddLink
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.Explore
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.LiveTv
@@ -78,6 +82,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
 import java.io.IOException
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -92,6 +99,7 @@ import top.cylunex.shadowmedia.model.ExternalSourceKind
 import top.cylunex.shadowmedia.model.ExternalSourceSummary
 import top.cylunex.shadowmedia.model.LiveChannel
 import top.cylunex.shadowmedia.model.LiveProgram
+import top.cylunex.shadowmedia.model.UnifiedMediaItem
 import top.cylunex.shadowmedia.model.MediaItem
 import top.cylunex.shadowmedia.model.MediaSection
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
@@ -101,6 +109,255 @@ import top.cylunex.shadowmedia.ui.MediaPosterCard
 import top.cylunex.shadowmedia.ui.withoutEmoji
 import top.cylunex.shadowmedia.ui.ScreenHeader
 import coil3.compose.AsyncImage
+
+@Composable
+internal fun DiscoverScreen(state: MainUiState, viewModel: MainViewModel) {
+    BackHandler(onBack = viewModel::back)
+    val providerNames = remember(state.providerDescriptors) {
+        state.providerDescriptors.associate { it.id to it.name }
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+        contentPadding = PaddingValues(bottom = 36.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        item {
+            ScreenHeader(
+                title = "发现",
+                subtitle = "跨 ${state.providerDescriptors.size} 个内容服务统一检索",
+                actionLabel = "返回首页",
+                onAction = viewModel::back,
+            )
+        }
+        item {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                OutlinedTextField(
+                    value = state.discoverQuery,
+                    onValueChange = viewModel::updateDiscoverQuery,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("搜索电影、剧集或频道") },
+                    leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { viewModel.searchProviders() }),
+                )
+                Button(
+                    onClick = viewModel::searchProviders,
+                    enabled = state.discoverQuery.isNotBlank() && !state.isSearchingProviders,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Rounded.Explore, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (state.isSearchingProviders) "正在聚合结果" else "跨源搜索")
+                }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(state.providerDescriptors, key = { it.id }) { provider ->
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f),
+                        ) {
+                            Text(
+                                provider.name.withoutEmoji(),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        if (state.providerSearchFailures.isNotEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.72f)),
+                ) {
+                    Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(Icons.Rounded.ErrorOutline, null, tint = MaterialTheme.colorScheme.error)
+                        Text(
+                            "${state.providerSearchFailures.size} 个服务暂时不可用，其余结果不受影响",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                    }
+                }
+            }
+        }
+        if (state.discoverResults.isEmpty() && !state.isSearchingProviders) {
+            item {
+                EmptyStatePanel(
+                    if (state.discoverQuery.isBlank()) "输入关键词，同时搜索 Emby、直播和已导入的安全 HTTP 站点"
+                    else "没有找到匹配结果，可以换一个更短的关键词",
+                    Modifier.padding(horizontal = 20.dp),
+                )
+            }
+        }
+        items(state.discoverResults, key = { it.key.stableId }) { item ->
+            UnifiedResultCard(
+                item = item,
+                providerName = providerNames[item.key.providerId].orEmpty(),
+                onClick = { viewModel.openUnifiedItem(item) },
+            )
+        }
+        state.errorMessage?.let { message ->
+            item { Text(message, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 20.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun UnifiedResultCard(item: UnifiedMediaItem, providerName: String, onClick: () -> Unit) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f)),
+    ) {
+        Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            UnifiedPoster(item, Modifier.size(width = 78.dp, height = 108.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text(item.title.withoutEmoji(), style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(
+                    listOfNotNull(item.year?.toString(), item.rating?.let { "%.1f".format(it) }, item.type)
+                        .joinToString(" · "),
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                item.subtitle?.let {
+                    Text(it.withoutEmoji(), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Text(providerName.withoutEmoji(), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+            }
+            Icon(Icons.Rounded.ChevronRight, "查看详情")
+        }
+    }
+}
+
+@Composable
+internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
+    BackHandler(onBack = viewModel::back)
+    val detail = state.selectedUnifiedDetail
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+        contentPadding = PaddingValues(bottom = 36.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item {
+            ScreenHeader(
+                title = detail?.item?.title?.withoutEmoji() ?: "内容详情",
+                subtitle = detail?.item?.subtitle?.withoutEmoji() ?: "正在读取 Provider 元数据",
+                actionLabel = "返回发现",
+                onAction = viewModel::back,
+            )
+        }
+        if (detail != null) {
+            item {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(18.dp),
+                ) {
+                    UnifiedPoster(detail.item, Modifier.size(width = 116.dp, height = 164.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(detail.item.title.withoutEmoji(), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        Text(
+                            listOfNotNull(
+                                detail.item.year?.toString(),
+                                detail.item.rating?.let { "评分 %.1f".format(it) },
+                                detail.item.type,
+                            ).joinToString(" · "),
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                        Button(
+                            onClick = { viewModel.playUnifiedItem(detail.children.firstOrNull() ?: detail.item) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Rounded.PlayArrow, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (detail.children.isEmpty()) "立即播放" else "播放第一集")
+                        }
+                    }
+                }
+            }
+            detail.item.overview?.takeIf(String::isNotBlank)?.let { overview ->
+                item {
+                    Text(
+                        overview.withoutEmoji(),
+                        modifier = Modifier.padding(horizontal = 20.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+            if (detail.genres.isNotEmpty() || detail.people.isNotEmpty()) {
+                item {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items((detail.genres + detail.people).distinct(), key = { it }) { label ->
+                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer) {
+                                Text(label.withoutEmoji(), Modifier.padding(horizontal = 12.dp, vertical = 7.dp), style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+                }
+            }
+            if (detail.children.isNotEmpty()) {
+                item {
+                    Text(
+                        "选集与线路",
+                        modifier = Modifier.padding(horizontal = 20.dp),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                items(detail.children, key = { it.key.stableId }) { child ->
+                    Card(
+                        onClick = { viewModel.playUnifiedItem(child) },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f)),
+                    ) {
+                        Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.Movie, null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(child.title.withoutEmoji(), style = MaterialTheme.typography.titleMedium)
+                                child.subtitle?.let { Text(it.withoutEmoji(), style = MaterialTheme.typography.bodySmall) }
+                            }
+                            Icon(Icons.Rounded.PlayArrow, "播放")
+                        }
+                    }
+                }
+            }
+        } else if (!state.isLoading) {
+            item { EmptyStatePanel("Provider 没有返回可展示的详情", Modifier.padding(horizontal = 20.dp)) }
+        }
+        state.errorMessage?.let { message ->
+            item { Text(message, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 20.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun UnifiedPoster(item: UnifiedMediaItem, modifier: Modifier) {
+    Surface(modifier = modifier.clip(MaterialTheme.shapes.medium), color = MaterialTheme.colorScheme.primaryContainer) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(Icons.Rounded.Movie, null, modifier = Modifier.size(30.dp), tint = MaterialTheme.colorScheme.primary)
+            if (item.posterUrl != null) {
+                AsyncImage(
+                    model = item.posterUrl,
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            }
+        }
+    }
+}
 
 @Composable
 internal fun MediaHomeScreen(state: MainUiState, viewModel: MainViewModel) {
@@ -122,8 +379,10 @@ internal fun MediaHomeScreen(state: MainUiState, viewModel: MainViewModel) {
             MediaHubActions(
                 libraryCount = state.libraries.size,
                 sourceCount = state.externalSources.size,
+                providerCount = state.providerDescriptors.size,
                 onLibraries = viewModel::showLibraries,
                 onSources = viewModel::showSources,
+                onDiscover = viewModel::showDiscover,
                 onSettings = viewModel::showSettings,
             )
         }
@@ -159,35 +418,48 @@ internal fun MediaHomeScreen(state: MainUiState, viewModel: MainViewModel) {
 private fun MediaHubActions(
     libraryCount: Int,
     sourceCount: Int,
+    providerCount: Int,
     onLibraries: () -> Unit,
     onSources: () -> Unit,
+    onDiscover: () -> Unit,
     onSettings: () -> Unit,
 ) {
-    Row(
+    Column(
         Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        HubActionCard(
-            title = "媒体库",
-            subtitle = "$libraryCount 个片库",
-            icon = { Icon(Icons.Rounded.VideoLibrary, null) },
-            onClick = onLibraries,
-            modifier = Modifier.weight(1f),
-        )
-        HubActionCard(
-            title = "控制台",
-            subtitle = "功能与诊断",
-            icon = { Icon(Icons.Rounded.Tune, null) },
-            onClick = onSettings,
-            modifier = Modifier.weight(1f),
-        )
-        HubActionCard(
-            title = "影视仓",
-            subtitle = "$sourceCount 个订阅",
-            icon = { Icon(Icons.Rounded.Dns, null) },
-            onClick = onSources,
-            modifier = Modifier.weight(1f),
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            HubActionCard(
+                title = "发现",
+                subtitle = "$providerCount 个内容服务",
+                icon = { Icon(Icons.Rounded.Explore, null) },
+                onClick = onDiscover,
+                modifier = Modifier.weight(1f),
+            )
+            HubActionCard(
+                title = "媒体库",
+                subtitle = "$libraryCount 个片库",
+                icon = { Icon(Icons.Rounded.VideoLibrary, null) },
+                onClick = onLibraries,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            HubActionCard(
+                title = "影视仓",
+                subtitle = "$sourceCount 个订阅",
+                icon = { Icon(Icons.Rounded.Dns, null) },
+                onClick = onSources,
+                modifier = Modifier.weight(1f),
+            )
+            HubActionCard(
+                title = "控制台",
+                subtitle = "功能与诊断",
+                icon = { Icon(Icons.Rounded.Tune, null) },
+                onClick = onSettings,
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }
 

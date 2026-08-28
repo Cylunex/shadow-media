@@ -4,6 +4,7 @@ import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.BrowseRequest
 import top.cylunex.shadowmedia.model.ExternalSourceSummary
 import top.cylunex.shadowmedia.model.ExternalSourceImport
+import top.cylunex.shadowmedia.model.ExternalCatalogSite
 import top.cylunex.shadowmedia.model.ExternalMediaEntry
 import top.cylunex.shadowmedia.model.MediaItem
 import top.cylunex.shadowmedia.model.MediaLibrary
@@ -58,6 +59,7 @@ interface ExternalSourceRepository {
     suspend fun importFromUrl(url: String, allowInsecureHttp: Boolean): ExternalSourceImport
     fun importPayload(url: String, payload: String, displayName: String? = null): ExternalSourceImport
     fun entries(source: ExternalSourceImport): List<ExternalMediaEntry>
+    fun catalogSites(source: ExternalSourceImport): List<ExternalCatalogSite>
 }
 
 interface EmbyRepository {

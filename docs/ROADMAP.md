@@ -62,7 +62,7 @@
 
 - [x] TVBox JSON、M3U、TXT 的安全检查与订阅元数据存储
 - [x] 运行时站点识别；主进程禁止执行 JAR/QuickJS/Python/WebView 嗅探
-- [ ] 声明式 HTTP Provider 的分类、搜索、详情与播放
+- [x] 声明式 HTTP Provider 的搜索、详情、选集与播放
 - [x] M3U/TXT 频道浏览与 Media3 直播播放
 - [x] XMLTV EPG 与基础回看
 - [x] 同名频道多线路、搜索、分组与本地收藏
@@ -84,5 +84,7 @@
 - [x] Room 2.8 数据库和 PagingSource
 - [x] 功能开关控制台
 - [x] 播放遥测与线路健康数据模型
-- [ ] EmbyProvider 迁移到统一协议
-- [ ] 直播、Stremio、声明式 HTTP 与 CatVod Bridge Provider
+- [x] EmbyProvider 迁移到统一协议
+- [x] 直播与声明式 HTTP Provider
+- [ ] Stremio 与 CatVod Bridge Provider
+- [x] 跨 Provider 聚合搜索、部分失败隔离与统一详情

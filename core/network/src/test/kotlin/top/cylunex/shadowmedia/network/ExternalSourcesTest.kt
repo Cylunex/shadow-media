@@ -39,6 +39,7 @@ class ExternalSourcesTest {
         assertEquals(2, source.summary.runtimeRequiredCount)
         assertEquals(1, source.summary.liveCount)
         assertTrue(repository.entries(source).isEmpty())
+        assertEquals("https://api.example.com/provide/vod", repository.catalogSites(source).single().apiUrl)
     }
 
     @Test
@@ -53,7 +54,10 @@ class ExternalSourcesTest {
                 """.trimIndent()
                 "/child.json" -> "application/json" to """
                     {
-                      "sites": [{"key":"jar","api":"csp_Custom"}],
+                      "sites": [
+                        {"key":"remote","name":"公开接口","api":"https://api.example.com/provide/vod"},
+                        {"key":"jar","api":"csp_Custom"}
+                      ],
                       "lives": [{"name":"直播一","url":"/live.txt","ua":"Declared UA"}]
                     }
                 """.trimIndent()
@@ -79,6 +83,8 @@ class ExternalSourcesTest {
         assertEquals(1, imported.resolvedEntries.size)
         assertEquals("线路一 · 直播一 · News", imported.resolvedEntries.single().group)
         assertEquals("Declared UA", imported.resolvedEntries.single().requestHeaders["User-Agent"])
+        assertEquals(1, imported.resolvedCatalogSites.size)
+        assertEquals("线路一 · 公开接口", imported.resolvedCatalogSites.single().name)
     }
 
     @Test
