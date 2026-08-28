@@ -366,7 +366,7 @@ internal fun ExternalSourcesScreen(state: MainUiState, viewModel: MainViewModel)
                     Column {
                         Text("安全子集", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "M3U/TXT 会解析为可播放列表；TVBox JSON 安全导入配置，但不执行未知 JAR、QuickJS、Python 或 WebView 嗅探。",
+                            "支持 JSONC、多仓目录、M3U/TXT，并自动展开 TVBox lives 直播列表；未知 JAR、QuickJS、Python 或 WebView 嗅探仍不会执行。",
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f),
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -393,14 +393,17 @@ internal fun ExternalSourcesScreen(state: MainUiState, viewModel: MainViewModel)
                         checked = state.sourceAllowInsecureHttp,
                         onCheckedChange = viewModel::updateSourceAllowInsecure,
                     )
-                    Text("允许受信任局域网使用 HTTP", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        "允许 HTTP 主地址及其二级源（仅勾选你信任的配置）",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 Button(
                     onClick = viewModel::addExternalSource,
                     enabled = state.sourceUrl.isNotBlank() && !state.isInspectingSource,
                     modifier = Modifier.fillMaxWidth().height(50.dp),
                 ) {
-                    Text(if (state.isInspectingSource) "正在导入…" else "从 URL 导入")
+                    Text(if (state.isInspectingSource) "正在导入并展开直播…" else "从 URL 导入")
                 }
                 OutlinedButton(
                     onClick = {
@@ -478,7 +481,8 @@ private fun ExternalSourceCard(
                 Text(
                     when (source.kind) {
                         ExternalSourceKind.LIVE_PLAYLIST -> "${source.liveCount} 个直播条目"
-                        else -> "${source.siteCount} 个站点 · ${source.liveCount} 个直播配置"
+                        ExternalSourceKind.DECLARATIVE -> "${source.siteCount} 个仓库入口"
+                        ExternalSourceKind.TVBOX_CONFIG -> "${source.siteCount} 个站点 · ${source.liveCount} 个直播配置"
                     },
                     color = MaterialTheme.colorScheme.primary,
                     style = MaterialTheme.typography.labelMedium,
@@ -537,10 +541,12 @@ internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
         if (state.externalEntries.isEmpty()) {
             item {
                 EmptyStatePanel(
-                    if (source?.kind == ExternalSourceKind.TVBOX_CONFIG) {
-                        "配置已导入。它没有可直接播放的 M3U/TXT 条目；需要脚本的站点仍不会在主应用中执行。"
-                    } else {
-                        "这个视频源没有找到有效的 HTTP(S) 播放地址"
+                    when (source?.kind) {
+                        ExternalSourceKind.TVBOX_CONFIG ->
+                            "配置已导入，但没有成功展开可播放直播；需要 csp/JAR/JS 的影视站点不会在主应用中执行。"
+                        ExternalSourceKind.DECLARATIVE ->
+                            "多仓目录已导入，但仓库失效、超时或 HTTP 二级源未获授权，因此没有可播放直播。"
+                        else -> "这个视频源没有找到有效的 HTTP(S) 播放地址"
                     },
                     Modifier.padding(horizontal = 20.dp),
                 )

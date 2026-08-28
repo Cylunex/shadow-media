@@ -1,6 +1,11 @@
 package top.cylunex.shadowmedia.network
 
+import kotlinx.coroutines.runBlocking
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -21,6 +26,7 @@ class ExternalSourcesTest {
                     {"key":"jar","api":"csp_Custom"},
                     {"key":"js","api":"./quickjs/site.js"}
                   ],
+                  // TVBox 配置常见行注释，不能误删字符串里的 https://
                   "lives": [{"name":"Home live","url":"https://example.com/live.m3u"}]
                 }
             """.trimIndent(),
@@ -33,6 +39,46 @@ class ExternalSourcesTest {
         assertEquals(2, source.summary.runtimeRequiredCount)
         assertEquals(1, source.summary.liveCount)
         assertTrue(repository.entries(source).isEmpty())
+    }
+
+    @Test
+    fun `expands tvbox catalog and nested live playlist without executing sites`() = runBlocking {
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val (contentType, body) = when (chain.request().url.encodedPath) {
+                "/catalog.json" -> "text/html" to """
+                    {
+                      "urls": [{"name":"线路一","url":"https://source.example/child.json"}]
+                      // compatibility comment
+                    }
+                """.trimIndent()
+                "/child.json" -> "application/json" to """
+                    {
+                      "sites": [{"key":"jar","api":"csp_Custom"}],
+                      "lives": [{"name":"直播一","url":"/live.txt","ua":"Declared UA"}]
+                    }
+                """.trimIndent()
+                "/live.txt" -> "text/plain" to """
+                    News,#genre#
+                    Channel One,https://video.example/one.m3u8
+                """.trimIndent()
+                else -> error("Unexpected request ${chain.request().url}")
+            }
+            Response.Builder()
+                .request(chain.request())
+                .protocol(Protocol.HTTP_1_1)
+                .code(200)
+                .message("OK")
+                .body(body.toResponseBody(contentType.toMediaType()))
+                .build()
+        }.build()
+        val imported = SafeExternalSourceRepository(client)
+            .importFromUrl("https://source.example/catalog.json", allowInsecureHttp = false)
+
+        assertEquals(ExternalSourceKind.DECLARATIVE, imported.summary.kind)
+        assertEquals(1, imported.summary.siteCount)
+        assertEquals(1, imported.resolvedEntries.size)
+        assertEquals("线路一 · 直播一 · News", imported.resolvedEntries.single().group)
+        assertEquals("Declared UA", imported.resolvedEntries.single().requestHeaders["User-Agent"])
     }
 
     @Test
@@ -82,5 +128,10 @@ class ExternalSourcesTest {
     @Test(expected = IllegalArgumentException::class)
     fun `rejects unknown executable style payload`() {
         repository.importPayload("https://config.example.com/source", "function init() { return 1 }")
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `rejects encrypted runtime payload`() {
+        repository.importPayload("https://config.example.com/encrypted", "ab12".repeat(200))
     }
 }

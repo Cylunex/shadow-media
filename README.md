@@ -4,7 +4,7 @@
 封面墙和刷片体验，并为用户自带的外部配置与直播订阅建立受控入口。项目不登录网盘、不刮削媒体，
 也不会预置或分发公开内容源。
 
-当前 `0.6.1` 已经打通两条主要闭环：
+当前 `0.6.2` 已经打通两条主要闭环：
 
 ```text
 选择或添加多个 Emby 登录
@@ -19,6 +19,8 @@
 用户自带 TVBox JSON / M3U / TXT
   → HTTPS/局域网 HTTP 策略与 2 MiB 上限检查
   → 支持 URL 或系统文件选择器导入
+  → 兼容 JSONC 注释、伪装 Content-Type 与多仓 urls 目录
+  → 自动限时展开 lives 二级 M3U/TXT，失效子源不阻塞整体导入
   → 配置正文使用 Android Keystore + AES-GCM 加密保存
   → M3U/TXT 解析为视频列表并由独立 Media3 播放
   → TVBox JSON 读取站点、直播和运行时需求等元数据
@@ -35,7 +37,8 @@
   随机排序；
 - 电视剧与合集详情：读取子项、展示剧集进度并从选定剧集开始连续播放；
 - 收藏状态直接写回 Emby，海报缓存键随服务器、媒体 ID、图片 Tag 和尺寸自然失效；
-- 影视仓视频源：从 URL 或本地文件导入 TVBox JSON、M3U 和 TXT，M3U/TXT 支持分组、相对地址、
+- 影视仓视频源：从 URL 或本地文件导入 TVBox JSON/JSONC、多仓目录、M3U 和 TXT，并安全展开
+  `lives` 中最多 8 个二级列表；M3U/TXT 支持分组、相对地址、
   `tvg-logo` 以及受限的 User-Agent/Referer/Origin 播放头；
 - 外部视频列表与 Media3 播放页使用无 Cookie、无 Emby 拦截器的独立 OkHttp 客户端，不向外部地址
   发送 Emby Token，也不把外部播放进度回写 Emby；
@@ -97,7 +100,8 @@ ISO 是光盘镜像而不是普通视频容器。Emby Server 不支持 ISO 转�
 
 ## 外部源边界
 
-当前影视仓页面已能导入并播放用户自带 M3U/TXT，但还不是完整 CatVod 执行器。TVBox JSON 中的
+当前影视仓页面已能导入并播放用户自带 M3U/TXT，也能从 TVBox JSON/多仓目录自动提取直播列表，
+但还不是完整 CatVod 执行器。TVBox JSON 中的
 远程 HTTP API、统一搜索和换源会逐步接入统一 Provider；需要 JAR、QuickJS 或 Python 的站点只会标记为“需要隔离
 运行时”，不会在包含 Emby Token 的主应用进程内执行。完整边界见
 [媒体中心与外部源](docs/MEDIA_HUB.md)。

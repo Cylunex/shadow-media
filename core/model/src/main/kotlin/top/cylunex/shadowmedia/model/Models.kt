@@ -107,6 +107,7 @@ data class ExternalSourceSummary(
 data class ExternalSourceImport(
     val summary: ExternalSourceSummary,
     val payload: String,
+    val resolvedEntries: List<ExternalMediaEntry> = emptyList(),
 )
 
 data class ExternalMediaEntry(

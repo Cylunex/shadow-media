@@ -19,7 +19,7 @@ Compose UI
 MainViewModel
    │
    ├── EmbyRepository ── Catalog / 收藏 / PlaybackInfo ── Emby REST API
-   ├── ExternalSourceRepository ── 配置导入 / M3U、TXT 解析（不执行代码）
+   ├── ExternalSourceRepository ── JSONC / 多仓 / lives 展开 / M3U、TXT 解析（不执行代码）
    ├── ExternalSourceStore ── 加密订阅正文与摘要
    ├── FeedSessionStore ── 每服/用户/媒体库的稳定顺序与当前位置
    │
