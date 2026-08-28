@@ -66,7 +66,12 @@ fun rememberEmbyImageLoader(session: EmbySession?, clientIdentity: ClientIdentit
     return imageLoader
 }
 
-fun embyArtworkUrl(session: EmbySession?, itemId: String, width: Int = 720): String? =
+fun embyArtworkUrl(
+    session: EmbySession?,
+    itemId: String,
+    width: Int = 720,
+    imageTag: String? = null,
+): String? =
     session?.serverUrl?.toHttpUrl()?.newBuilder()?.apply {
         val currentSegments = build().pathSegments.filter(String::isNotEmpty)
         if (currentSegments.lastOrNull()?.equals("emby", ignoreCase = true) != true) {
@@ -78,6 +83,7 @@ fun embyArtworkUrl(session: EmbySession?, itemId: String, width: Int = 720): Str
         addPathSegment("Primary")
         addQueryParameter("maxWidth", width.toString())
         addQueryParameter("quality", "86")
+        imageTag?.takeIf(String::isNotBlank)?.let { addQueryParameter("tag", it) }
     }?.build()?.toString()
 
 @Composable
@@ -87,6 +93,7 @@ fun EmbyArtwork(
     title: String,
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
+    imageTag: String? = null,
 ) {
     val loader = LocalEmbyImageLoader.current
     Box(
@@ -105,7 +112,7 @@ fun EmbyArtwork(
         )
         if (loader != null) {
             AsyncImage(
-                model = embyArtworkUrl(session, itemId),
+                model = embyArtworkUrl(session, itemId, imageTag = imageTag),
                 imageLoader = loader,
                 contentDescription = title,
                 contentScale = contentScale,

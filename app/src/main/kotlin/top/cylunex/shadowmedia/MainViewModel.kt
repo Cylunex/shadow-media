@@ -11,19 +11,27 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import top.cylunex.shadowmedia.model.EmbySession
+import top.cylunex.shadowmedia.model.BrowseRequest
+import top.cylunex.shadowmedia.model.ExternalSourceSummary
 import top.cylunex.shadowmedia.model.MediaItem
+import top.cylunex.shadowmedia.model.MediaFilter
 import top.cylunex.shadowmedia.model.MediaLibrary
+import top.cylunex.shadowmedia.model.MediaSection
+import top.cylunex.shadowmedia.model.MediaSectionKind
+import top.cylunex.shadowmedia.model.MediaSort
 import top.cylunex.shadowmedia.model.PlaybackPlan
 import top.cylunex.shadowmedia.model.PlaybackEvent
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
 import top.cylunex.shadowmedia.model.millisecondsToEmbyTicks
 import top.cylunex.shadowmedia.network.EmbyRepository
+import top.cylunex.shadowmedia.network.ExternalSourceRepository
+import top.cylunex.shadowmedia.network.ExternalSourceStore
 import top.cylunex.shadowmedia.network.LoginRequest
 import top.cylunex.shadowmedia.network.PlaybackOutbox
 import top.cylunex.shadowmedia.network.PlaybackReport
 import top.cylunex.shadowmedia.network.SessionStore
 
-enum class Screen { SERVERS, LOGIN, LIBRARIES, ITEMS, PLAYER }
+enum class Screen { SERVERS, LOGIN, HOME, LIBRARIES, ITEMS, DETAIL, SOURCES, PLAYER }
 
 data class MainUiState(
     val screen: Screen = Screen.LOGIN,
@@ -34,9 +42,25 @@ data class MainUiState(
     val savedSessions: List<EmbySession> = emptyList(),
     val session: EmbySession? = null,
     val libraries: List<MediaLibrary> = emptyList(),
+    val homeSections: List<MediaSection> = emptyList(),
     val lastFeedLibraryId: String? = null,
     val selectedLibrary: MediaLibrary? = null,
+    val wallItems: List<MediaItem> = emptyList(),
     val items: List<MediaItem> = emptyList(),
+    val wallSearch: String = "",
+    val wallSort: MediaSort = MediaSort.DATE_ADDED,
+    val wallFilter: MediaFilter = MediaFilter.ALL,
+    val wallTotalCount: Int = 0,
+    val wallHasMore: Boolean = false,
+    val isLoadingMore: Boolean = false,
+    val selectedSeries: MediaItem? = null,
+    val detailEpisodes: List<MediaItem> = emptyList(),
+    val playerReturnScreen: Screen = Screen.ITEMS,
+    val feedMode: Boolean = false,
+    val externalSources: List<ExternalSourceSummary> = emptyList(),
+    val sourceUrl: String = "",
+    val sourceAllowInsecureHttp: Boolean = false,
+    val isInspectingSource: Boolean = false,
     val selectedItem: MediaItem? = null,
     val currentIndex: Int = 0,
     val playbackPlan: PlaybackPlan? = null,
@@ -54,6 +78,8 @@ class MainViewModel(
     private val sessionStore: SessionStore,
     private val feedSessionStore: FeedSessionStore,
     private val playbackOutbox: PlaybackOutbox,
+    private val externalSourceRepository: ExternalSourceRepository,
+    private val externalSourceStore: ExternalSourceStore,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     private var playbackRequest: Job? = null
@@ -138,7 +164,8 @@ class MainViewModel(
                     savedSessions = sessionStore.loadAll(),
                     serverUrl = session.serverUrl,
                     userName = session.userName,
-                    screen = Screen.LIBRARIES,
+                    screen = Screen.HOME,
+                    externalSources = externalSourceStore.loadAll(),
                     isLoading = true,
                 )
                 viewModelScope.launch { playbackOutbox.flush(session) }
@@ -147,14 +174,59 @@ class MainViewModel(
         }
     }
 
-    fun selectLibrary(library: MediaLibrary) = loadLibrary(library, autoPlay = false)
+    fun showHome() = update {
+        copy(
+            screen = Screen.HOME,
+            selectedLibrary = null,
+            selectedSeries = null,
+            detailEpisodes = emptyList(),
+            items = emptyList(),
+            wallItems = emptyList(),
+            feedMode = false,
+            errorMessage = null,
+        )
+    }
+
+    fun showLibraries() = update { copy(screen = Screen.LIBRARIES, errorMessage = null) }
+
+    fun showSources() = update {
+        copy(
+            screen = Screen.SOURCES,
+            externalSources = externalSourceStore.loadAll(),
+            sourceUrl = "",
+            errorMessage = null,
+        )
+    }
+
+    fun selectLibrary(library: MediaLibrary) {
+        update {
+            copy(
+                selectedLibrary = library,
+                screen = Screen.ITEMS,
+                wallItems = emptyList(),
+                wallSearch = "",
+                wallSort = MediaSort.DATE_ADDED,
+                wallFilter = MediaFilter.ALL,
+                wallTotalCount = 0,
+                wallHasMore = false,
+                feedMode = false,
+                errorMessage = null,
+            )
+        }
+        loadWall(reset = true)
+    }
 
     fun resumeLastFeed() {
         val library = state.value.libraries.firstOrNull { it.id == state.value.lastFeedLibraryId } ?: return
-        loadLibrary(library, autoPlay = true)
+        loadFeed(library, autoPlay = true)
     }
 
-    private fun loadLibrary(library: MediaLibrary, autoPlay: Boolean) {
+    fun startLibraryFeed() {
+        val library = state.value.selectedLibrary ?: return
+        loadFeed(library, autoPlay = true)
+    }
+
+    private fun loadFeed(library: MediaLibrary, autoPlay: Boolean) {
         val session = state.value.session ?: return
         viewModelScope.launch {
             update {
@@ -162,6 +234,7 @@ class MainViewModel(
                     selectedLibrary = library,
                     items = emptyList(),
                     screen = Screen.ITEMS,
+                    feedMode = true,
                     isLoading = true,
                     errorMessage = null,
                 )
@@ -185,9 +258,124 @@ class MainViewModel(
         }
     }
 
-    fun play(item: MediaItem) {
+    fun updateWallSearch(value: String) = update { copy(wallSearch = value, errorMessage = null) }
+
+    fun submitWallSearch() = loadWall(reset = true)
+
+    fun setWallSort(sort: MediaSort) {
+        update { copy(wallSort = sort) }
+        loadWall(reset = true)
+    }
+
+    fun setWallFilter(filter: MediaFilter) {
+        update { copy(wallFilter = filter) }
+        loadWall(reset = true)
+    }
+
+    fun loadMoreWall() {
+        if (!state.value.wallHasMore || state.value.isLoadingMore) return
+        loadWall(reset = false)
+    }
+
+    private fun loadWall(reset: Boolean) {
+        val snapshot = state.value
+        val session = snapshot.session ?: return
+        val library = snapshot.selectedLibrary ?: return
+        viewModelScope.launch {
+            update {
+                if (reset) copy(isLoading = true, wallItems = emptyList(), errorMessage = null)
+                else copy(isLoadingMore = true, errorMessage = null)
+            }
+            val startIndex = if (reset) 0 else state.value.wallItems.size
+            runCatching {
+                repository.browse(
+                    session,
+                    BrowseRequest(
+                        parentId = library.id,
+                        includeItemTypes = library.wallItemTypes(),
+                        searchTerm = state.value.wallSearch,
+                        sort = state.value.wallSort,
+                        descending = state.value.wallSort != MediaSort.NAME,
+                        filter = state.value.wallFilter,
+                        startIndex = startIndex,
+                        limit = WALL_PAGE_SIZE,
+                    )
+                )
+            }.onSuccess { page ->
+                update {
+                    copy(
+                        wallItems = if (reset) page.items else (wallItems + page.items).distinctBy(MediaItem::id),
+                        wallTotalCount = page.totalRecordCount,
+                        wallHasMore = page.hasMore && wallSort != MediaSort.RANDOM,
+                        isLoading = false,
+                        isLoadingMore = false,
+                    )
+                }
+            }.onFailure {
+                update { copy(isLoading = false, isLoadingMore = false) }
+                showError(it)
+            }
+        }
+    }
+
+    fun openCatalogItem(item: MediaItem) {
+        if (item.type.equals("Series", ignoreCase = true) || item.type.equals("BoxSet", ignoreCase = true)) {
+            loadDetail(item)
+        } else {
+            val playable = state.value.wallItems.filterNot {
+                it.type.equals("Series", true) || it.type.equals("BoxSet", true)
+            }
+            val index = playable.indexOfFirst { it.id == item.id }
+            if (index >= 0) {
+                update { copy(items = playable, playerReturnScreen = Screen.ITEMS, feedMode = false) }
+                playAt(index)
+            }
+        }
+    }
+
+    fun playHomeSection(section: MediaSection, item: MediaItem) {
+        val playable = section.items.filterNot { it.type.equals("Series", true) }
+        val index = playable.indexOfFirst { it.id == item.id }
+        if (index < 0) {
+            openCatalogItem(item)
+            return
+        }
+        update { copy(items = playable, playerReturnScreen = Screen.HOME, feedMode = false) }
+        playAt(index)
+    }
+
+    private fun loadDetail(item: MediaItem) {
+        val session = state.value.session ?: return
+        viewModelScope.launch {
+            update {
+                copy(
+                    screen = Screen.DETAIL,
+                    selectedSeries = item,
+                    detailEpisodes = emptyList(),
+                    isLoading = true,
+                    errorMessage = null,
+                )
+            }
+            runCatching { repository.children(session, item.id) }
+                .onSuccess { episodes -> update { copy(detailEpisodes = episodes, isLoading = false) } }
+                .onFailure(::showError)
+        }
+    }
+
+    fun playEpisode(item: MediaItem) {
+        val episodes = state.value.detailEpisodes
+        val index = episodes.indexOfFirst { it.id == item.id }
+        if (index < 0) return
+        update { copy(items = episodes, playerReturnScreen = Screen.DETAIL, feedMode = false) }
+        playAt(index)
+    }
+
+    fun play(item: MediaItem, returnScreen: Screen = state.value.screen) {
         val index = state.value.items.indexOfFirst { it.id == item.id }
-        if (index >= 0) playAt(index)
+        if (index >= 0) {
+            update { copy(playerReturnScreen = returnScreen) }
+            playAt(index)
+        }
     }
 
     fun playAt(index: Int) {
@@ -198,7 +386,9 @@ class MainViewModel(
             snapshot.screen == Screen.PLAYER && snapshot.currentIndex == index &&
             (snapshot.playbackPlan?.itemId == item.id || snapshot.isLoading)
         ) return
-        snapshot.selectedLibrary?.let { feedSessionStore.markCurrent(session, it.id, item.id, index) }
+        if (snapshot.feedMode) {
+            snapshot.selectedLibrary?.let { feedSessionStore.markCurrent(session, it.id, item.id, index) }
+        }
         resolvePlayback(
             session,
             item,
@@ -310,6 +500,76 @@ class MainViewModel(
 
     fun requestDelete(item: MediaItem) = update { copy(pendingDeleteItem = item, errorMessage = null) }
 
+    fun toggleFavorite(item: MediaItem) {
+        val session = state.value.session ?: return
+        val target = !item.favorite
+        viewModelScope.launch {
+            runCatching { repository.setFavorite(session, item.id, target) }
+                .onSuccess {
+                    update {
+                        copy(
+                            items = items.map { if (it.id == item.id) it.copy(favorite = target) else it },
+                            wallItems = wallItems.map {
+                                if (it.id == item.id) it.copy(favorite = target) else it
+                            },
+                            detailEpisodes = detailEpisodes.map {
+                                if (it.id == item.id) it.copy(favorite = target) else it
+                            },
+                            selectedSeries = selectedSeries?.let {
+                                if (it.id == item.id) it.copy(favorite = target) else it
+                            },
+                            homeSections = homeSections.map { section ->
+                                section.copy(
+                                    items = section.items.map {
+                                        if (it.id == item.id) it.copy(favorite = target) else it
+                                    }.let { updated ->
+                                        if (section.kind == MediaSectionKind.FAVORITES && !target) {
+                                            updated.filterNot { it.id == item.id }
+                                        } else updated
+                                    }
+                                )
+                            }.filter { it.items.isNotEmpty() },
+                        )
+                    }
+                }
+                .onFailure(::showError)
+        }
+    }
+
+    fun updateSourceUrl(value: String) = update { copy(sourceUrl = value, errorMessage = null) }
+
+    fun updateSourceAllowInsecure(value: Boolean) =
+        update { copy(sourceAllowInsecureHttp = value, errorMessage = null) }
+
+    fun addExternalSource() {
+        val snapshot = state.value
+        if (snapshot.isInspectingSource || snapshot.sourceUrl.isBlank()) return
+        viewModelScope.launch {
+            update { copy(isInspectingSource = true, errorMessage = null) }
+            runCatching {
+                externalSourceRepository.inspect(snapshot.sourceUrl, snapshot.sourceAllowInsecureHttp)
+            }.onSuccess { source ->
+                externalSourceStore.save(source)
+                update {
+                    copy(
+                        externalSources = externalSourceStore.loadAll(),
+                        sourceUrl = "",
+                        isInspectingSource = false,
+                        errorMessage = null,
+                    )
+                }
+            }.onFailure {
+                update { copy(isInspectingSource = false) }
+                showError(it)
+            }
+        }
+    }
+
+    fun removeExternalSource(sourceId: String) {
+        externalSourceStore.remove(sourceId)
+        update { copy(externalSources = externalSourceStore.loadAll()) }
+    }
+
     fun cancelDelete() {
         if (!state.value.isDeleting) update { copy(pendingDeleteItem = null) }
     }
@@ -325,6 +585,7 @@ class MainViewModel(
                 val snapshot = state.value
                 val removedActiveItem = snapshot.screen == Screen.PLAYER && snapshot.selectedItem?.id == item.id
                 val remaining = snapshot.items.filterNot { it.id == item.id }
+                val remainingWallItems = snapshot.wallItems.filterNot { it.id == item.id }
                 val nextIndex = snapshot.currentIndex.coerceAtMost((remaining.size - 1).coerceAtLeast(0))
                 snapshot.selectedLibrary?.let { feedSessionStore.removeItem(session, it.id, item.id) }
                 if (removedActiveItem) playbackRequest?.cancel()
@@ -332,6 +593,7 @@ class MainViewModel(
                     copy(
                         screen = if (removedActiveItem && remaining.isEmpty()) Screen.ITEMS else screen,
                         items = remaining,
+                        wallItems = remainingWallItems,
                         selectedItem = if (removedActiveItem) null else selectedItem,
                         playbackPlan = if (removedActiveItem) null else playbackPlan,
                         currentIndex = nextIndex,
@@ -361,17 +623,26 @@ class MainViewModel(
             Screen.LOGIN -> if (state.value.savedSessions.isNotEmpty()) showServers()
             Screen.PLAYER -> update {
                 copy(
-                    screen = Screen.ITEMS,
+                    screen = playerReturnScreen,
                     playbackPlan = null,
                     selectedItem = null,
                     isLoading = false,
                     errorMessage = null,
                 )
             }
-            Screen.ITEMS -> update {
-                copy(screen = Screen.LIBRARIES, selectedLibrary = null, items = emptyList())
+            Screen.DETAIL -> update {
+                copy(screen = Screen.ITEMS, selectedSeries = null, detailEpisodes = emptyList())
             }
-            Screen.LIBRARIES -> showServers()
+            Screen.ITEMS -> update {
+                copy(
+                    screen = Screen.LIBRARIES,
+                    selectedLibrary = null,
+                    wallItems = emptyList(),
+                    items = emptyList(),
+                )
+            }
+            Screen.LIBRARIES, Screen.SOURCES -> showHome()
+            Screen.HOME -> showServers()
             Screen.SERVERS -> Unit
         }
     }
@@ -394,12 +665,13 @@ class MainViewModel(
 
     private fun restoreSession(session: EmbySession, saved: List<EmbySession>) {
         mutableState.value = MainUiState(
-            screen = Screen.LIBRARIES,
+            screen = Screen.HOME,
             serverUrl = session.serverUrl,
             userName = session.userName,
             allowInsecureHttp = session.allowInsecureHttp,
             savedSessions = saved,
             session = session,
+            externalSources = externalSourceStore.loadAll(),
             isLoading = true,
         )
         viewModelScope.launch { playbackOutbox.flush(session) }
@@ -417,6 +689,9 @@ class MainViewModel(
                         isLoading = false,
                     )
                 }
+                runCatching { repository.home(session, libraries.map(MediaLibrary::id)) }
+                    .onSuccess { sections -> update { copy(homeSections = sections) } }
+                    .onFailure { update { copy(errorMessage = "首页加载不完整：${it.message ?: "未知错误"}") } }
             }
             .onFailure(::showError)
     }
@@ -429,6 +704,7 @@ class MainViewModel(
 
     companion object {
         private const val MAX_PLAYBACK_REFRESHES = 1
+        private const val WALL_PAGE_SIZE = 60
 
         fun factory(container: AppContainer): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
@@ -439,7 +715,17 @@ class MainViewModel(
                         container.sessionStore,
                         container.feedSessionStore,
                         container.playbackOutbox,
+                        container.externalSourceRepository,
+                        container.externalSourceStore,
                     ) as T
             }
     }
+}
+
+private fun MediaLibrary.wallItemTypes(): Set<String> = when (collectionType?.lowercase()) {
+    "tvshows" -> setOf("Series")
+    "movies" -> setOf("Movie")
+    "boxsets" -> setOf("BoxSet")
+    "music" -> setOf("MusicAlbum", "MusicVideo")
+    else -> setOf("Movie", "Episode", "Video", "Series")
 }

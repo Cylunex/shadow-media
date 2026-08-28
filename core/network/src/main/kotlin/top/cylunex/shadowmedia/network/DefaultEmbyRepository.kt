@@ -1,6 +1,8 @@
 package top.cylunex.shadowmedia.network
 
 import java.io.IOException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -11,8 +13,13 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import top.cylunex.shadowmedia.model.EmbySession
+import top.cylunex.shadowmedia.model.BrowseRequest
 import top.cylunex.shadowmedia.model.MediaItem
+import top.cylunex.shadowmedia.model.MediaFilter
 import top.cylunex.shadowmedia.model.MediaLibrary
+import top.cylunex.shadowmedia.model.MediaPage
+import top.cylunex.shadowmedia.model.MediaSection
+import top.cylunex.shadowmedia.model.MediaSectionKind
 import top.cylunex.shadowmedia.model.PlayMethod
 import top.cylunex.shadowmedia.model.PlaybackCandidate
 import top.cylunex.shadowmedia.model.PlaybackEvent
@@ -76,20 +83,134 @@ class DefaultEmbyRepository(
             totalRecordCount = page.totalRecordCount
         } while (pageItemCount > 0 && startIndex < totalRecordCount)
 
-        return allItems.distinctBy(BaseItemDto::id).map { item ->
-            MediaItem(
-                id = item.id,
-                name = item.name,
-                type = item.type,
-                seriesName = item.seriesName,
-                seasonNumber = item.parentIndexNumber,
-                episodeNumber = item.indexNumber,
-                runTimeTicks = item.runTimeTicks,
-                playbackPositionTicks = item.userData?.playbackPositionTicks ?: 0,
-                played = item.userData?.played ?: false,
-                favorite = item.userData?.favorite ?: false,
-            )
+        return allItems.distinctBy(BaseItemDto::id).map { it.toModel() }
+    }
+
+    override suspend fun home(
+        session: EmbySession,
+        libraryIds: List<String>,
+    ): List<MediaSection> = coroutineScope {
+        val continueWatching = async {
+            browse(
+                session,
+                BrowseRequest(
+                    parentId = "",
+                    includeItemTypes = PLAYABLE_ITEM_TYPES,
+                    filter = MediaFilter.RESUMABLE,
+                    limit = HOME_SECTION_LIMIT,
+                )
+            ).items
         }
+        val favorites = async {
+            browse(
+                session,
+                BrowseRequest(
+                    parentId = "",
+                    includeItemTypes = PLAYABLE_ITEM_TYPES,
+                    filter = MediaFilter.FAVORITES,
+                    limit = HOME_SECTION_LIMIT,
+                )
+            ).items
+        }
+        val latest = libraryIds.map { libraryId ->
+            async {
+                browse(
+                    session,
+                    BrowseRequest(
+                        parentId = libraryId,
+                        includeItemTypes = PLAYABLE_ITEM_TYPES,
+                        limit = HOME_ITEMS_PER_LIBRARY,
+                    )
+                ).items
+            }
+        }.flatMap { it.await() }.distinctBy(MediaItem::id).take(HOME_SECTION_LIMIT)
+
+        listOf(
+            MediaSection(
+                id = "continue",
+                title = "继续观看",
+                kind = MediaSectionKind.CONTINUE_WATCHING,
+                items = continueWatching.await(),
+            ),
+            MediaSection(
+                id = "latest",
+                title = "最近新增",
+                kind = MediaSectionKind.RECENTLY_ADDED,
+                items = latest,
+            ),
+            MediaSection(
+                id = "favorites",
+                title = "我的收藏",
+                kind = MediaSectionKind.FAVORITES,
+                items = favorites.await(),
+            ),
+        ).filter { it.items.isNotEmpty() }
+    }
+
+    override suspend fun browse(session: EmbySession, request: BrowseRequest): MediaPage {
+        require(request.startIndex >= 0) { "StartIndex 不能小于 0" }
+        require(request.limit in 1..MAX_BROWSE_PAGE_SIZE) { "Limit 必须在 1..$MAX_BROWSE_PAGE_SIZE" }
+        require(request.includeItemTypes.isNotEmpty()) { "至少选择一种媒体类型" }
+        val url = EmbyEndpoints.endpoint(session.serverUrl, "Users", session.userId, "Items")
+            .newBuilder()
+            .apply {
+                request.parentId.takeIf(String::isNotBlank)?.let { addQueryParameter("ParentId", it) }
+                addQueryParameter("Recursive", "true")
+                addQueryParameter("IncludeItemTypes", request.includeItemTypes.sorted().joinToString(","))
+                addQueryParameter("Fields", CATALOG_FIELDS)
+                addQueryParameter("EnableImages", "true")
+                addQueryParameter("EnableUserData", "true")
+                addQueryParameter("SortBy", request.sort.wireName)
+                addQueryParameter("SortOrder", if (request.descending) "Descending" else "Ascending")
+                addQueryParameter("StartIndex", request.startIndex.toString())
+                addQueryParameter("Limit", request.limit.toString())
+                request.searchTerm.trim().takeIf(String::isNotBlank)?.let {
+                    addQueryParameter("SearchTerm", it)
+                }
+                when (request.filter) {
+                    MediaFilter.ALL -> Unit
+                    MediaFilter.UNPLAYED -> addQueryParameter("IsUnplayed", "true")
+                    MediaFilter.RESUMABLE -> addQueryParameter("IsResumable", "true")
+                    MediaFilter.FAVORITES -> addQueryParameter("IsFavorite", "true")
+                    MediaFilter.PLAYED -> addQueryParameter("IsPlayed", "true")
+                }
+            }
+            .build()
+        val page: QueryResultDto = executeJson(authenticatedRequest(session, url).get().build())
+        return MediaPage(
+            items = page.items.distinctBy(BaseItemDto::id).map { it.toModel() },
+            startIndex = request.startIndex,
+            totalRecordCount = page.totalRecordCount,
+        )
+    }
+
+    override suspend fun children(session: EmbySession, parentId: String): List<MediaItem> {
+        val url = EmbyEndpoints.endpoint(session.serverUrl, "Users", session.userId, "Items")
+            .newBuilder()
+            .addQueryParameter("ParentId", parentId)
+            .addQueryParameter("Recursive", "true")
+            .addQueryParameter("IncludeItemTypes", "Episode,Movie,Video")
+            .addQueryParameter("Fields", CATALOG_FIELDS)
+            .addQueryParameter("EnableImages", "true")
+            .addQueryParameter("EnableUserData", "true")
+            .addQueryParameter("SortBy", "ParentIndexNumber,IndexNumber,SortName")
+            .addQueryParameter("SortOrder", "Ascending")
+            .addQueryParameter("Limit", MAX_BROWSE_PAGE_SIZE.toString())
+            .build()
+        val result: QueryResultDto = executeJson(authenticatedRequest(session, url).get().build())
+        return result.items.distinctBy(BaseItemDto::id).map { it.toModel() }
+    }
+
+    override suspend fun setFavorite(session: EmbySession, itemId: String, favorite: Boolean) {
+        val url = EmbyEndpoints.endpoint(
+            session.serverUrl,
+            "Users",
+            session.userId,
+            "FavoriteItems",
+            itemId,
+        )
+        val builder = authenticatedRequest(session, url)
+        executeEmpty(if (favorite) builder.post(EMPTY_BODY).build() else builder.delete().build())
     }
 
     override suspend fun playbackPlan(session: EmbySession, itemId: String): PlaybackPlan {
@@ -290,8 +411,33 @@ class DefaultEmbyRepository(
         PlayMethod.TRANSCODE -> "Transcode"
     }
 
+    private fun BaseItemDto.toModel(): MediaItem = MediaItem(
+        id = id,
+        name = name,
+        type = type,
+        seriesName = seriesName,
+        seasonNumber = parentIndexNumber,
+        episodeNumber = indexNumber,
+        runTimeTicks = runTimeTicks,
+        playbackPositionTicks = userData?.playbackPositionTicks ?: 0,
+        played = userData?.played ?: false,
+        favorite = userData?.favorite ?: false,
+        overview = overview,
+        productionYear = productionYear,
+        communityRating = communityRating,
+        seriesId = seriesId,
+        imageTag = imageTags["Primary"],
+        backdropImageTag = backdropImageTags.firstOrNull(),
+    )
+
     companion object {
         private const val ITEMS_PAGE_SIZE = 200
+        private const val MAX_BROWSE_PAGE_SIZE = 200
+        private const val HOME_SECTION_LIMIT = 24
+        private const val HOME_ITEMS_PER_LIBRARY = 10
+        private const val CATALOG_FIELDS =
+            "Overview,ProductionYear,CommunityRating,SeriesId,ImageTags,BackdropImageTags"
+        private val PLAYABLE_ITEM_TYPES = setOf("Movie", "Episode", "Video")
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val EMPTY_BODY = ByteArray(0).toRequestBody(null)
     }

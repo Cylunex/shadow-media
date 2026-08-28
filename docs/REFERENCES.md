@@ -10,6 +10,13 @@
   大标题和内容优先的信息层级，组件均为独立实现。
 - [JellyPlay](https://github.com/raulshma/jellyplay)：GPL-3.0 的 Material 3 Expressive 媒体客户端，
   用于比较圆角卡片、继续播放入口、多服务状态表达和海报加载策略。
+- [Sashimi Android](https://github.com/bitstorm-labs/sashimi-android)：用于比较可配置首页内容行、
+  继续观看卡片、完整媒体库网格以及排序/筛选状态拆分；只参考公开行为与页面结构。
+- [EmbyX](https://github.com/juneix/EmbyX)：MIT Web/PWA 项目，用于比较分页封面墙、随机换一批与
+  Feed/墙之间的入口关系；没有把 Web 组件嵌入原生应用。
+- [FongMi/TV](https://github.com/FongMi/TV)：GPL-3.0 的 CatVod 客户端，用于核对 `sites`、`lives`、
+  直播订阅和解析/运行时边界。Shadow 只独立实现配置元数据检查，不复制其 JAR、QuickJS、Python、
+  WebView 嗅探或播放器代码。
 - [SnapReel](https://github.com/shahriar-ahmed-seam/SnapReel)：垂直本地媒体浏览交互参考，
   不采用它的本地文件数据边界。
 - [clown6613/ComposeReels](https://github.com/clown6613/ComposeReels)：单播放器和单向数据流

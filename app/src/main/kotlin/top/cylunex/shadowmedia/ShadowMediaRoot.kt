@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,6 +31,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -43,6 +45,7 @@ import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Subtitles
@@ -53,6 +56,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -93,7 +97,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import top.cylunex.shadowmedia.model.MediaItem
+import top.cylunex.shadowmedia.model.MediaFilter
 import top.cylunex.shadowmedia.model.MediaLibrary
+import top.cylunex.shadowmedia.model.MediaSort
 import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.PlaybackPlan
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
@@ -120,8 +126,11 @@ fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
             when (state.screen) {
                 Screen.SERVERS -> ServerScreen(state, viewModel)
                 Screen.LOGIN -> LoginScreen(state, viewModel)
+                Screen.HOME -> MediaHomeScreen(state, viewModel)
                 Screen.LIBRARIES -> LibraryScreen(state, viewModel)
                 Screen.ITEMS -> ItemScreen(state, viewModel)
+                Screen.DETAIL -> SeriesDetailScreen(state, viewModel)
+                Screen.SOURCES -> ExternalSourcesScreen(state, viewModel)
                 Screen.PLAYER -> FeedScreen(state, viewModel, container)
             }
             if (state.isLoading && state.screen != Screen.PLAYER) LoadingOverlay()
@@ -270,8 +279,8 @@ private fun LibraryScreen(state: MainUiState, viewModel: MainViewModel) {
             ScreenHeader(
                 title = "选择片库",
                 subtitle = "${state.session?.userName.orEmpty()} · ${state.session?.serverUrl.orEmpty()}",
-                actionLabel = "服务器",
-                onAction = viewModel::showServers,
+                actionLabel = "媒体中心",
+                onAction = viewModel::showHome,
             )
         }
         if (state.lastFeedLibraryId != null) {
@@ -302,17 +311,57 @@ private fun ItemScreen(state: MainUiState, viewModel: MainViewModel) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             ScreenHeader(
                 title = state.selectedLibrary?.name ?: "视频",
-                subtitle = "已加载 ${state.items.size} 条 · 上下滑动连续播放",
+                subtitle = "${state.wallTotalCount} 部内容 · 已加载 ${state.wallItems.size} 部",
                 actionLabel = "媒体库",
                 onAction = viewModel::back,
             )
         }
-        if (state.items.isNotEmpty()) {
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                ContinueFeedCard(state.currentIndex) { viewModel.playAt(state.currentIndex) }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = state.wallSearch,
+                    onValueChange = viewModel::updateWallSearch,
+                    label = { Text("搜索当前媒体库") },
+                    singleLine = true,
+                    trailingIcon = {
+                        IconButton(onClick = viewModel::submitWallSearch) {
+                            Icon(Icons.Rounded.Search, "搜索")
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    MediaFilter.entries.forEach { filter ->
+                        FilterChip(
+                            selected = state.wallFilter == filter,
+                            onClick = { viewModel.setWallFilter(filter) },
+                            label = { Text(filter.label()) },
+                        )
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    MediaSort.entries.forEach { sort ->
+                        FilterChip(
+                            selected = state.wallSort == sort,
+                            onClick = { viewModel.setWallSort(sort) },
+                            label = { Text(sort.label()) },
+                        )
+                    }
+                }
             }
         }
-        gridItems(state.items, key = MediaItem::id) { item ->
+        if (state.wallItems.isNotEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                ContinueFeedCard(state.currentIndex, viewModel::startLibraryFeed)
+            }
+        }
+        gridItems(state.wallItems, key = MediaItem::id) { item ->
             val durationTicks = item.runTimeTicks ?: 0L
             val progress = if (durationTicks > 0) {
                 (item.playbackPositionTicks.toDouble() / durationTicks).toFloat().coerceIn(0f, 1f)
@@ -322,11 +371,25 @@ private fun ItemScreen(state: MainUiState, viewModel: MainViewModel) {
                 item = item,
                 episodeLabel = item.episodeLabel(),
                 progress = progress,
-                onClick = { viewModel.play(item) },
-                onDelete = { viewModel.requestDelete(item) },
+                onClick = { viewModel.openCatalogItem(item) },
+                onDelete = if (item.type.equals("Series", true) || item.type.equals("BoxSet", true)) {
+                    null
+                } else {
+                    { viewModel.requestDelete(item) }
+                },
+                onFavorite = { viewModel.toggleFavorite(item) },
             )
         }
-        if (!state.isLoading && state.items.isEmpty()) {
+        if (state.wallHasMore) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                FilledTonalButton(
+                    onClick = viewModel::loadMoreWall,
+                    enabled = !state.isLoadingMore,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (state.isLoadingMore) "正在加载…" else "加载更多") }
+            }
+        }
+        if (!state.isLoading && state.wallItems.isEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) { EmptyStatePanel("这个媒体库没有找到视频") }
         }
         item(span = { GridItemSpan(maxLineSpan) }) { ErrorText(state.errorMessage) }
@@ -1066,6 +1129,22 @@ private fun formatBytes(bytes: Long): String = when {
 }
 
 private fun Boolean.asFlag(): String = if (this) "是" else "否"
+
+private fun MediaFilter.label(): String = when (this) {
+    MediaFilter.ALL -> "全部"
+    MediaFilter.UNPLAYED -> "未看"
+    MediaFilter.RESUMABLE -> "续播"
+    MediaFilter.FAVORITES -> "收藏"
+    MediaFilter.PLAYED -> "已看"
+}
+
+private fun MediaSort.label(): String = when (this) {
+    MediaSort.DATE_ADDED -> "最近加入"
+    MediaSort.NAME -> "名称"
+    MediaSort.PREMIERE_DATE -> "首映日期"
+    MediaSort.RATING -> "评分"
+    MediaSort.RANDOM -> "随机换一批"
+}
 
 private fun PlaybackPlan.isDiscImage(): Boolean =
     videoType.equals("Iso", ignoreCase = true) ||

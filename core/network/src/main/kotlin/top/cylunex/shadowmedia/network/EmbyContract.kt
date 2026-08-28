@@ -1,8 +1,12 @@
 package top.cylunex.shadowmedia.network
 
 import top.cylunex.shadowmedia.model.EmbySession
+import top.cylunex.shadowmedia.model.BrowseRequest
+import top.cylunex.shadowmedia.model.ExternalSourceSummary
 import top.cylunex.shadowmedia.model.MediaItem
 import top.cylunex.shadowmedia.model.MediaLibrary
+import top.cylunex.shadowmedia.model.MediaPage
+import top.cylunex.shadowmedia.model.MediaSection
 import top.cylunex.shadowmedia.model.PlayMethod
 import top.cylunex.shadowmedia.model.PlaybackEvent
 import top.cylunex.shadowmedia.model.PlaybackPlan
@@ -41,6 +45,16 @@ interface SessionStore {
     fun clearAll()
 }
 
+interface ExternalSourceStore {
+    fun loadAll(): List<ExternalSourceSummary>
+    fun save(source: ExternalSourceSummary)
+    fun remove(sourceId: String)
+}
+
+interface ExternalSourceRepository {
+    suspend fun inspect(url: String, allowInsecureHttp: Boolean): ExternalSourceSummary
+}
+
 interface EmbyRepository {
     suspend fun login(request: LoginRequest): EmbySession
     suspend fun libraries(session: EmbySession): List<MediaLibrary>
@@ -48,6 +62,11 @@ interface EmbyRepository {
         session: EmbySession,
         libraryId: String,
     ): List<MediaItem>
+
+    suspend fun home(session: EmbySession, libraryIds: List<String>): List<MediaSection>
+    suspend fun browse(session: EmbySession, request: BrowseRequest): MediaPage
+    suspend fun children(session: EmbySession, parentId: String): List<MediaItem>
+    suspend fun setFavorite(session: EmbySession, itemId: String, favorite: Boolean)
 
     suspend fun playbackPlan(session: EmbySession, itemId: String): PlaybackPlan
     suspend fun reportPlayback(session: EmbySession, report: PlaybackReport)

@@ -13,7 +13,9 @@ import top.cylunex.shadowmedia.network.EmbyRepository
 import top.cylunex.shadowmedia.network.KeystoreSessionStore
 import top.cylunex.shadowmedia.network.PersistentPlaybackOutbox
 import top.cylunex.shadowmedia.network.PlaybackOutbox
+import top.cylunex.shadowmedia.network.SafeExternalSourceRepository
 import top.cylunex.shadowmedia.network.SessionStore
+import top.cylunex.shadowmedia.network.SharedPreferencesExternalSourceStore
 
 class ShadowMediaApplication : Application() {
     val container: AppContainer by lazy { AppContainer(this) }
@@ -35,6 +37,13 @@ class AppContainer(application: Application) {
     )
     val playbackOutbox: PlaybackOutbox = PersistentPlaybackOutbox(application, embyRepository)
     val feedSessionStore = FeedSessionStore(application)
+    val externalSourceRepository = SafeExternalSourceRepository(
+        OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .build()
+    )
+    val externalSourceStore = SharedPreferencesExternalSourceStore(application)
 
     private fun persistentDeviceId(application: Application): String {
         val preferences = application.getSharedPreferences("device_identity", Context.MODE_PRIVATE)

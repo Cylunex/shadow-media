@@ -2,12 +2,13 @@
 
 ## 产品边界
 
-Shadow Media 是 Emby 客户端，不是媒体服务器或解码器。MoviePilot、STRM 助手、Emby 和
-MediaWarp 继续负责资源入库、元数据、播放地址和 302；客户端只负责 Feed、播放编排、Media3
-以及用户状态回写。
+Shadow Media 是以 Emby 为第一方来源的私人媒体中心，不是媒体服务器。MoviePilot、STRM 助手、
+Emby 和 MediaWarp 继续负责资源入库、元数据、播放地址和 302；客户端负责媒体中心投影、封面墙、
+Feed、播放编排和状态回写。用户自带外部配置属于独立 Provider 边界，不会获得 Emby 凭据。
 
-首版有意不包含 115 登录、下载、离线缓存、刮削、NFO 编辑、Jellyfin/Plex 和 TV。libmpv 只作为
-ISO/DVD/Blu-ray 专用后端，普通视频仍由 Media3 负责。
+当前有意不包含 115 登录、下载、离线缓存、刮削和 NFO 编辑。libmpv 只作为 ISO/DVD/Blu-ray
+专用后端，普通视频仍由 Media3 负责。未知 CatVod JAR、QuickJS、Python 和 WebView 嗅探不进入
+主进程；完整兼容需要未来的独立 APK 或 NAS Source Runtime。
 
 ## 分层
 
@@ -17,7 +18,9 @@ Compose UI
    ▼
 MainViewModel
    │
-   ├── EmbyRepository ── OkHttp ── Emby REST API
+   ├── EmbyRepository ── Catalog / 收藏 / PlaybackInfo ── Emby REST API
+   ├── ExternalSourceRepository ── 配置安全检查（不执行代码）
+   ├── ExternalSourceStore ── 用户订阅元数据
    ├── FeedSessionStore ── 每服/用户/媒体库的稳定顺序与当前位置
    │
    └── PlaybackRuntime ─┬─ Media3 ───────────── 普通视频 / HLS
@@ -31,6 +34,10 @@ MainViewModel
 - `core:playback` 拥有播放器生命周期、播放候选回退和状态上报。
 - `app` 是 composition root，当前使用手动构造器注入；规模增加后再评估 Hilt。
 - UI 使用单向数据流，Composable 不直接访问网络数据源。
+
+`MediaItem`、`MediaPage`、`MediaSection`、`BrowseRequest` 和 `PlaybackCandidate` 是当前统一内容模型
+的第一阶段。首页、封面墙和 Feed 都消费相同的 EmbyRepository 投影；直播与声明式外部 Provider
+后续复用这些稳定模型，不另造 TVBoxEngine。
 
 这一结构遵循 Android 官方的 UI/data 分层、repository、单向数据流和 screen-level ViewModel
 建议：<https://developer.android.com/topic/architecture/recommendations>。

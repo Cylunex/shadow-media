@@ -39,6 +39,12 @@ internal data class BaseItemDto(
     @SerialName("ParentIndexNumber") val parentIndexNumber: Int? = null,
     @SerialName("IndexNumber") val indexNumber: Int? = null,
     @SerialName("RunTimeTicks") val runTimeTicks: Long? = null,
+    @SerialName("Overview") val overview: String? = null,
+    @SerialName("ProductionYear") val productionYear: Int? = null,
+    @SerialName("CommunityRating") val communityRating: Double? = null,
+    @SerialName("SeriesId") val seriesId: String? = null,
+    @SerialName("ImageTags") val imageTags: Map<String, String> = emptyMap(),
+    @SerialName("BackdropImageTags") val backdropImageTags: List<String> = emptyList(),
     @SerialName("UserData") val userData: UserDataDto? = null,
 )
 

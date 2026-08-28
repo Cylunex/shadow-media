@@ -11,6 +11,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import top.cylunex.shadowmedia.model.EmbySession
+import top.cylunex.shadowmedia.model.BrowseRequest
+import top.cylunex.shadowmedia.model.MediaFilter
+import top.cylunex.shadowmedia.model.MediaSort
 import top.cylunex.shadowmedia.model.PlayMethod
 
 class DefaultEmbyRepositoryTest {
@@ -132,6 +135,61 @@ class DefaultEmbyRepositoryTest {
 
         assertEquals("DELETE", method)
         assertEquals("item-to-delete", ids)
+    }
+
+    @Test
+    fun `browse delegates paging search sort and favorite filter to emby`() = runBlocking {
+        var capturedUrl: okhttp3.HttpUrl? = null
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            capturedUrl = chain.request().url
+            jsonResponse(chain, """{"Items":[],"TotalRecordCount":75}""")
+        }.build()
+
+        val page = repositoryWith(client).browse(
+            SESSION,
+            BrowseRequest(
+                parentId = "library-1",
+                includeItemTypes = setOf("Movie", "Series"),
+                searchTerm = "影子",
+                sort = MediaSort.RATING,
+                descending = true,
+                filter = MediaFilter.FAVORITES,
+                startIndex = 60,
+                limit = 15,
+            ),
+        )
+
+        assertEquals(75, page.totalRecordCount)
+        assertEquals("library-1", capturedUrl?.queryParameter("ParentId"))
+        assertEquals("Movie,Series", capturedUrl?.queryParameter("IncludeItemTypes"))
+        assertEquals("影子", capturedUrl?.queryParameter("SearchTerm"))
+        assertEquals("CommunityRating", capturedUrl?.queryParameter("SortBy"))
+        assertEquals("true", capturedUrl?.queryParameter("IsFavorite"))
+        assertEquals("60", capturedUrl?.queryParameter("StartIndex"))
+    }
+
+    @Test
+    fun `favorite mutation uses user scoped endpoint and expected method`() = runBlocking {
+        val methods = mutableListOf<String>()
+        val paths = mutableListOf<String>()
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            methods += chain.request().method
+            paths += chain.request().url.encodedPath
+            Response.Builder()
+                .request(chain.request())
+                .protocol(Protocol.HTTP_1_1)
+                .code(204)
+                .message("No Content")
+                .body(ByteArray(0).toResponseBody(null))
+                .build()
+        }.build()
+        val repository = repositoryWith(client)
+
+        repository.setFavorite(SESSION, "movie-1", true)
+        repository.setFavorite(SESSION, "movie-1", false)
+
+        assertEquals(listOf("POST", "DELETE"), methods)
+        assertTrue(paths.all { it.endsWith("/Users/user-1/FavoriteItems/movie-1") })
     }
 
     private fun repositoryReturning(json: String): DefaultEmbyRepository {

@@ -19,6 +19,8 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material3.AssistChip
@@ -223,12 +225,19 @@ fun MediaPosterCard(
     episodeLabel: String,
     progress: Float,
     onClick: () -> Unit,
-    onDelete: () -> Unit,
+    onDelete: (() -> Unit)? = null,
+    onFavorite: (() -> Unit)? = null,
 ) {
     Column {
         Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
             Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f)) {
-                EmbyArtwork(session, item.id, item.name, Modifier.fillMaxSize())
+                EmbyArtwork(
+                    session,
+                    item.id,
+                    item.name,
+                    Modifier.fillMaxSize(),
+                    imageTag = item.imageTag,
+                )
                 Box(
                     Modifier.fillMaxSize().background(
                         Brush.verticalGradient(
@@ -246,13 +255,27 @@ fun MediaPosterCard(
                     ),
                     border = null,
                 )
-                Surface(
+                Column(
                     modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp),
-                    shape = CircleShape,
-                    color = Color.Black.copy(alpha = 0.64f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    IconButton(onClick = onDelete, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Rounded.DeleteOutline, "删除", tint = Color.White)
+                    onFavorite?.let { favoriteAction ->
+                        Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.64f)) {
+                            IconButton(onClick = favoriteAction, modifier = Modifier.size(40.dp)) {
+                                Icon(
+                                    if (item.favorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                    "收藏",
+                                    tint = if (item.favorite) MaterialTheme.colorScheme.primary else Color.White,
+                                )
+                            }
+                        }
+                    }
+                    onDelete?.let { deleteAction ->
+                        Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.64f)) {
+                            IconButton(onClick = deleteAction, modifier = Modifier.size(40.dp)) {
+                                Icon(Icons.Rounded.DeleteOutline, "删除", tint = Color.White)
+                            }
+                        }
                     }
                 }
                 if (progress > 0f) {
