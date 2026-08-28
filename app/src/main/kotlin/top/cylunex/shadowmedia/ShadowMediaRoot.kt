@@ -50,6 +50,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.BugReport
+import androidx.compose.material.icons.rounded.BookmarkAdd
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Movie
@@ -121,7 +122,9 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import top.cylunex.shadowmedia.model.MediaItem
 import top.cylunex.shadowmedia.model.MediaFilter
 import top.cylunex.shadowmedia.model.MediaLibrary
+import top.cylunex.shadowmedia.model.MediaSegment
 import top.cylunex.shadowmedia.model.MediaSort
+import top.cylunex.shadowmedia.model.SegmentType
 import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.PlaybackPlan
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
@@ -171,6 +174,7 @@ fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
                 Screen.DISCOVER -> DiscoverScreen(state, viewModel)
                 Screen.PROVIDER_DETAIL -> UnifiedDetailScreen(state, viewModel)
                 Screen.INTEGRATIONS -> IntegrationScreen(state, viewModel)
+                Screen.INSIGHTS -> InsightsScreen(viewModel)
                 Screen.SETTINGS -> SettingsScreen(viewModel)
                 Screen.PLAYER -> FeedScreen(state, viewModel, container)
             }}
@@ -540,6 +544,12 @@ private fun ItemScreen(state: MainUiState, viewModel: MainViewModel) {
 @Composable
 private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: AppContainer) {
     BackHandler(onBack = viewModel::back)
+    LaunchedEffect(state.insightMessage) {
+        if (state.insightMessage != null) {
+            delay(2_500)
+            viewModel.clearInsightMessage()
+        }
+    }
     val pagerState = rememberPagerState(
         initialPage = state.currentIndex.coerceIn(0, (state.items.size - 1).coerceAtLeast(0)),
         pageCount = { state.items.size },
@@ -586,6 +596,8 @@ private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: 
             onTerminalError = viewModel::recoverPlayback,
             onExternalPlaybackStarted = viewModel::externalPlaybackStarted,
             onExternalPlaybackStopped = viewModel::externalPlaybackStopped,
+            onSaveMoment = viewModel::saveMoment,
+            onSaveSegment = viewModel::saveSegment,
             onDelete = { viewModel.requestDelete(item) },
         )
     }
@@ -607,6 +619,8 @@ private fun FeedPage(
     onTerminalError: (Long, String) -> Unit,
     onExternalPlaybackStarted: (PlaybackPlan, Long) -> Unit,
     onExternalPlaybackStopped: (PlaybackPlan, Long) -> Unit,
+    onSaveMoment: (MediaItem, Long) -> Unit,
+    onSaveSegment: (MediaItem, SegmentType, Long, Long) -> Unit,
     onDelete: () -> Unit,
 ) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -639,9 +653,20 @@ private fun FeedPage(
                     onTerminalError = onTerminalError,
                     onStarted = onExternalPlaybackStarted,
                     onStopped = onExternalPlaybackStopped,
+                    onSaveMoment = onSaveMoment,
+                    onSaveSegment = onSaveSegment,
                 )
             } else {
-                ActivePlayer(state, item, plan, container, onRetry, onTerminalError)
+                ActivePlayer(
+                    state = state,
+                    item = item,
+                    plan = plan,
+                    container = container,
+                    onRetry = onRetry,
+                    onTerminalError = onTerminalError,
+                    onSaveMoment = onSaveMoment,
+                    onSaveSegment = onSaveSegment,
+                )
             }
         } else if (isActive) {
             FeedPlaceholder(isLoading, errorMessage, onRetry)
@@ -663,6 +688,21 @@ private fun FeedPage(
                 colors = CardDefaults.cardColors(containerColor = Color(0xE81B1114)),
             ) {
                 Text(errorMessage, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
+            }
+        }
+
+        state.insightMessage?.let { message ->
+            Surface(
+                modifier = Modifier.align(Alignment.Center).padding(horizontal = 28.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = Color(0xEB173344),
+            ) {
+                Text(
+                    message,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                )
             }
         }
 
@@ -715,6 +755,8 @@ private fun IsoPlayer(
     onTerminalError: (Long, String) -> Unit,
     onStarted: (PlaybackPlan, Long) -> Unit,
     onStopped: (PlaybackPlan, Long) -> Unit,
+    onSaveMoment: (MediaItem, Long) -> Unit,
+    onSaveSegment: (MediaItem, SegmentType, Long, Long) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -906,6 +948,9 @@ private fun IsoPlayer(
             item = item,
             runtime = runtime,
             state = playbackState,
+            segments = state.mediaSegments,
+            onSaveMoment = { onSaveMoment(item, it) },
+            onSaveSegment = { type, startMs, endMs -> onSaveSegment(item, type, startMs, endMs) },
             onExternalFallback = ::launchVlc,
             modifier = Modifier.align(Alignment.BottomCenter),
         )
@@ -917,11 +962,15 @@ private fun IsoPlaybackControls(
     item: MediaItem,
     runtime: MpvIsoPlaybackRuntime,
     state: MpvIsoPlaybackState,
+    segments: List<MediaSegment>,
+    onSaveMoment: (Long) -> Unit,
+    onSaveSegment: (SegmentType, Long, Long) -> Unit,
     onExternalFallback: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var positionMs by remember(runtime) { mutableLongStateOf(0L) }
     var isScrubbing by remember(runtime) { mutableStateOf(false) }
+    val activeSegment = segments.firstOrNull { positionMs in it.startMs until it.endMs }
 
     LaunchedEffect(state.positionMs, isScrubbing) {
         if (!isScrubbing) positionMs = state.positionMs
@@ -989,6 +1038,32 @@ private fun IsoPlaybackControls(
                 Text("字幕")
             }
         }
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TextButton(onClick = { onSaveMoment(positionMs) }) {
+                Icon(Icons.Rounded.BookmarkAdd, null)
+                Spacer(Modifier.size(5.dp))
+                Text("保存时刻")
+            }
+            if (activeSegment != null && state.isSeekable) {
+                TextButton(onClick = { runtime.seekTo(activeSegment.endMs) }) {
+                    Icon(Icons.Rounded.SkipNext, null)
+                    Spacer(Modifier.size(5.dp))
+                    Text(activeSegment.type.skipLabel())
+                }
+            } else {
+                TextButton(
+                    onClick = { onSaveSegment(SegmentType.INTRO, 0L, positionMs) },
+                    enabled = positionMs >= 5_000,
+                ) { Text("标记片头终点") }
+                TextButton(
+                    onClick = { onSaveSegment(SegmentType.CREDITS, positionMs, state.durationMs) },
+                    enabled = state.durationMs > positionMs,
+                ) { Text("标记片尾起点") }
+            }
+        }
         TextButton(onClick = onExternalFallback, modifier = Modifier.align(Alignment.End)) {
             Icon(Icons.AutoMirrored.Rounded.OpenInNew, null, modifier = Modifier.size(17.dp))
             Spacer(Modifier.size(5.dp))
@@ -1005,6 +1080,8 @@ private fun ActivePlayer(
     container: AppContainer,
     onRetry: () -> Unit,
     onTerminalError: (Long, String) -> Unit,
+    onSaveMoment: (MediaItem, Long) -> Unit,
+    onSaveSegment: (MediaItem, SegmentType, Long, Long) -> Unit,
 ) {
     val session = requireNotNull(state.session)
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -1121,6 +1198,9 @@ private fun ActivePlayer(
         PlaybackControls(
             item = item,
             runtime = runtime,
+            segments = state.mediaSegments,
+            onSaveMoment = { onSaveMoment(item, it) },
+            onSaveSegment = { type, startMs, endMs -> onSaveSegment(item, type, startMs, endMs) },
             modifier = Modifier.align(Alignment.BottomCenter),
         )
     }
@@ -1130,6 +1210,9 @@ private fun ActivePlayer(
 private fun PlaybackControls(
     item: MediaItem,
     runtime: PlaybackRuntime,
+    segments: List<MediaSegment>,
+    onSaveMoment: (Long) -> Unit,
+    onSaveSegment: (SegmentType, Long, Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val player = runtime.player
@@ -1140,6 +1223,7 @@ private fun PlaybackControls(
     var isPlaying by remember(player) { mutableStateOf(false) }
     var canSeek by remember(player) { mutableStateOf(false) }
     var isScrubbing by remember(player) { mutableStateOf(false) }
+    val activeSegment = segments.firstOrNull { positionMs in it.startMs until it.endMs }
 
     LaunchedEffect(player) {
         while (isActive) {
@@ -1220,6 +1304,27 @@ private fun PlaybackControls(
                     Text(tracks.subtitleTracks.getOrNull(tracks.selectedSubtitleIndex) ?: "字幕关闭")
                 }
             }
+            TextButton(onClick = { onSaveMoment(positionMs) }) {
+                Icon(Icons.Rounded.BookmarkAdd, null)
+                Spacer(Modifier.size(6.dp))
+                Text("保存时刻")
+            }
+            if (activeSegment != null && canSeek) {
+                TextButton(onClick = { runtime.seekTo(activeSegment.endMs) }) {
+                    Icon(Icons.Rounded.SkipNext, null)
+                    Spacer(Modifier.size(6.dp))
+                    Text(activeSegment.type.skipLabel())
+                }
+            } else {
+                TextButton(
+                    onClick = { onSaveSegment(SegmentType.INTRO, 0L, positionMs) },
+                    enabled = positionMs >= 5_000,
+                ) { Text("标记片头终点") }
+                TextButton(
+                    onClick = { onSaveSegment(SegmentType.CREDITS, positionMs, durationMs) },
+                    enabled = durationMs > positionMs,
+                ) { Text("标记片尾起点") }
+            }
             TextButton(onClick = { context.enterShadowPictureInPicture() }) {
                 Icon(Icons.Rounded.PictureInPictureAlt, null)
                 Spacer(Modifier.size(6.dp))
@@ -1227,6 +1332,15 @@ private fun PlaybackControls(
             }
         }
     }
+}
+
+private fun SegmentType.skipLabel(): String = when (this) {
+    SegmentType.INTRO -> "跳过片头"
+    SegmentType.RECAP -> "跳过回顾"
+    SegmentType.CREDITS -> "跳过片尾"
+    SegmentType.PREVIEW -> "跳过预告"
+    SegmentType.HIGHLIGHT -> "跳过片段"
+    SegmentType.CHAPTER -> "下一章节"
 }
 
 @Composable

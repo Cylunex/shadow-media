@@ -78,6 +78,7 @@ enum class MediaSectionKind {
     CONTINUE_WATCHING,
     RECENTLY_ADDED,
     FAVORITES,
+    RECOMMENDED,
 }
 
 data class MediaSection(
@@ -318,6 +319,32 @@ enum class AvailabilityState {
     AVAILABLE,
     UNAVAILABLE,
 }
+
+enum class SegmentType {
+    INTRO,
+    RECAP,
+    CREDITS,
+    PREVIEW,
+    HIGHLIGHT,
+    CHAPTER,
+}
+
+enum class SegmentSource {
+    EMBY_CHAPTER,
+    USER,
+    SERVER_ANALYSIS,
+}
+
+data class MediaSegment(
+    val id: String,
+    val providerId: String,
+    val itemId: String,
+    val type: SegmentType,
+    val startMs: Long,
+    val endMs: Long,
+    val confidence: Float,
+    val source: SegmentSource,
+)
 
 data class PlaybackCandidate(
     val url: String,

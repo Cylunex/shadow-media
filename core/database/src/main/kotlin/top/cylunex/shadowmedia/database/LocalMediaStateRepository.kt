@@ -6,6 +6,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import top.cylunex.shadowmedia.model.FeatureId
 import top.cylunex.shadowmedia.model.LiveProgram
+import top.cylunex.shadowmedia.model.MediaSegment
+import top.cylunex.shadowmedia.model.SegmentSource
+import top.cylunex.shadowmedia.model.SegmentType
 
 class LocalMediaStateRepository(private val dao: ShadowMediaDao) {
     val history = Pager(PagingConfig(pageSize = 40, prefetchDistance = 12)) {
@@ -59,6 +62,39 @@ class LocalMediaStateRepository(private val dao: ShadowMediaDao) {
     }
 
     suspend fun addMoment(moment: MediaMomentEntity) = dao.upsertMoment(moment)
+
+    suspend fun removeMoment(id: String) = dao.removeMoment(id)
+
+    fun recentMoments(limit: Int = 100): Flow<List<MediaMomentEntity>> = dao.observeRecentMoments(limit)
+
+    fun playbackMetrics(limit: Int = 200): Flow<List<PlaybackMetricEntity>> = dao.observePlaybackMetrics(limit)
+
+    fun sourceHealth(): Flow<List<SourceHealthEntity>> = dao.observeSourceHealth()
+
+    fun segments(providerId: String, itemId: String): Flow<List<MediaSegment>> =
+        dao.observeSegments(providerId, itemId).map { rows ->
+            rows.mapNotNull { row ->
+                val type = runCatching { SegmentType.valueOf(row.type) }.getOrNull() ?: return@mapNotNull null
+                val source = runCatching { SegmentSource.valueOf(row.source) }.getOrNull() ?: return@mapNotNull null
+                MediaSegment(row.id, row.providerId, row.itemId, type, row.startMs, row.endMs, row.confidence, source)
+            }
+        }
+
+    suspend fun addSegment(segment: MediaSegment) = dao.upsertSegment(
+        MediaSegmentEntity(
+            segment.id,
+            segment.providerId,
+            segment.itemId,
+            segment.type.name,
+            segment.startMs,
+            segment.endMs,
+            segment.confidence,
+            segment.source.name,
+            System.currentTimeMillis(),
+        )
+    )
+
+    suspend fun removeSegment(id: String) = dao.removeSegment(id)
 
     suspend fun upsertPlaybackMetric(metric: PlaybackMetricEntity) = dao.upsertPlaybackMetric(metric)
 

@@ -59,12 +59,18 @@ import java.util.UUID
 import top.cylunex.shadowmedia.model.IntegrationConnection
 import top.cylunex.shadowmedia.model.IntegrationKind
 import top.cylunex.shadowmedia.model.IntegrationStatus
+import top.cylunex.shadowmedia.model.MediaSegment
+import top.cylunex.shadowmedia.model.SegmentSource
+import top.cylunex.shadowmedia.model.SegmentType
 import top.cylunex.shadowmedia.network.IntegrationRepository
 import top.cylunex.shadowmedia.network.IntegrationStore
+import top.cylunex.shadowmedia.database.MediaMomentEntity
+import top.cylunex.shadowmedia.database.PlaybackMetricEntity
+import top.cylunex.shadowmedia.database.SourceHealthEntity
 
 enum class Screen {
     SERVERS, LOGIN, HOME, LIBRARIES, ITEMS, DETAIL, SOURCES, EXTERNAL_ITEMS, EXTERNAL_PLAYER,
-    DISCOVER, PROVIDER_DETAIL, INTEGRATIONS, SETTINGS, PLAYER
+    DISCOVER, PROVIDER_DETAIL, INTEGRATIONS, INSIGHTS, SETTINGS, PLAYER
 }
 
 data class MainUiState(
@@ -123,6 +129,8 @@ data class MainUiState(
     val integrationEpgUrl: String = "",
     val integrationMessage: String? = null,
     val isSavingIntegration: Boolean = false,
+    val mediaSegments: List<MediaSegment> = emptyList(),
+    val insightMessage: String? = null,
     val selectedItem: MediaItem? = null,
     val currentIndex: Int = 0,
     val playbackPlan: PlaybackPlan? = null,
@@ -163,6 +171,12 @@ class MainViewModel(
             SharingStarted.Eagerly,
             FeatureId.entries.associateWith { it.defaultEnabled },
         )
+    val moments: StateFlow<List<MediaMomentEntity>> = localMediaState.recentMoments()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val playbackMetrics: StateFlow<List<PlaybackMetricEntity>> = localMediaState.playbackMetrics()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val sourceHealth: StateFlow<List<SourceHealthEntity>> = localMediaState.sourceHealth()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     init {
         val saved = sessionStore.loadAll()
@@ -314,6 +328,87 @@ class MainViewModel(
         val connections = integrationStore.loadAll()
         update { copy(screen = Screen.INTEGRATIONS, integrations = connections, integrationMessage = null, errorMessage = null) }
         refreshIntegrations()
+    }
+
+    fun showInsights() = update { copy(screen = Screen.INSIGHTS, insightMessage = null, errorMessage = null) }
+
+    fun clearInsightMessage() = update { copy(insightMessage = null) }
+
+    fun saveMoment(item: MediaItem, positionMs: Long) {
+        val session = state.value.session ?: return
+        val providerId = "emby:${session.serverId}:${session.userId}"
+        viewModelScope.launch {
+            localMediaState.addMoment(
+                MediaMomentEntity(
+                    id = UUID.randomUUID().toString(),
+                    providerId = providerId,
+                    itemId = item.id,
+                    mediaTitle = item.name,
+                    positionMs = positionMs.coerceAtLeast(0),
+                    note = item.seriesName.orEmpty(),
+                    createdAtEpochMs = System.currentTimeMillis(),
+                )
+            )
+            update { copy(insightMessage = "已保存 ${formatPosition(positionMs)} 的媒体时刻") }
+        }
+    }
+
+    fun saveSegment(item: MediaItem, type: SegmentType, startMs: Long, endMs: Long) {
+        val session = state.value.session ?: return
+        if (endMs <= startMs) return
+        val segment = MediaSegment(
+            id = UUID.randomUUID().toString(),
+            providerId = "emby:${session.serverId}:${session.userId}",
+            itemId = item.id,
+            type = type,
+            startMs = startMs.coerceAtLeast(0),
+            endMs = endMs.coerceAtLeast(0),
+            confidence = 1f,
+            source = SegmentSource.USER,
+        )
+        viewModelScope.launch {
+            localMediaState.addSegment(segment)
+            update {
+                copy(
+                    mediaSegments = (mediaSegments + segment).sortedBy(MediaSegment::startMs),
+                    insightMessage = "已保存${type.displayName()} ${formatPosition(startMs)}—${formatPosition(endMs)}",
+                )
+            }
+        }
+    }
+
+    fun removeMoment(id: String) {
+        viewModelScope.launch { localMediaState.removeMoment(id) }
+    }
+
+    fun removeSegment(id: String) {
+        viewModelScope.launch {
+            localMediaState.removeSegment(id)
+            update { copy(mediaSegments = mediaSegments.filterNot { it.id == id }) }
+        }
+    }
+
+    fun playMoment(moment: MediaMomentEntity) {
+        val session = state.value.session ?: return
+        val expectedProvider = "emby:${session.serverId}:${session.userId}"
+        if (moment.providerId != expectedProvider) {
+            update { copy(insightMessage = "这个时刻属于另一台 Emby 服务器，请先切换登录") }
+            return
+        }
+        val item = MediaItem(
+            id = moment.itemId,
+            name = moment.mediaTitle,
+            type = "Video",
+            seriesName = moment.note.takeIf(String::isNotBlank),
+            seasonNumber = null,
+            episodeNumber = null,
+            runTimeTicks = null,
+            playbackPositionTicks = moment.positionMs * 10_000,
+            played = false,
+            favorite = false,
+        )
+        update { copy(items = listOf(item), playerReturnScreen = Screen.INSIGHTS, feedMode = false) }
+        resolvePlayback(session, item, 0, moment.positionMs, 0)
     }
 
     fun updateIntegrationKind(value: IntegrationKind) = update { copy(integrationKind = value) }
@@ -817,9 +912,15 @@ class MainViewModel(
                 playbackPlan = null,
                 playbackStartPositionMs = startPositionMs,
                 playbackRefreshAttempts = refreshAttempts,
+                mediaSegments = emptyList(),
                 isLoading = true,
                 errorMessage = if (refreshAttempts > 0) "播放地址失效，正在重新解析…" else null,
             )
+        }
+        viewModelScope.launch {
+            val providerId = "emby:${session.serverId}:${session.userId}"
+            val segments = localMediaState.segments(providerId, item.id).first()
+            if (state.value.selectedItem?.id == item.id) update { copy(mediaSegments = segments) }
         }
         playbackRequest = viewModelScope.launch {
             try {
@@ -1185,7 +1286,8 @@ class MainViewModel(
                     items = emptyList(),
                 )
             }
-            Screen.LIBRARIES, Screen.SOURCES, Screen.DISCOVER, Screen.SETTINGS, Screen.INTEGRATIONS -> showHome()
+            Screen.LIBRARIES, Screen.SOURCES, Screen.DISCOVER, Screen.SETTINGS, Screen.INTEGRATIONS,
+            Screen.INSIGHTS -> showHome()
             Screen.HOME -> showServers()
             Screen.SERVERS -> Unit
         }
@@ -1235,7 +1337,7 @@ class MainViewModel(
                     )
                 }
                 runCatching { repository.home(session, libraries.map(MediaLibrary::id)) }
-                    .onSuccess { sections -> update { copy(homeSections = sections) } }
+                    .onSuccess { sections -> update { copy(homeSections = sections.withRecommendations()) } }
                     .onFailure { update { copy(errorMessage = "首页加载不完整：${it.message ?: "未知错误"}") } }
             }
             .onFailure(::showError)
@@ -1276,6 +1378,15 @@ class MainViewModel(
     }
 }
 
+private fun SegmentType.displayName(): String = when (this) {
+    SegmentType.INTRO -> "片头"
+    SegmentType.RECAP -> "前情回顾"
+    SegmentType.CREDITS -> "片尾"
+    SegmentType.PREVIEW -> "预告"
+    SegmentType.HIGHLIGHT -> "精彩片段"
+    SegmentType.CHAPTER -> "章节"
+}
+
 private fun MediaLibrary.wallItemTypes(): Set<String> = when (collectionType?.lowercase()) {
     "tvshows" -> setOf("Series")
     "movies" -> setOf("Movie")
@@ -1300,3 +1411,35 @@ private fun UnifiedMediaItem.toEmbyMediaItem() = MediaItem(
     communityRating = rating,
     externalIds = externalIds,
 )
+
+private fun formatPosition(positionMs: Long): String {
+    val totalSeconds = positionMs.coerceAtLeast(0) / 1_000
+    val hours = totalSeconds / 3_600
+    val minutes = (totalSeconds % 3_600) / 60
+    val seconds = totalSeconds % 60
+    return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds)
+    else "%02d:%02d".format(minutes, seconds)
+}
+
+private fun List<MediaSection>.withRecommendations(): List<MediaSection> {
+    val candidates = flatMap(MediaSection::items)
+        .distinctBy(MediaItem::id)
+        .filter { it.type !in setOf("Series", "BoxSet", "MusicAlbum") }
+        .sortedByDescending { item ->
+            var score = item.communityRating ?: 0.0
+            if (item.playbackPositionTicks > 0 && !item.played) score += 60.0
+            if (item.favorite) score += 35.0
+            if (!item.played) score += 25.0 else score -= 20.0
+            score
+        }
+        .take(16)
+    if (candidates.isEmpty()) return this
+    return listOf(
+        MediaSection(
+            id = "recommended-now",
+            title = "现在就看 · 基于进度、收藏与评分",
+            kind = MediaSectionKind.RECOMMENDED,
+            items = candidates,
+        )
+    ) + this
+}

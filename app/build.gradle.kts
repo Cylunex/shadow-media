@@ -14,8 +14,8 @@ android {
         applicationId = "top.cylunex.shadowmedia"
         minSdk = 26
         targetSdk = 36
-        versionCode = 15
-        versionName = "0.11.0"
+        versionCode = 16
+        versionName = "1.0.0"
     }
 
     buildFeatures {

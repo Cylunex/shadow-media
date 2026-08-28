@@ -96,6 +96,20 @@ interface ShadowMediaDao {
     @Query("SELECT * FROM media_moments ORDER BY createdAtEpochMs DESC")
     fun momentsPagingSource(): PagingSource<Int, MediaMomentEntity>
 
+    @Query("SELECT * FROM media_moments ORDER BY createdAtEpochMs DESC LIMIT :limit")
+    fun observeRecentMoments(limit: Int): Flow<List<MediaMomentEntity>>
+
+    @Upsert
+    suspend fun upsertSegment(segment: MediaSegmentEntity)
+
+    @Query("DELETE FROM media_segments WHERE id = :id")
+    suspend fun removeSegment(id: String)
+
+    @Query(
+        "SELECT * FROM media_segments WHERE providerId = :providerId AND itemId = :itemId ORDER BY startMs"
+    )
+    fun observeSegments(providerId: String, itemId: String): Flow<List<MediaSegmentEntity>>
+
     @Upsert
     suspend fun upsertFeatureFlag(flag: FeatureFlagEntity)
 

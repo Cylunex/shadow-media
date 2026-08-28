@@ -20,6 +20,7 @@ import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.Forum
 import androidx.compose.material.icons.rounded.LiveTv
+import androidx.compose.material.icons.rounded.Bookmarks
 import androidx.compose.material.icons.rounded.MonitorHeart
 import androidx.compose.material.icons.rounded.MovieFilter
 import androidx.compose.material.icons.rounded.Science
@@ -61,12 +62,24 @@ internal fun SettingsScreen(viewModel: MainViewModel) {
             )
         }
         item {
-            FilledTonalButton(
-                onClick = viewModel::showIntegrations,
+            Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Icon(Icons.Rounded.SettingsEthernet, null)
-                Text("  管理 MoviePilot、Seerr 与频道服务")
+                FilledTonalButton(
+                    onClick = viewModel::showIntegrations,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.Rounded.SettingsEthernet, null)
+                    Text("  外部服务")
+                }
+                FilledTonalButton(
+                    onClick = viewModel::showInsights,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.Rounded.Bookmarks, null)
+                    Text("  媒体记忆")
+                }
             }
         }
         item {

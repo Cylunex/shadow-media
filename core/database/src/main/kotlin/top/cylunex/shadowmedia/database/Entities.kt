@@ -127,3 +127,19 @@ data class EpgProgramEntity(
     val endEpochMs: Long,
     val iconUrl: String? = null,
 )
+
+@Entity(
+    tableName = "media_segments",
+    indices = [Index(value = ["providerId", "itemId"]), Index("createdAtEpochMs")],
+)
+data class MediaSegmentEntity(
+    @PrimaryKey val id: String,
+    val providerId: String,
+    val itemId: String,
+    val type: String,
+    val startMs: Long,
+    val endMs: Long,
+    val confidence: Float,
+    val source: String,
+    val createdAtEpochMs: Long,
+)
