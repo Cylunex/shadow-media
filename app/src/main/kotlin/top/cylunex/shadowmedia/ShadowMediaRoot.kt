@@ -13,6 +13,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Arrangement
@@ -86,10 +87,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -105,6 +114,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.ui.compose.material3.Player
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -134,6 +144,12 @@ import top.cylunex.shadowmedia.ui.rememberEmbyImageLoader
 @Composable
 fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val rootContext = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(state.screen) {
+        (rootContext.findActivity() as? MainActivity)?.setPlaybackActive(
+            state.screen == Screen.PLAYER || state.screen == Screen.EXTERNAL_PLAYER
+        )
+    }
     val imageLoader = rememberEmbyImageLoader(state.session, container.clientIdentity)
     CompositionLocalProvider(LocalEmbyImageLoader provides imageLoader) {
         ShadowBackdrop(Modifier.fillMaxSize()) {
@@ -191,6 +207,8 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
     val lifecycleOwner = LocalLifecycleOwner.current
     val runtime = remember(entry.id) { ExternalPlaybackRuntime(context.applicationContext, entry) }
     val playbackError by runtime.error.collectAsStateWithLifecycle()
+    val focusRequester = remember(runtime) { FocusRequester() }
+    LaunchedEffect(runtime) { runCatching { focusRequester.requestFocus() } }
     DisposableEffect(runtime, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -211,7 +229,33 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(
+        Modifier.fillMaxSize().background(Color.Black)
+            .focusRequester(focusRequester)
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.DirectionLeft -> {
+                        if (runtime.player.isCurrentMediaItemSeekable) {
+                            runtime.player.seekTo((runtime.player.currentPosition - TV_SEEK_STEP_MS).coerceAtLeast(0))
+                        }
+                        true
+                    }
+                    Key.DirectionRight -> {
+                        if (runtime.player.isCurrentMediaItemSeekable) {
+                            runtime.player.seekTo(runtime.player.currentPosition + TV_SEEK_STEP_MS)
+                        }
+                        true
+                    }
+                    Key.Enter, Key.NumPadEnter, Key.Spacebar, Key.MediaPlayPause -> {
+                        if (runtime.player.isPlaying) runtime.player.pause() else runtime.player.play()
+                        true
+                    }
+                    else -> false
+                }
+            }
+            .focusable()
+    ) {
         Player(player = runtime.player, modifier = Modifier.fillMaxSize())
         Row(
             modifier = Modifier.align(Alignment.TopCenter)
@@ -499,6 +543,7 @@ private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: 
         initialPage = state.currentIndex.coerceIn(0, (state.items.size - 1).coerceAtLeast(0)),
         pageCount = { state.items.size },
     )
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.settledPage }
@@ -510,7 +555,16 @@ private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: 
         state = pagerState,
         key = { state.items[it].id },
         beyondViewportPageCount = 1,
-        modifier = Modifier.fillMaxSize().background(Color.Black),
+        modifier = Modifier.fillMaxSize().background(Color.Black).onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            val target = when (event.key) {
+                Key.DirectionDown, Key.PageDown -> (pagerState.currentPage + 1).coerceAtMost(state.items.lastIndex)
+                Key.DirectionUp, Key.PageUp -> (pagerState.currentPage - 1).coerceAtLeast(0)
+                else -> return@onPreviewKeyEvent false
+            }
+            if (target != pagerState.currentPage) scope.launch { pagerState.animateScrollToPage(target) }
+            true
+        },
     ) { page ->
         val item = state.items[page]
         val plan = state.playbackPlan?.takeIf {
@@ -682,6 +736,8 @@ private fun IsoPlayer(
     var launchedAtPosition by remember(plan) { mutableLongStateOf(0L) }
     var showDiagnostics by remember(runtime) { mutableStateOf(false) }
     var externalPlaybackActive by remember(runtime) { mutableStateOf(false) }
+    val focusRequester = remember(runtime) { FocusRequester() }
+    LaunchedEffect(runtime) { runCatching { focusRequester.requestFocus() } }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         externalPlaybackActive = false
         val returnedPosition = result.data?.getLongExtra(VLC_RESULT_POSITION, -1L) ?: -1L
@@ -747,7 +803,29 @@ private fun IsoPlayer(
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        Modifier.fillMaxSize()
+            .focusRequester(focusRequester)
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.DirectionLeft -> {
+                        runtime.seekTo(playbackState.positionMs - TV_SEEK_STEP_MS)
+                        true
+                    }
+                    Key.DirectionRight -> {
+                        runtime.seekTo(playbackState.positionMs + TV_SEEK_STEP_MS)
+                        true
+                    }
+                    Key.Enter, Key.NumPadEnter, Key.Spacebar, Key.MediaPlayPause -> {
+                        if (playbackState.isPlaying) runtime.pause() else runtime.play()
+                        true
+                    }
+                    else -> false
+                }
+            }
+            .focusable()
+    ) {
         AndroidView(
             factory = { viewContext -> SurfaceView(viewContext).also(runtime::attach) },
             modifier = Modifier.fillMaxSize(),
@@ -946,6 +1024,9 @@ private fun ActivePlayer(
     val diagnostics by runtime.diagnostics.collectAsStateWithLifecycle()
     val pendingReports by container.playbackOutbox.pendingCount.collectAsStateWithLifecycle()
     var showDiagnostics by remember(runtime) { mutableStateOf(false) }
+    val focusRequester = remember(runtime) { FocusRequester() }
+
+    LaunchedEffect(runtime) { runCatching { focusRequester.requestFocus() } }
 
     DisposableEffect(runtime, lifecycleOwner) {
         var resumeAfterBackground = false
@@ -970,7 +1051,29 @@ private fun ActivePlayer(
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        Modifier.fillMaxSize()
+            .focusRequester(focusRequester)
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.DirectionLeft -> {
+                        runtime.seekTo(runtime.currentPositionMs - TV_SEEK_STEP_MS)
+                        true
+                    }
+                    Key.DirectionRight -> {
+                        runtime.seekTo(runtime.currentPositionMs + TV_SEEK_STEP_MS)
+                        true
+                    }
+                    Key.Enter, Key.NumPadEnter, Key.Spacebar, Key.MediaPlayPause -> {
+                        if (runtime.player.isPlaying) runtime.player.pause() else runtime.player.play()
+                        true
+                    }
+                    else -> false
+                }
+            }
+            .focusable()
+    ) {
         Player(player = runtime.player, modifier = Modifier.fillMaxSize())
 
         FilledTonalButton(
@@ -1294,3 +1397,4 @@ private fun PlaybackPlan.isDiscImage(): Boolean =
 private const val VLC_PACKAGE = "org.videolan.vlc"
 private const val VLC_RESULT_POSITION = "extra_position"
 private const val VLC_DOWNLOAD_URL = "https://www.videolan.org/vlc/download-android.html"
+private const val TV_SEEK_STEP_MS = 10_000L

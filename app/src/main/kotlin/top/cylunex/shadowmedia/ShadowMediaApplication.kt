@@ -41,6 +41,7 @@ class AppContainer(application: Application) {
     val localMediaState = LocalMediaStateRepository(database.dao())
     val providerRegistry = InMemoryProviderRegistry()
     val aggregateSearchEngine = AggregateSearchEngine()
+    val handoffInbox = HandoffInbox()
     val playbackTelemetry = RoomPlaybackTelemetrySink(localMediaState, applicationScope)
     val clientIdentity = ClientIdentity(
         deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),

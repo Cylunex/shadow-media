@@ -1,6 +1,7 @@
 package top.cylunex.shadowmedia
 
 import android.content.ContentResolver
+import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.CastConnected
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FolderOpen
@@ -108,6 +110,7 @@ import top.cylunex.shadowmedia.ui.EmptyStatePanel
 import top.cylunex.shadowmedia.ui.MediaPosterCard
 import top.cylunex.shadowmedia.ui.withoutEmoji
 import top.cylunex.shadowmedia.ui.ScreenHeader
+import top.cylunex.shadowmedia.ui.shadowTvFocus
 import coil3.compose.AsyncImage
 
 @Composable
@@ -213,7 +216,7 @@ internal fun DiscoverScreen(state: MainUiState, viewModel: MainViewModel) {
 private fun UnifiedResultCard(item: UnifiedMediaItem, providerName: String, onClick: () -> Unit) {
     Card(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).shadowTvFocus(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f)),
     ) {
         Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -239,6 +242,7 @@ private fun UnifiedResultCard(item: UnifiedMediaItem, providerName: String, onCl
 @Composable
 internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
     BackHandler(onBack = viewModel::back)
+    val context = LocalContext.current
     val detail = state.selectedUnifiedDetail
     LazyColumn(
         modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
@@ -278,6 +282,27 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                             Icon(Icons.Rounded.PlayArrow, null)
                             Spacer(Modifier.width(8.dp))
                             Text(if (detail.children.isEmpty()) "立即播放" else "播放第一集")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                val target = detail.children.firstOrNull() ?: detail.item
+                                val link = target.key.toHandoffUri(target.progressMs).toString()
+                                context.startActivity(
+                                    Intent.createChooser(
+                                        Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_TEXT, link)
+                                            putExtra(Intent.EXTRA_TITLE, target.title.withoutEmoji())
+                                        },
+                                        "发送播放接力链接",
+                                    )
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Rounded.CastConnected, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("发送到其他设备")
                         }
                     }
                 }
@@ -473,7 +498,7 @@ private fun HubActionCard(
 ) {
     Card(
         onClick = onClick,
-        modifier = modifier,
+        modifier = modifier.shadowTvFocus(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.66f)),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -755,7 +780,7 @@ private fun ExternalSourceCard(
 ) {
     Card(
         onClick = onOpen,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).shadowTvFocus(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
     ) {
         Row(
@@ -956,7 +981,7 @@ private fun LiveChannelCard(
     val catchup = programs.filter { it.endEpochMs <= now }.takeLast(3)
     Card(
         onClick = { onPlay(stream) },
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).shadowTvFocus(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

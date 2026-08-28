@@ -74,7 +74,8 @@
 - [ ] 与 Shadow App 的 Deep Link / library 边界
 - [x] libmpv 作为 ISO 专用后端
 - [ ] 是否让特殊 ASS 或 Media3 解码失败样本手动切换到 libmpv
-- [ ] Android TV 独立 UI 模块与 D-pad 焦点恢复
+- [x] Android TV 启动入口、自适应 UI 与 D-pad 焦点反馈
+- [x] 播放器遥控切片、Seek 和播放/暂停快捷键
 - [ ] Jellyfin、Plex 和其他平台 Provider 需求重新评估
 
 ## M6：扩展平台
@@ -88,3 +89,4 @@
 - [x] 直播与声明式 HTTP Provider
 - [ ] Stremio 与 CatVod Bridge Provider
 - [x] 跨 Provider 聚合搜索、部分失败隔离与统一详情
+- [x] 跨设备 Deep Link 接力与自动画中画

@@ -130,6 +130,7 @@ class MainViewModel(
     private val providerRegistry: InMemoryProviderRegistry,
     private val aggregateSearchEngine: AggregateSearchEngine,
     private val externalClient: OkHttpClient,
+    private val handoffInbox: HandoffInbox,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     private var playbackRequest: Job? = null
@@ -152,6 +153,37 @@ class MainViewModel(
                 screen = if (saved.isEmpty()) Screen.LOGIN else Screen.SERVERS,
                 savedSessions = saved,
             )
+        }
+        viewModelScope.launch {
+            handoffInbox.intents.collect { uri ->
+                val handoff = uri.toMediaHandoffOrNull() ?: return@collect
+                syncProviders()
+                val provider = providerRegistry.provider(handoff.key.providerId)
+                if (provider == null) {
+                    update { copy(errorMessage = "接力链接对应的内容服务在这台设备上不可用") }
+                    return@collect
+                }
+                update {
+                    copy(
+                        screen = Screen.PROVIDER_DETAIL,
+                        selectedUnifiedDetail = null,
+                        isLoading = true,
+                        errorMessage = null,
+                    )
+                }
+                runCatching { provider.detail(handoff.key) }
+                    .onSuccess { detail ->
+                        update {
+                            copy(
+                                selectedUnifiedDetail = detail.copy(
+                                    item = detail.item.copy(progressMs = handoff.positionMs)
+                                ),
+                                isLoading = false,
+                            )
+                        }
+                    }
+                    .onFailure(::showError)
+            }
         }
     }
 
@@ -1086,6 +1118,7 @@ class MainViewModel(
                         container.providerRegistry,
                         container.aggregateSearchEngine,
                         container.externalClient,
+                        container.handoffInbox,
                     ) as T
             }
     }

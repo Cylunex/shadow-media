@@ -110,7 +110,7 @@ fun ServerCard(
 ) {
     Card(
         onClick = onClick,
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().shadowTvFocus(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.64f)),
     ) {
         Row(
@@ -165,7 +165,7 @@ fun ServerCard(
 fun ContinueFeedCard(currentIndex: Int, onClick: () -> Unit) {
     Card(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().shadowTvFocus(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.92f)),
     ) {
         Row(
@@ -196,7 +196,7 @@ fun ContinueFeedCard(currentIndex: Int, onClick: () -> Unit) {
 
 @Composable
 fun LibraryCard(session: EmbySession?, library: MediaLibrary, onClick: () -> Unit) {
-    Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+    Card(onClick = onClick, modifier = Modifier.fillMaxWidth().shadowTvFocus()) {
         Box(Modifier.fillMaxWidth().aspectRatio(1.15f)) {
             EmbyArtwork(
                 session = session,
@@ -242,7 +242,7 @@ fun MediaPosterCard(
     onFavorite: (() -> Unit)? = null,
 ) {
     Column {
-        Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+        Card(onClick = onClick, modifier = Modifier.fillMaxWidth().shadowTvFocus()) {
             Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f)) {
                 EmbyArtwork(
                     session,
