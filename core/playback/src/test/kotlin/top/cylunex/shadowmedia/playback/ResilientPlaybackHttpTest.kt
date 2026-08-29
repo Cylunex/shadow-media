@@ -54,6 +54,40 @@ class ResilientPlaybackHttpTest {
     }
 
     @Test
+    fun `cdn 404 reopens original emby url instead of caching missing lease`() {
+        val embyRequests = AtomicInteger()
+        val cdnRequests = AtomicInteger()
+        val cdn = TestHttpServer {
+            if (cdnRequests.incrementAndGet() == 1) {
+                TestResponse(status = 404, reason = "Expired")
+            } else {
+                TestResponse(status = 206, reason = "Partial Content", body = byteArrayOf(1))
+            }
+        }
+        val emby = TestHttpServer {
+            embyRequests.incrementAndGet()
+            TestResponse(
+                status = 302,
+                reason = "Found",
+                headers = mapOf("Location" to "http://127.0.0.1:${cdn.port}/video.mkv"),
+            )
+        }
+        val session = testSession(emby.port)
+        val client = playbackClient(session)
+
+        try {
+            client.newCall(
+                Request.Builder().url("http://127.0.0.1:${emby.port}/video.mkv").build()
+            ).execute().use { response -> assertEquals(206, response.code) }
+            assertEquals(2, embyRequests.get())
+            assertEquals(2, cdnRequests.get())
+        } finally {
+            emby.close()
+            cdn.close()
+        }
+    }
+
+    @Test
     fun `emby 403 is not retried`() {
         val requests = AtomicInteger()
         val emby = TestHttpServer {

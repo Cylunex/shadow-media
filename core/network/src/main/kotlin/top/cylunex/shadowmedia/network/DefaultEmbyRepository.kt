@@ -231,88 +231,88 @@ class DefaultEmbyRepository(
             ?: throw EmbyApiException(
                 "PlaybackInfo 返回 0 个 MediaSources；请检查账号播放权限、STRM 条目和服务端日志"
             )
-        val isDiscImage = source.videoType.equals("Iso", ignoreCase = true) ||
-            source.container?.split(',')?.any { it.equals("iso", ignoreCase = true) } == true
-
-        val candidates = buildList {
-            source.directStreamUrl?.takeIf { it.isNotBlank() && !isDiscImage }?.let { directUrl ->
-                add(
-                    PlaybackCandidate(
-                        url = EmbyEndpoints.resolvePlaybackUrl(session.serverUrl, directUrl),
-                        method = if (source.supportsDirectPlay) {
-                            PlayMethod.DIRECT_PLAY
-                        } else {
-                            PlayMethod.DIRECT_STREAM
-                        },
-                        requiredHeaders = source.requiredHttpHeaders,
-                    )
-                )
+        val orderedSources = listOf(source) + response.mediaSources.filterNot { it === source }
+        fun MediaSourceDto.isDiscImage(): Boolean = videoType.equals("Iso", ignoreCase = true) ||
+            container?.split(',')?.any { it.equals("iso", ignoreCase = true) } == true
+        fun MediaSourceDto.canonicalCandidate(): PlaybackCandidate? {
+            val discImage = isDiscImage()
+            if (!discImage && !supportsDirectPlay && !supportsDirectStream && directStreamUrl.isNullOrBlank()) {
+                return null
             }
-            if (
-                isDiscImage || (
-                    source.directStreamUrl.isNullOrBlank() &&
-                        (source.supportsDirectPlay || source.supportsDirectStream)
-                    )
-            ) {
-                add(
-                    PlaybackCandidate(
-                        url = EmbyEndpoints.directPlayUrl(
-                            serverUrl = session.serverUrl,
-                            itemId = itemId,
-                            mediaSourceId = source.id,
-                            container = source.container,
-                            playSessionId = response.playSessionId,
-                        ),
-                        method = PlayMethod.DIRECT_STREAM,
-                        requiredHeaders = source.requiredHttpHeaders,
-                    )
-                )
-            }
-            source.transcodingUrl?.takeIf { it.isNotBlank() && !isDiscImage }?.let { transcodingUrl ->
-                add(
-                    PlaybackCandidate(
-                        url = EmbyEndpoints.resolvePlaybackUrl(session.serverUrl, transcodingUrl),
-                        method = PlayMethod.TRANSCODE,
-                        requiredHeaders = source.requiredHttpHeaders,
-                    )
-                )
-            }
-            if (
-                !isDiscImage && source.transcodingUrl.isNullOrBlank() && source.supportsTranscoding
-            ) {
-                add(
-                    PlaybackCandidate(
-                        url = EmbyEndpoints.hlsTranscodingUrl(
-                            serverUrl = session.serverUrl,
-                            itemId = itemId,
-                            mediaSourceId = source.id,
-                            playSessionId = response.playSessionId,
-                            deviceId = clientIdentity.deviceId,
-                        ),
-                        method = PlayMethod.TRANSCODE,
-                        requiredHeaders = source.requiredHttpHeaders,
-                    )
-                )
-            }
-            if (isEmpty()) {
-                // Some Emby versions return MediaSource capabilities but omit all derived URLs.
-                // The documented static stream endpoint is still a valid final attempt and lets
-                // Media3 surface the real HTTP/codec error instead of failing before playback.
-                add(
-                    PlaybackCandidate(
-                        url = EmbyEndpoints.directPlayUrl(
-                            serverUrl = session.serverUrl,
-                            itemId = itemId,
-                            mediaSourceId = source.id,
-                            container = source.container,
-                            playSessionId = response.playSessionId,
-                        ),
-                        method = PlayMethod.DIRECT_STREAM,
-                        requiredHeaders = source.requiredHttpHeaders,
-                    )
-                )
-            }
+            // The canonical Emby stream route is intentionally first. A configured
+            // MediaWarp/OpenList proxy must see the request before the client follows its
+            // short-lived 302 Location to the storage CDN.
+            return PlaybackCandidate(
+                url = EmbyEndpoints.directPlayUrl(
+                    serverUrl = session.serverUrl,
+                    itemId = itemId,
+                    mediaSourceId = id,
+                    container = container,
+                    playSessionId = response.playSessionId,
+                ),
+                method = PlayMethod.DIRECT_STREAM,
+                requiredHeaders = requiredHttpHeaders,
+                isDiscImage = discImage,
+                mediaSourceId = id,
+            )
         }
+        fun MediaSourceDto.advertisedDirectCandidate(): PlaybackCandidate? {
+            if (isDiscImage()) return null
+            val directUrl = directStreamUrl?.takeIf(String::isNotBlank) ?: return null
+            return PlaybackCandidate(
+                url = EmbyEndpoints.resolvePlaybackUrl(session.serverUrl, directUrl),
+                method = if (supportsDirectPlay) PlayMethod.DIRECT_PLAY else PlayMethod.DIRECT_STREAM,
+                requiredHeaders = requiredHttpHeaders,
+                mediaSourceId = id,
+            )
+        }
+        fun MediaSourceDto.transcodingCandidates(): List<PlaybackCandidate> {
+            if (isDiscImage()) return emptyList()
+            val url = transcodingUrl?.takeIf(String::isNotBlank)?.let {
+                EmbyEndpoints.resolvePlaybackUrl(session.serverUrl, it)
+            } ?: if (supportsTranscoding) {
+                EmbyEndpoints.hlsTranscodingUrl(
+                    serverUrl = session.serverUrl,
+                    itemId = itemId,
+                    mediaSourceId = id,
+                    playSessionId = response.playSessionId,
+                    deviceId = clientIdentity.deviceId,
+                )
+            } else null
+            return url?.let {
+                listOf(
+                    PlaybackCandidate(
+                        url = it,
+                        method = PlayMethod.TRANSCODE,
+                        requiredHeaders = requiredHttpHeaders,
+                        mediaSourceId = id,
+                    )
+                )
+            }.orEmpty()
+        }
+
+        val candidates = (
+            orderedSources.mapNotNull(MediaSourceDto::canonicalCandidate) +
+                orderedSources.mapNotNull(MediaSourceDto::advertisedDirectCandidate) +
+                orderedSources.flatMap(MediaSourceDto::transcodingCandidates)
+            ).ifEmpty {
+                // Some Emby versions return a MediaSource but omit all capabilities and URLs.
+                listOf(
+                    PlaybackCandidate(
+                        url = EmbyEndpoints.directPlayUrl(
+                            serverUrl = session.serverUrl,
+                            itemId = itemId,
+                            mediaSourceId = source.id,
+                            container = source.container,
+                            playSessionId = response.playSessionId,
+                        ),
+                        method = PlayMethod.DIRECT_STREAM,
+                        requiredHeaders = source.requiredHttpHeaders,
+                        isDiscImage = source.isDiscImage(),
+                        mediaSourceId = source.id,
+                    )
+                )
+            }
 
         return PlaybackPlan(
             itemId = itemId,
@@ -326,9 +326,9 @@ class DefaultEmbyRepository(
                 ?: source.mediaStreams.firstOrNull { it.type.equals("Audio", true) }?.codec,
             runTimeTicks = source.runTimeTicks,
             sourceCount = response.mediaSources.size,
-            supportsDirectPlay = source.supportsDirectPlay,
-            supportsDirectStream = source.supportsDirectStream,
-            supportsTranscoding = source.supportsTranscoding,
+            supportsDirectPlay = orderedSources.any(MediaSourceDto::supportsDirectPlay),
+            supportsDirectStream = orderedSources.any(MediaSourceDto::supportsDirectStream),
+            supportsTranscoding = orderedSources.any(MediaSourceDto::supportsTranscoding),
         )
     }
 

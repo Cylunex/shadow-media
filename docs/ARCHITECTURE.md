@@ -66,11 +66,13 @@ Emby、直播列表和声明式 HTTP CMS 均通过 `ProviderRegistry` 注册；�
 
 客户端使用 `POST /Items/{Id}/PlaybackInfo`，提交用户、码率上限与首版设备能力描述。返回后：
 
-1. 优先使用服务端返回的 `DirectStreamUrl`；
-2. 若媒体源声明 `SupportsDirectPlay` 但没有返回直连 URL，则构造带 `MediaSourceId`、
-   `PlaySessionId` 和 `Static=true` 的标准 `/Videos/{id}/stream.{container}` 地址；
-3. 将 `TranscodingUrl` 作为下一候选，通常为 Emby HLS；
-4. 保存 `MediaSourceId` 与 `PlaySessionId`，用实际播放方法上报状态；
+1. 为每个可直放 MediaSource 优先构造带 `MediaSourceId`、`PlaySessionId` 和 `Static=true` 的标准
+   `/Videos/{id}/stream.{container}` 地址，确保请求先经过用户配置的 Emby/MediaWarp 入口；
+2. `DirectStreamUrl` 若是 Emby 内网绝对地址或标准媒体路由，则重建到当前配置的反代 origin；真正的
+   外部存储地址只作为后续候选，不持久化；
+3. 依次尝试所有 MediaSource 的反代直放地址，再尝试服务端通告直链，最后使用各版本的
+   `TranscodingUrl`/Emby HLS；
+4. 每个候选保存自己的 `MediaSourceId`，切换版本后用实际播放版本和方法上报状态；
 5. Token 只放在同源请求头，不放进播放 URL，也不持久化 302 后的 CDN URL。
 
 接口依据：
@@ -78,7 +80,7 @@ Emby、直播列表和声明式 HTTP CMS 均通过 `ProviderRegistry` 注册；�
 - <https://dev.emby.media/reference/RestAPI/MediaInfoService/postItemsByIdPlaybackinfo.html>
 - <https://dev.emby.media/doc/restapi/Playback-Check-ins.html>
 
-当前先遍历同一次 PlaybackInfo 返回的直连 → 转码候选；候选全部失败后自动重新请求一次
+当前先遍历同一次 PlaybackInfo 返回的多版本反代直放 → 通告直链 → 转码候选；候选全部失败后自动重新请求一次
 PlaybackInfo，并从失败位置恢复。一次刷新仍失败就停止自动循环并显示诊断，避免错误链路无限重试。
 
 Playing/Progress/Stopped 先写入持久化 Outbox，再尝试发送。记录只包含服务器/用户 ID、媒体 ID、

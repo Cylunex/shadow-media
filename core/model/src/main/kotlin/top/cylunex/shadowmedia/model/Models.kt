@@ -400,6 +400,8 @@ data class PlaybackCandidate(
     val requiredHeaders: Map<String, String>,
     val credentialOrigin: String? = null,
     val isDiscImage: Boolean = false,
+    /** Candidate-specific source used when PlaybackInfo exposes multiple versions. */
+    val mediaSourceId: String? = null,
 )
 
 data class PlaybackPlan(

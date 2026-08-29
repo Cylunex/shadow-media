@@ -14,10 +14,14 @@ Emby origin
   保留 Media3 生成的 Range、User-Agent 和非敏感播放头
 ```
 
-OpenList/115 的临时直链可能在缓存失效、签名刷新或 CDN 限流时返回超时、403、429 或 5xx。
+OpenList/115 的临时直链可能在缓存失效、签名刷新或 CDN 限流时返回超时、403、404、429 或 5xx。
 普通视频播放器会限制单 host 并发，并在这些临时 CDN 响应下重新请求原始 Emby URL，让
 MediaWarp/OpenList 生成新的 302；不会直接重试已过期的 CDN URL。Emby origin 自身返回 403 时不会
 自动重试，避免把真实权限错误误判为 CDN 抖动。
+
+PlaybackInfo 返回的已知 Emby 媒体路由即使带有内网绝对 host，也会重建到登录时配置的服务器入口。
+这保证列表、详情、播放和进度请求使用同一反代边界；播放器只在收到实时 302 后访问 CDN，不保存
+最终 Location。
 
 独立 OpenList Provider 不经过 Emby。它通过认证 API 浏览目录和读取元数据，但播放使用带签名的
 稳定 `/d/` 地址；每次 Range 请求都可由 OpenList 重新生成后端 302。WebDAV Basic Auth 只允许发送

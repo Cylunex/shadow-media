@@ -174,14 +174,23 @@ class PlaybackRuntime(
         val finalPosition = currentPositionMs.millisecondsToEmbyTicks()
         val paused = !player.isPlaying
         val canSeek = isSeekSupported
-        val playMethod = currentCandidate().method
+        val candidate = currentCandidate()
         finishBuffering()
         telemetrySink.record(telemetrySnapshot(completed = !terminalFailure, terminal = true))
         mediaSession.release()
         exoPlayer.release()
         if (started) {
             scope.launch(Dispatchers.IO) {
-                runCatching { report(PlaybackEvent.STOPPED, finalPosition, paused, canSeek, playMethod) }
+                runCatching {
+                    report(
+                        PlaybackEvent.STOPPED,
+                        finalPosition,
+                        paused,
+                        canSeek,
+                        candidate.method,
+                        candidate.mediaSourceId,
+                    )
+                }
                 scope.cancel()
             }
         } else {
@@ -236,9 +245,11 @@ class PlaybackRuntime(
         val position = currentPositionMs.millisecondsToEmbyTicks()
         val paused = !player.isPlaying
         val canSeek = isSeekSupported
-        val playMethod = currentCandidate().method
+        val candidate = currentCandidate()
         scope.launch(Dispatchers.IO) {
-            runCatching { report(event, position, paused, canSeek, playMethod) }
+            runCatching {
+                report(event, position, paused, canSeek, candidate.method, candidate.mediaSourceId)
+            }
         }
     }
 
@@ -248,12 +259,13 @@ class PlaybackRuntime(
         paused: Boolean,
         canSeek: Boolean,
         playMethod: PlayMethod,
+        mediaSourceId: String?,
     ) {
         playbackOutbox.submit(
             session,
             PlaybackReport(
                 itemId = plan.itemId,
-                mediaSourceId = plan.mediaSourceId,
+                mediaSourceId = mediaSourceId ?: plan.mediaSourceId,
                 playSessionId = plan.playSessionId,
                 positionTicks = positionTicks,
                 isPaused = paused,

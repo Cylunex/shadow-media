@@ -42,6 +42,28 @@ class ServerAddressPolicyTest {
     }
 
     @Test
+    fun `rebases absolute private emby playback url onto configured proxy`() {
+        assertEquals(
+            "https://proxy.example.com/media/emby/Videos/1/stream.mkv?MediaSourceId=source-1",
+            EmbyEndpoints.resolvePlaybackUrl(
+                "https://proxy.example.com/media",
+                "http://emby.internal:8096/emby/Videos/1/stream.mkv?MediaSourceId=source-1",
+            ),
+        )
+    }
+
+    @Test
+    fun `keeps external storage url outside emby route unchanged`() {
+        assertEquals(
+            "https://cdn.example.net/videos/library/movie.mkv?sign=temporary",
+            EmbyEndpoints.resolvePlaybackUrl(
+                "https://proxy.example.com/",
+                "https://cdn.example.net/videos/library/movie.mkv?sign=temporary",
+            ),
+        )
+    }
+
+    @Test
     fun `builds authenticated direct play endpoint without token in url`() {
         assertEquals(
             "https://media.example.com/emby/Videos/item-1/stream.mkv?" +

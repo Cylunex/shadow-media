@@ -95,6 +95,42 @@ class DefaultEmbyRepositoryTest {
     }
 
     @Test
+    fun `routes every media source through proxy before advertised and transcode fallbacks`() = runBlocking {
+        val responseJson = """
+            {
+              "PlaySessionId": "play-multi",
+              "MediaSources": [
+                {
+                  "Id": "source-4k",
+                  "Container": "mkv",
+                  "SupportsDirectPlay": true,
+                  "SupportsTranscoding": true,
+                  "DirectStreamUrl": "http://emby.internal:8096/emby/Videos/item-1/stream.mkv?MediaSourceId=source-4k",
+                  "TranscodingUrl": "/emby/Videos/item-1/master.m3u8?MediaSourceId=source-4k"
+                },
+                {
+                  "Id": "source-1080p",
+                  "Container": "mp4",
+                  "SupportsDirectPlay": true,
+                  "DirectStreamUrl": "https://temporary.example.net/movie.mp4?sign=short"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val plan = repositoryReturning(responseJson).playbackPlan(SESSION, "item-1")
+
+        assertEquals(2, plan.sourceCount)
+        assertEquals(listOf("source-4k", "source-1080p"), plan.candidates.take(2).map { it.mediaSourceId })
+        assertTrue(plan.candidates.take(2).all { it.url.startsWith("https://media.example.com/emby/Videos/") })
+        assertEquals(
+            "https://media.example.com/emby/Videos/item-1/stream.mkv?MediaSourceId=source-4k",
+            plan.candidates[2].url,
+        )
+        assertEquals(PlayMethod.TRANSCODE, plan.candidates.last().method)
+    }
+
+    @Test
     fun `loads every item page until total record count`() = runBlocking {
         val starts = mutableListOf<Int>()
         val client = OkHttpClient.Builder().addInterceptor { chain ->

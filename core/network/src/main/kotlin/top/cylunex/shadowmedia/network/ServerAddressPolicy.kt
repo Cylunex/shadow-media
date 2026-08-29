@@ -31,10 +31,35 @@ internal object EmbyEndpoints {
     }
 
     fun resolvePlaybackUrl(serverUrl: String, pathOrUrl: String): String {
-        val absolute = pathOrUrl.toHttpUrlOrNull()
-        if (absolute != null) return absolute.toString()
         val server = serverUrl.toHttpUrlOrNull() ?: error("Invalid server URL")
-        return server.resolve(pathOrUrl)?.toString() ?: error("Invalid playback URL")
+        val resolved = pathOrUrl.toHttpUrlOrNull()
+            ?: server.resolve(pathOrUrl)
+            ?: error("Invalid playback URL")
+        val route = resolved.pathSegments.embyPlaybackRoute()
+        if (route == null) return resolved.toString()
+
+        // PlaybackInfo may contain an absolute URL pointing at Emby's private upstream address.
+        // Rebuild known Emby media routes from the configured public entry so MediaWarp and other
+        // 302 reverse proxies always get a chance to handle the stream request.
+        return endpoint(serverUrl, *route.toTypedArray()).newBuilder()
+            .encodedQuery(resolved.encodedQuery)
+            .build()
+            .toString()
+    }
+
+    private fun List<String>.embyPlaybackRoute(): List<String>? {
+        val nonEmpty = filter(String::isNotEmpty)
+        val embyIndex = nonEmpty.indexOfFirst { it.equals("emby", ignoreCase = true) }
+        val route = if (embyIndex >= 0) nonEmpty.drop(embyIndex + 1) else nonEmpty
+        val mediaKind = route.firstOrNull()
+        val action = route.getOrNull(2)?.substringBefore('.').orEmpty()
+        val isMediaRoute = mediaKind.equals("Videos", ignoreCase = true) ||
+            mediaKind.equals("Audio", ignoreCase = true)
+        val isPlaybackAction = action.equals("stream", ignoreCase = true) ||
+            action.equals("original", ignoreCase = true) ||
+            action.equals("master", ignoreCase = true) ||
+            action.equals("universal", ignoreCase = true)
+        return route.takeIf { it.size >= 3 && isMediaRoute && isPlaybackAction }
     }
 
     fun directPlayUrl(

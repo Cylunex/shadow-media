@@ -66,7 +66,7 @@ internal class ResilientPlaybackHttpInterceptor(
     private fun Response.shouldRetry(attempt: Int): Boolean {
         if (attempt >= maxAttempts) return false
         return when (code) {
-            403 -> !request.url.sameOriginAs(embyOrigin)
+            403, 404 -> !request.url.sameOriginAs(embyOrigin)
             408, 425, 429, 500, 502, 503, 504 -> true
             else -> false
         }

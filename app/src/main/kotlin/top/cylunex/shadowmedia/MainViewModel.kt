@@ -1040,7 +1040,7 @@ class MainViewModel(
                 session,
                 PlaybackReport(
                     itemId = plan.itemId,
-                    mediaSourceId = plan.mediaSourceId,
+                    mediaSourceId = plan.primary.mediaSourceId ?: plan.mediaSourceId,
                     playSessionId = plan.playSessionId,
                     positionTicks = positionMs.coerceAtLeast(0L).millisecondsToEmbyTicks(),
                     isPaused = event == PlaybackEvent.STOPPED,
