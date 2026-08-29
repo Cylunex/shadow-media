@@ -71,6 +71,10 @@
 - [x] 同名频道多线路、搜索、分组与本地收藏
 - [ ] 多线路手动/自动换源与健康度
 - [ ] 独立 CatVod Source Runtime 协议
+- [x] OpenList 原生 API 媒体库与稳定 302 下载入口
+- [x] 通用 WebDAV 目录、Range 播放和 Basic Auth 隔离
+- [x] SMB2/SMB3 目录浏览与可 Seek 随机读取播放
+- [x] NFO 元数据、同目录海报与 STRM 解析
 
 ## M5：评估扩展
 

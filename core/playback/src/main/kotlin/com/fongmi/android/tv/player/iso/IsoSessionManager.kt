@@ -29,6 +29,13 @@ data class IsoSourceStats(
     val lastError: String? = null,
 )
 
+/** Random-access bytes consumed by the bundled libbluray/libdvdnav bridge. */
+interface IsoRandomAccessSource : Closeable {
+    fun length(): Long
+    fun readAt(offset: Long, buffer: ByteArray, bufferOffset: Int, length: Int): Int
+    fun stats(): IsoSourceStats
+}
+
 /** JNI entry point expected by WebHTV's GPL-3.0 `libplayer.so`. */
 class IsoSessionManager private constructor() {
     companion object {
@@ -45,9 +52,14 @@ class IsoSessionManager private constructor() {
         @JvmStatic
         fun create(url: String, headers: Map<String, String>): String {
             val client = configuredClient ?: throw IllegalStateException("ISO HTTP client is not configured")
+            return create(HttpRangeIsoSource(url, headers, client))
+        }
+
+        @JvmStatic
+        fun create(source: IsoRandomAccessSource): String {
             val id = nextId.incrementAndGet()
             closedStats.remove(id)
-            sessions[id] = IsoPlaybackSession(HttpRangeIsoSource(url, headers, client))
+            sessions[id] = IsoPlaybackSession(source)
             return "webhtv-dvdiso://$id/longest"
         }
 
@@ -100,7 +112,7 @@ class IsoSessionManager private constructor() {
     }
 }
 
-private class IsoPlaybackSession(source: HttpRangeIsoSource) : Closeable {
+private class IsoPlaybackSession(source: IsoRandomAccessSource) : Closeable {
     private val cache = IsoPageCache(source)
 
     fun length(): Long = cache.length()
@@ -119,17 +131,11 @@ private class IsoPlaybackSession(source: HttpRangeIsoSource) : Closeable {
     override fun close() = cache.close()
 }
 
-private interface RemoteIsoSource : Closeable {
-    fun length(): Long
-    fun readAt(offset: Long, buffer: ByteArray, bufferOffset: Int, length: Int): Int
-    fun stats(): IsoSourceStats
-}
-
 private class HttpRangeIsoSource(
     private val url: String,
     inputHeaders: Map<String, String>,
     private val client: OkHttpClient,
-) : RemoteIsoSource {
+) : IsoRandomAccessSource {
     private val headers = inputHeaders.filterKeys { key ->
         key.isNotBlank() && !FORBIDDEN_HEADERS.any { it.equals(key, ignoreCase = true) }
     }
@@ -292,10 +298,10 @@ private class ActiveRangeResponse(
 }
 
 private class IsoPageCache(
-    private val source: RemoteIsoSource,
+    private val source: IsoRandomAccessSource,
     private val pageSize: Int = 4 * 1024 * 1024,
     private val maxPages: Int = 8,
-) : RemoteIsoSource {
+) : IsoRandomAccessSource {
     private val pages = object : LinkedHashMap<Long, ByteArray>(maxPages, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, ByteArray>): Boolean =
             size > maxPages

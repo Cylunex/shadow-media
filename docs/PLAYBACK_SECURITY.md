@@ -19,6 +19,11 @@ OpenList/115 的临时直链可能在缓存失效、签名刷新或 CDN 限流�
 MediaWarp/OpenList 生成新的 302；不会直接重试已过期的 CDN URL。Emby origin 自身返回 403 时不会
 自动重试，避免把真实权限错误误判为 CDN 抖动。
 
+独立 OpenList Provider 不经过 Emby。它通过认证 API 浏览目录和读取元数据，但播放使用带签名的
+稳定 `/d/` 地址；每次 Range 请求都可由 OpenList 重新生成后端 302。WebDAV Basic Auth 只允许发送
+到配置时记录的精确 origin，跨 origin 跳转会删除 `Authorization` 与 Cookie。SMB 密码不会进入播放
+URL，播放器只接收本进程可识别的随机读取句柄。
+
 脱敏诊断只记录最终 host、HTTP 状态、跳转次数、尝试次数和响应头耗时。不会记录完整 URL、查询
 参数、Location、响应头正文或任何凭据。
 

@@ -20,6 +20,9 @@ interface ShadowMediaDao {
     @Query("SELECT * FROM media_history ORDER BY lastPlayedAtEpochMs DESC LIMIT :limit")
     fun observeRecentHistory(limit: Int): Flow<List<MediaHistoryEntity>>
 
+    @Query("SELECT * FROM media_history WHERE stableKey = :stableKey LIMIT 1")
+    suspend fun history(stableKey: String): MediaHistoryEntity?
+
     @Query("DELETE FROM media_history WHERE stableKey = :stableKey")
     suspend fun removeHistory(stableKey: String)
 

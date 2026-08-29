@@ -4,10 +4,12 @@ import android.content.Context
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import com.fongmi.android.tv.player.iso.IsoRandomAccessSource
 import com.fongmi.android.tv.player.iso.IsoSessionManager
 import com.fongmi.android.tv.player.iso.IsoSourceStats
 import `is`.xyz.mpv.MPVLib
 import java.io.Closeable
+import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -24,13 +26,16 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import top.cylunex.shadowmedia.model.EmbySession
+import top.cylunex.shadowmedia.model.ExternalMediaEntry
 import top.cylunex.shadowmedia.model.PlaybackEvent
 import top.cylunex.shadowmedia.model.PlaybackPlan
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
 import top.cylunex.shadowmedia.model.millisecondsToEmbyTicks
 import top.cylunex.shadowmedia.network.ClientIdentity
+import top.cylunex.shadowmedia.network.NetworkStorageRepository
 import top.cylunex.shadowmedia.network.PlaybackOutbox
 import top.cylunex.shadowmedia.network.PlaybackReport
 
@@ -62,36 +67,85 @@ data class MpvIsoDiagnostics(
     val lastError: String? = null,
 )
 
+private fun interface IsoPlaybackReporter {
+    suspend fun report(event: PlaybackEvent, positionMs: Long, paused: Boolean, canSeek: Boolean)
+}
+
 /**
  * WebHTV-derived GPL-3.0 ISO engine. HTTP bytes are exposed to native libbluray/libdvdnav through
  * `webhtv-dvdiso://`; this preserves disc timelines and makes Blu-ray multi-clip seeks reliable.
  */
-class MpvIsoPlaybackRuntime(
+class MpvIsoPlaybackRuntime private constructor(
     context: Context,
-    private val session: EmbySession,
-    private val plan: PlaybackPlan,
-    private val playbackOutbox: PlaybackOutbox,
-    clientIdentity: ClientIdentity,
+    private val sourceUrl: String,
+    private val sourceHeaders: Map<String, String>,
+    private val networkStorageRepository: NetworkStorageRepository?,
+    private val sourceDurationMs: Long,
     private val startPositionMs: Long,
+    private val playbackClient: OkHttpClient,
+    private val reporter: IsoPlaybackReporter?,
+    private val redactedValues: List<String>,
     private val onTerminalError: (positionMs: Long, message: String) -> Unit = { _, _ -> },
 ) : Closeable, MPVLib.EventObserver {
+    constructor(
+        context: Context,
+        session: EmbySession,
+        plan: PlaybackPlan,
+        playbackOutbox: PlaybackOutbox,
+        clientIdentity: ClientIdentity,
+        startPositionMs: Long,
+        onTerminalError: (positionMs: Long, message: String) -> Unit = { _, _ -> },
+    ) : this(
+        context = context,
+        sourceUrl = plan.primary.url,
+        sourceHeaders = plan.primary.requiredHeaders,
+        networkStorageRepository = null,
+        sourceDurationMs = plan.runTimeTicks?.embyTicksToMilliseconds()?.coerceAtLeast(0L) ?: 0L,
+        startPositionMs = startPositionMs,
+        playbackClient = embyIsoClient(session, clientIdentity),
+        reporter = IsoPlaybackReporter { event, positionMs, paused, canSeek ->
+            playbackOutbox.submit(
+                session,
+                PlaybackReport(
+                    itemId = plan.itemId,
+                    mediaSourceId = plan.mediaSourceId,
+                    playSessionId = plan.playSessionId,
+                    positionTicks = positionMs.coerceAtLeast(0L).millisecondsToEmbyTicks(),
+                    isPaused = paused,
+                    canSeek = canSeek,
+                    event = event,
+                    playMethod = plan.primary.method,
+                ),
+            )
+        },
+        redactedValues = listOf(session.accessToken, plan.primary.url),
+        onTerminalError = onTerminalError,
+    )
+
+    constructor(
+        context: Context,
+        entry: ExternalMediaEntry,
+        networkStorageRepository: NetworkStorageRepository,
+        onTerminalError: (positionMs: Long, message: String) -> Unit = { _, _ -> },
+    ) : this(
+        context = context,
+        sourceUrl = entry.url,
+        sourceHeaders = entry.requestHeaders,
+        networkStorageRepository = networkStorageRepository,
+        sourceDurationMs = 0L,
+        startPositionMs = entry.startPositionMs,
+        playbackClient = externalIsoClient(entry.credentialOrigin),
+        reporter = null,
+        redactedValues = listOf(entry.url) + entry.requestHeaders.values,
+        onTerminalError = onTerminalError,
+    )
+
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val playbackClient = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .followSslRedirects(true)
-        .addNetworkInterceptor(
-            ScopedPlaybackHeadersInterceptor(
-                PlaybackHeaderPolicy(session.serverUrl.toHttpUrl(), session, clientIdentity)
-            )
-        )
-        .build()
     private val stateFlow = MutableStateFlow(
         MpvIsoPlaybackState(
             positionMs = startPositionMs.coerceAtLeast(0L),
-            durationMs = plan.runTimeTicks?.embyTicksToMilliseconds()?.coerceAtLeast(0L) ?: 0L,
+            durationMs = sourceDurationMs,
         )
     )
     private val diagnosticsFlow = MutableStateFlow(MpvIsoDiagnostics())
@@ -322,8 +376,13 @@ class MpvIsoPlaybackRuntime(
     }
 
     private fun loadIso() {
-        IsoSessionManager.configure(playbackClient)
-        isoUri = IsoSessionManager.create(plan.primary.url, plan.primary.requiredHeaders)
+        isoUri = if (sourceUrl.startsWith("shadow-smb://")) {
+            val repository = networkStorageRepository ?: throw IllegalStateException("SMB ISO 数据源未初始化")
+            IsoSessionManager.create(SmbIsoRandomAccessSource(sourceUrl, repository))
+        } else {
+            IsoSessionManager.configure(playbackClient)
+            IsoSessionManager.create(sourceUrl, sourceHeaders)
+        }
         val start = startPositionMs.takeIf { it > 0 }?.let {
             "start=${String.format(Locale.US, "%.3f", it / 1000.0)}"
         }
@@ -433,19 +492,7 @@ class MpvIsoPlaybackRuntime(
     }
 
     private suspend fun report(event: PlaybackEvent, positionMs: Long, paused: Boolean) {
-        playbackOutbox.submit(
-            session,
-            PlaybackReport(
-                itemId = plan.itemId,
-                mediaSourceId = plan.mediaSourceId,
-                playSessionId = plan.playSessionId,
-                positionTicks = positionMs.coerceAtLeast(0L).millisecondsToEmbyTicks(),
-                isPaused = paused,
-                canSeek = stateFlow.value.isSeekable,
-                event = event,
-                playMethod = plan.primary.method,
-            ),
-        )
+        reporter?.report(event, positionMs, paused, stateFlow.value.isSeekable)
     }
 
     private fun setOption(name: String, value: String) {
@@ -476,8 +523,103 @@ class MpvIsoPlaybackRuntime(
         onTerminalError(stateFlow.value.positionMs, message)
     }
 
-    private fun sanitizeError(message: String): String = message
-        .replace(session.accessToken, "<token>")
-        .replace(plan.primary.url, "<播放地址>")
-        .replace(Regex("(?:https?|webhtv-dvdiso)://\\S+", RegexOption.IGNORE_CASE), "<地址>")
+    private fun sanitizeError(message: String): String = redactedValues
+        .filter(String::isNotBlank)
+        .fold(message) { current, value -> current.replace(value, "<敏感信息>") }
+        .replace(Regex("(?:https?|shadow-smb|webhtv-dvdiso)://\\S+", RegexOption.IGNORE_CASE), "<地址>")
 }
+
+private class SmbIsoRandomAccessSource(
+    private val url: String,
+    private val repository: NetworkStorageRepository,
+) : IsoRandomAccessSource {
+    @Volatile private var closed = false
+    @Volatile private var sourceLength = -1L
+    @Volatile private var mutableStats = IsoSourceStats(upstreamHost = "SMB")
+
+    @Synchronized
+    override fun length(): Long {
+        ensureOpen()
+        if (sourceLength >= 0) return sourceLength
+        repository.openSmbResource(url, 0).use { handle ->
+            sourceLength = handle.remainingLength ?: throw IOException("SMB ISO 缺少文件大小")
+        }
+        mutableStats = mutableStats.copy(totalBytes = sourceLength)
+        return sourceLength
+    }
+
+    override fun readAt(offset: Long, buffer: ByteArray, bufferOffset: Int, length: Int): Int {
+        ensureOpen()
+        require(offset >= 0 && bufferOffset >= 0 && length >= 0 && bufferOffset + length <= buffer.size)
+        val requested = minOf(length.toLong(), (length() - offset).coerceAtLeast(0L)).toInt()
+        if (requested == 0) return 0
+        return try {
+            var read = 0
+            repository.openSmbResource(url, offset).use { handle ->
+                while (read < requested) {
+                    val count = handle.read(buffer, bufferOffset + read, requested - read)
+                    if (count < 0) break
+                    if (count == 0) throw IOException("SMB ISO 返回空读取")
+                    read += count
+                }
+            }
+            if (read != requested) throw IOException("SMB ISO 数据不完整：期望 $requested，实际 $read")
+            synchronized(this) {
+                mutableStats = mutableStats.copy(
+                    requestCount = mutableStats.requestCount + 1,
+                    totalBytes = sourceLength,
+                    lastOffset = offset,
+                    lastLength = read,
+                    lastError = null,
+                )
+            }
+            read
+        } catch (error: IOException) {
+            synchronized(this) { mutableStats = mutableStats.copy(lastError = error.message) }
+            throw error
+        }
+    }
+
+    override fun stats(): IsoSourceStats = synchronized(this) { mutableStats }
+
+    override fun close() {
+        closed = true
+    }
+
+    private fun ensureOpen() {
+        if (closed) throw IOException("SMB ISO 数据源已关闭")
+    }
+}
+
+private fun embyIsoClient(session: EmbySession, clientIdentity: ClientIdentity): OkHttpClient =
+    OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .addNetworkInterceptor(
+            ScopedPlaybackHeadersInterceptor(
+                PlaybackHeaderPolicy(session.serverUrl.toHttpUrl(), session, clientIdentity)
+            )
+        )
+        .build()
+
+private fun externalIsoClient(credentialOrigin: String?): OkHttpClient {
+    val origin = credentialOrigin?.toHttpUrlOrNull()
+    return OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .addNetworkInterceptor { chain ->
+            val request = chain.request()
+            val scoped = if (origin != null && !request.url.sameOriginAsIso(origin)) {
+                request.newBuilder().removeHeader("Authorization").removeHeader("Cookie").build()
+            } else request
+            chain.proceed(scoped)
+        }
+        .build()
+}
+
+private fun okhttp3.HttpUrl.sameOriginAsIso(other: okhttp3.HttpUrl): Boolean =
+    scheme == other.scheme && host == other.host && port == other.port

@@ -4,7 +4,7 @@
 封面墙和刷片体验，并为用户自带的外部配置与直播订阅建立受控入口。项目不登录网盘、不刮削媒体，
 也不会预置或分发公开内容源。
 
-当前 `1.0.2` 已经打通主要播放闭环，并建立可持续扩展底座：
+当前 `1.1.0` 已经打通主要播放闭环，并加入不依赖 Emby 的网络媒体库：
 
 ```text
 选择或添加多个 Emby 登录
@@ -37,6 +37,7 @@
 - Kotlin 2.2、Jetpack Compose、Media3 1.11 和 OkHttp 的多模块 Android 工程；
 - Emby 用户登录、媒体库、视频列表、`PlaybackInfo` 和播放状态上报接口；
 - 多 Emby 服务器/用户管理：加密保存、快速切换和单独移除登录；
+- 可完全不登录 Emby：直接添加多个 OpenList、WebDAV 或 SMB2/SMB3 媒体库并独立浏览、搜索和播放；
 - 媒体中心首页：继续观看、最近新增、我的收藏和媒体库/影视仓入口；
 - 统一发现页：跨 Emby、直播和已导入 HTTP CMS Provider 搜索，展示源级故障而不中断其余结果；
 - Android TV 启动入口与 D-pad 焦点反馈；遥控器支持 Feed 切换、10 秒 Seek 和播放/暂停；
@@ -52,6 +53,8 @@
   `tvg-logo` 以及受限的 User-Agent/Referer/Origin 播放头；
 - 外部视频列表与 Media3 播放页使用无 Cookie、无 Emby 拦截器的独立 OkHttp 客户端，不向外部地址
   发送 Emby Token，也不把外部播放进度回写 Emby；
+- 网络媒体库读取 Kodi/Jellyfin/Emby 风格 NFO、同目录 poster/folder 图片和 STRM，播放历史与续播位置
+  保存在本地；SMB 使用随机读取数据源，WebDAV 支持 Range，OpenList 使用稳定 `/d/` 入口刷新后端 302；
 - 每个服务器、用户和媒体库独立保存稳定 Feed 顺序及上次刷片位置；
 - 远端分页加载全部视频，不限制为前 20 条；
 - 全屏垂直刷片 Feed：从任意条目进入，上下滑动时按需解析并切换播放器；
@@ -67,6 +70,8 @@
   拖动、章节、音轨/字幕切换和 Emby 进度同步；
 - ISO 远程读取采用严格 HTTP Range、容量受控的内存分页缓存和 302 后逐跳凭据隔离；VLC 仅保留
   为显式兜底；
+- 直连 OpenList/WebDAV 的 ISO 复用严格 HTTP Range，SMB ISO 则通过不暴露凭据的随机读桥接到
+  同一套 libmpv 光盘引擎；
 - 独立可拖动进度条；转码链路通过 `StartTimeTicks` 实现服务端 Seek；
 - 列表和 Feed 均支持经二次确认后从 Emby 媒体库及服务器文件系统永久删除条目；
 - 精确 origin 鉴权隔离：Emby Token 不会跟随 302 请求发送到第三方 CDN；
@@ -91,7 +96,7 @@ app/             应用入口、手动依赖注入、端到端验证 UI
 core/model/      与 Android 无关的领域模型
 core/provider/   统一媒体 Provider 协议与注册表
 core/database/   Room 本地状态、Paging 数据源和播放质量数据
-core/network/    Emby API、DTO、仓库、Keystore 会话存储
+core/network/    Emby、OpenList、WebDAV、SMB、NFO/STRM 与 Keystore 凭据存储
 core/playback/   Media3、libmpv ISO 引擎、302 请求头隔离、回退与播放上报
 docs/            架构决策、播放安全与迭代路线
 ```
@@ -106,6 +111,9 @@ docs/            架构决策、播放安全与迭代路线
 ```
 
 打开应用后输入自己的 Emby 地址和用户凭据。仓库不包含真实服务地址、Token 或签名材料。
+
+也可以在登录页选择“打开 OpenList / WebDAV / SMB”，完全跳过 Emby。OpenList 填站点根地址，
+WebDAV 填完整 DAV 根地址，SMB 填主机和共享名；配置细节见 [网络媒体库](docs/NETWORK_LIBRARIES.md)。
 HTTP 只应在受信任局域网内临时启用。
 
 ISO 是光盘镜像而不是普通视频容器。Emby Server 不支持 ISO 转码，Media3 也不能解析光盘结构，

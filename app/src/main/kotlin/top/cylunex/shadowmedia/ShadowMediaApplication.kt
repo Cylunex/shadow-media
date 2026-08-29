@@ -24,6 +24,8 @@ import top.cylunex.shadowmedia.network.DefaultIntegrationRepository
 import top.cylunex.shadowmedia.network.KeystoreIntegrationStore
 import top.cylunex.shadowmedia.network.SessionStore
 import top.cylunex.shadowmedia.network.SharedPreferencesExternalSourceStore
+import top.cylunex.shadowmedia.network.DefaultNetworkStorageRepository
+import top.cylunex.shadowmedia.network.KeystoreNetworkStorageStore
 import top.cylunex.shadowmedia.database.LocalMediaStateRepository
 import top.cylunex.shadowmedia.database.ShadowMediaDatabase
 import top.cylunex.shadowmedia.provider.InMemoryProviderRegistry
@@ -69,6 +71,12 @@ class AppContainer(application: Application) {
     val integrationRepository = DefaultIntegrationRepository(externalClient)
     val integrationStore = KeystoreIntegrationStore(application)
     val externalSourceStore = SharedPreferencesExternalSourceStore(application)
+    val networkStorageStore = KeystoreNetworkStorageStore(application)
+    val networkStorageRepository = DefaultNetworkStorageRepository(application, externalClient) { providerId, itemId ->
+        localMediaState.history("$providerId:$itemId")?.let { history ->
+            (if (history.completed) 0L else history.positionMs) to history.completed
+        }
+    }
 
     fun recordEmbyHistory(session: EmbySession, item: MediaItem, positionMs: Long, durationMs: Long?) {
         applicationScope.launch {
@@ -90,10 +98,12 @@ class AppContainer(application: Application) {
 
     fun recordExternalHistory(entry: ExternalMediaEntry, positionMs: Long, durationMs: Long?) {
         applicationScope.launch {
+            val providerId = entry.sourceId.takeIf { it.startsWith("storage:") || it.startsWith("live:") }
+                ?: "external:${entry.sourceId}"
             localMediaState.recordHistory(
                 MediaHistoryEntity(
-                    stableKey = "external:${entry.sourceId}:${entry.id}",
-                    providerId = "external:${entry.sourceId}",
+                    stableKey = "$providerId:${entry.id}",
+                    providerId = providerId,
                     itemId = entry.id,
                     title = entry.title,
                     subtitle = entry.group,

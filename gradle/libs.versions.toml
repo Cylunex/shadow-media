@@ -13,6 +13,8 @@ coreKtx = "1.17.0"
 junit = "4.13.2"
 room = "2.8.4"
 paging = "3.5.1"
+smbj = "0.15.0"
+slf4j = "2.0.18"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -47,6 +49,8 @@ room-testing = { module = "androidx.room:room-testing", version.ref = "room" }
 room-paging = { module = "androidx.room:room-paging", version.ref = "room" }
 paging-runtime = { module = "androidx.paging:paging-runtime", version.ref = "paging" }
 paging-compose = { module = "androidx.paging:paging-compose", version.ref = "paging" }
+smbj = { module = "com.hierynomus:smbj", version.ref = "smbj" }
+slf4j-nop = { module = "org.slf4j:slf4j-nop", version.ref = "slf4j" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

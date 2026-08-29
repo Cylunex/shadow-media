@@ -134,6 +134,10 @@ data class ExternalMediaEntry(
     val epgUrl: String? = null,
     val catchupSource: String? = null,
     val catchupDays: Int? = null,
+    /** Sensitive request headers are only valid for this exact HTTP origin. */
+    val credentialOrigin: String? = null,
+    val startPositionMs: Long = 0,
+    val isDiscImage: Boolean = false,
 )
 
 data class LiveChannel(
@@ -179,6 +183,7 @@ enum class PlayMethod {
 
 enum class ProviderKind {
     EMBY,
+    OPENLIST,
     JELLYFIN,
     PLEX,
     LIVE_PLAYLIST,
@@ -188,8 +193,51 @@ enum class ProviderKind {
     DECLARATIVE_HTTP,
     CATVOD_BRIDGE,
     WEBDAV,
+    SMB,
     VIRTUAL_CHANNEL,
 }
+
+enum class NetworkStorageKind {
+    OPENLIST,
+    WEBDAV,
+    SMB,
+}
+
+data class NetworkStorageConnection(
+    val id: String,
+    val name: String,
+    val kind: NetworkStorageKind,
+    /** OpenList/WebDAV URL or SMB host name/IP. */
+    val address: String,
+    val username: String = "",
+    val password: String = "",
+    val domain: String = "",
+    val share: String = "",
+    val rootPath: String = "/",
+    val allowInsecureHttp: Boolean = false,
+    val readNfo: Boolean = true,
+    val resolveStrm: Boolean = true,
+) {
+    override fun toString(): String =
+        "NetworkStorageConnection(id=$id, name=$name, kind=$kind, address=$address, " +
+            "username=$username, password=<redacted>, domain=$domain, share=$share, " +
+            "rootPath=$rootPath, allowInsecureHttp=$allowInsecureHttp, " +
+            "readNfo=$readNfo, resolveStrm=$resolveStrm)"
+}
+
+enum class NetworkStorageHealth {
+    ONLINE,
+    AUTH_REQUIRED,
+    OFFLINE,
+}
+
+data class NetworkStorageStatus(
+    val connectionId: String,
+    val health: NetworkStorageHealth,
+    val message: String,
+    val latencyMs: Long? = null,
+    val checkedAtEpochMs: Long = System.currentTimeMillis(),
+)
 
 enum class ProviderCapability {
     HOME,
@@ -350,6 +398,8 @@ data class PlaybackCandidate(
     val url: String,
     val method: PlayMethod,
     val requiredHeaders: Map<String, String>,
+    val credentialOrigin: String? = null,
+    val isDiscImage: Boolean = false,
 )
 
 data class PlaybackPlan(

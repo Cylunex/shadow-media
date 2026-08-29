@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -52,6 +53,7 @@ import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.BookmarkAdd
 import androidx.compose.material.icons.rounded.Headphones
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Pause
@@ -173,6 +175,7 @@ fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
                 Screen.EXTERNAL_PLAYER -> ExternalPlayerScreen(state, viewModel, container)
                 Screen.DISCOVER -> DiscoverScreen(state, viewModel)
                 Screen.PROVIDER_DETAIL -> UnifiedDetailScreen(state, viewModel)
+                Screen.NETWORK_STORAGES -> NetworkStorageScreen(state, viewModel)
                 Screen.INTEGRATIONS -> IntegrationScreen(state, viewModel)
                 Screen.INSIGHTS -> InsightsScreen(viewModel)
                 Screen.SETTINGS -> SettingsScreen(viewModel)
@@ -208,9 +211,15 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
         EmptyStatePanel("播放条目已不存在")
         return
     }
+    if (entry.isDiscImage) {
+        ExternalIsoPlayerScreen(entry, viewModel, container)
+        return
+    }
     val context = androidx.compose.ui.platform.LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val runtime = remember(entry.id) { ExternalPlaybackRuntime(context.applicationContext, entry) }
+    val runtime = remember(entry.id, entry.url, entry.startPositionMs) {
+        ExternalPlaybackRuntime(context.applicationContext, entry, container.networkStorageRepository)
+    }
     val playbackError by runtime.error.collectAsStateWithLifecycle()
     val focusRequester = remember(runtime) { FocusRequester() }
     LaunchedEffect(runtime) { runCatching { focusRequester.requestFocus() } }
@@ -302,6 +311,177 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
 }
 
 @Composable
+private fun ExternalIsoPlayerScreen(
+    entry: top.cylunex.shadowmedia.model.ExternalMediaEntry,
+    viewModel: MainViewModel,
+    container: AppContainer,
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val runtime = remember(entry.id, entry.url, entry.startPositionMs) {
+        MpvIsoPlaybackRuntime(context.applicationContext, entry, container.networkStorageRepository)
+    }
+    val playbackState by runtime.state.collectAsStateWithLifecycle()
+    val diagnostics by runtime.diagnostics.collectAsStateWithLifecycle()
+    val focusRequester = remember(runtime) { FocusRequester() }
+    LaunchedEffect(runtime) { runCatching { focusRequester.requestFocus() } }
+
+    DisposableEffect(runtime, lifecycleOwner) {
+        var resumeAfterBackground = false
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> {
+                    resumeAfterBackground = runtime.state.value.isPlaying
+                    runtime.pause()
+                }
+                Lifecycle.Event.ON_START -> if (resumeAfterBackground) {
+                    runtime.play()
+                    resumeAfterBackground = false
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            val snapshot = runtime.state.value
+            container.recordExternalHistory(entry, snapshot.positionMs, snapshot.durationMs.takeIf { it > 0 })
+            runtime.close()
+        }
+    }
+
+    Box(
+        Modifier.fillMaxSize().background(Color.Black)
+            .focusRequester(focusRequester)
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.DirectionLeft -> {
+                        runtime.seekTo((playbackState.positionMs - TV_SEEK_STEP_MS).coerceAtLeast(0))
+                        true
+                    }
+                    Key.DirectionRight -> {
+                        runtime.seekTo(playbackState.positionMs + TV_SEEK_STEP_MS)
+                        true
+                    }
+                    Key.Enter, Key.NumPadEnter, Key.Spacebar, Key.MediaPlayPause -> {
+                        if (playbackState.isPlaying) runtime.pause() else runtime.play()
+                        true
+                    }
+                    else -> false
+                }
+            }
+            .focusable(),
+    ) {
+        AndroidView(
+            factory = { SurfaceView(it).also(runtime::attach) },
+            update = runtime::attach,
+            modifier = Modifier.fillMaxSize(),
+        )
+        Row(
+            modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth()
+                .background(Color.Black.copy(alpha = 0.58f)).statusBarsPadding()
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = viewModel::back) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回", tint = Color.White)
+            }
+            Column(Modifier.weight(1f)) {
+                Text(entry.title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    "网络 ISO · libmpv 光盘引擎",
+                    color = Color.White.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+        ExternalIsoControls(
+            title = entry.title,
+            runtime = runtime,
+            state = playbackState,
+            sourceStats = diagnostics.source,
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
+        playbackState.error?.let { message ->
+            Card(
+                modifier = Modifier.align(Alignment.Center).padding(20.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xE81B1114), contentColor = Color.White),
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("ISO 播放失败", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                    Text(message, color = Color.White.copy(alpha = 0.84f), style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExternalIsoControls(
+    title: String,
+    runtime: MpvIsoPlaybackRuntime,
+    state: MpvIsoPlaybackState,
+    sourceStats: com.fongmi.android.tv.player.iso.IsoSourceStats,
+    modifier: Modifier = Modifier,
+) {
+    var positionMs by remember(runtime) { mutableLongStateOf(state.positionMs) }
+    var isScrubbing by remember(runtime) { mutableStateOf(false) }
+    LaunchedEffect(state.positionMs, isScrubbing) {
+        if (!isScrubbing) positionMs = state.positionMs
+    }
+    Column(
+        modifier = modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
+            .background(Color(0xE6111612)).navigationBarsPadding()
+            .padding(horizontal = 20.dp, vertical = 14.dp),
+    ) {
+        Text("DISC IMAGE", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+        Text(title, color = Color.White, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Slider(
+            value = positionMs.coerceIn(0L, state.durationMs.coerceAtLeast(0L)).toFloat(),
+            onValueChange = { isScrubbing = true; positionMs = it.toLong() },
+            onValueChangeFinished = { runtime.seekTo(positionMs); isScrubbing = false },
+            valueRange = 0f..state.durationMs.coerceAtLeast(1L).toFloat(),
+            enabled = state.isSeekable && state.durationMs > 0,
+        )
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Column {
+                Text("${formatDuration(positionMs)} / ${formatDuration(state.durationMs)}", color = Color.White)
+                Text(
+                    "随机读取 ${sourceStats.requestCount} 次 · ${sourceStats.upstreamHost ?: "网络存储"}",
+                    color = Color.White.copy(alpha = 0.58f),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            FilledTonalButton(onClick = { if (state.isPlaying) runtime.pause() else runtime.play() }) {
+                Icon(if (state.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null)
+                Spacer(Modifier.size(6.dp))
+                Text(if (state.isPlaying) "暂停" else "播放")
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            TextButton(onClick = runtime::previousChapter, enabled = state.chapterCount > 0) {
+                Icon(Icons.Rounded.SkipPrevious, null)
+                Text("上一章")
+            }
+            TextButton(onClick = runtime::nextChapter, enabled = state.chapterCount > 0) {
+                Icon(Icons.Rounded.SkipNext, null)
+                Text("下一章")
+            }
+            TextButton(onClick = runtime::nextAudioTrack, enabled = state.audioTracks.size > 1) {
+                Icon(Icons.Rounded.Headphones, null)
+                Text("音轨")
+            }
+            TextButton(onClick = runtime::nextSubtitleTrack, enabled = state.subtitleTracks.isNotEmpty()) {
+                Icon(Icons.Rounded.Subtitles, null)
+                Text("字幕")
+            }
+        }
+    }
+}
+
+@Composable
 private fun ServerScreen(state: MainUiState, viewModel: MainViewModel) {
     LazyColumn(
         Modifier.fillMaxSize().statusBarsPadding(),
@@ -327,6 +507,16 @@ private fun ServerScreen(state: MainUiState, viewModel: MainViewModel) {
         }
         if (state.savedSessions.isEmpty()) {
             item { EmptyStatePanel("还没有服务器，先添加一个 Emby 登录", Modifier.padding(horizontal = 20.dp)) }
+        }
+        item {
+            OutlinedButton(
+                onClick = viewModel::showNetworkStorages,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            ) {
+                Icon(Icons.Rounded.FolderOpen, null)
+                Spacer(Modifier.width(8.dp))
+                Text("打开网络媒体库")
+            }
         }
         item { ErrorText(state.errorMessage, Modifier.padding(horizontal = 20.dp)) }
     }
@@ -410,6 +600,9 @@ private fun LoginScreen(state: MainUiState, viewModel: MainViewModel) {
                     TextButton(onClick = viewModel::showServers, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
                         Text("返回服务器列表")
                     }
+                }
+                TextButton(onClick = viewModel::showNetworkStorages, modifier = Modifier.fillMaxWidth()) {
+                    Text("不使用 Emby，打开 OpenList / WebDAV / SMB")
                 }
             }
         }

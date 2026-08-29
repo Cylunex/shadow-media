@@ -42,6 +42,8 @@ class LocalMediaStateRepository(private val dao: ShadowMediaDao) {
 
     suspend fun recordHistory(item: MediaHistoryEntity) = dao.upsertHistory(item)
 
+    suspend fun history(stableKey: String): MediaHistoryEntity? = dao.history(stableKey)
+
     suspend fun favoriteKeys(providerId: String): Set<String> = dao.favoriteKeys(providerId).toSet()
 
     suspend fun addFavorite(item: MediaFavoriteEntity) = dao.upsertFavorite(item)

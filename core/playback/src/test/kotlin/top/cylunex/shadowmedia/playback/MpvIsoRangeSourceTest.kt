@@ -1,6 +1,8 @@
 package top.cylunex.shadowmedia.playback
 
 import com.fongmi.android.tv.player.iso.IsoSessionManager
+import com.fongmi.android.tv.player.iso.IsoRandomAccessSource
+import com.fongmi.android.tv.player.iso.IsoSourceStats
 import java.io.Closeable
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -20,6 +22,36 @@ import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.network.ClientIdentity
 
 class MpvIsoRangeSourceTest {
+    @Test
+    fun `native ISO bridge accepts non HTTP random access source`() {
+        val data = "network-disc-image".encodeToByteArray()
+        var closed = false
+        val uri = IsoSessionManager.create(object : IsoRandomAccessSource {
+            override fun length(): Long = data.size.toLong()
+
+            override fun readAt(offset: Long, buffer: ByteArray, bufferOffset: Int, length: Int): Int {
+                val count = minOf(length, data.size - offset.toInt()).coerceAtLeast(0)
+                data.copyInto(buffer, bufferOffset, offset.toInt(), offset.toInt() + count)
+                return count
+            }
+
+            override fun stats() = IsoSourceStats(totalBytes = data.size.toLong(), upstreamHost = "SMB")
+
+            override fun close() {
+                closed = true
+            }
+        })
+
+        val target = ByteBuffer.allocateDirect(4)
+        val id = IsoSessionManager.parseId(uri)
+        assertEquals(data.size.toLong(), IsoSessionManager.length(id))
+        assertEquals(4, IsoSessionManager.readAt(id, 8, target, 4))
+        target.flip()
+        assertEquals("disc", ByteArray(4).also(target::get).decodeToString())
+        IsoSessionManager.closeUri(uri)
+        assertTrue(closed)
+    }
+
     @Test
     fun `native ISO source keeps random reads valid across credential stripping redirect`() {
         val data = "ABCDEFGHIJ".encodeToByteArray()

@@ -25,6 +25,10 @@
   不照搬较大的默认播放器池，避免 NAS/CDN 场景并发和内存开销失控。
 - [oguzhanaslann/ComposeReels](https://github.com/oguzhanaslann/ComposeReels)：仓库规模较小且
   未声明许可证，不复制代码。
+- [SMBJ](https://github.com/hierynomus/smbj)：Apache-2.0 的 SMB2/SMB3 Java 客户端；网络媒体库
+  使用其公开 API 完成认证、目录枚举和随机读取，不包含 SMB1 降级实现。
+- [OpenList](https://github.com/OpenListTeam/OpenList)：依据官方 `/api/fs/list`、`/api/fs/get`、
+  `/d/`、`/p/` 和 WebDAV 协议行为独立实现客户端适配，没有复制服务端源码。
 
 生产实现的依据是 Media3 官方
 [PreloadManager 概念文档](https://developer.android.com/media/media3/exoplayer/preloading-media/preloadmanager/concepts)

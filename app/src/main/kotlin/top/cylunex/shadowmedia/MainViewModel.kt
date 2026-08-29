@@ -42,6 +42,10 @@ import top.cylunex.shadowmedia.database.LocalMediaStateRepository
 import top.cylunex.shadowmedia.model.FeatureId
 import top.cylunex.shadowmedia.model.MediaDetail
 import top.cylunex.shadowmedia.model.MediaKey
+import top.cylunex.shadowmedia.model.NetworkStorageConnection
+import top.cylunex.shadowmedia.model.NetworkStorageHealth
+import top.cylunex.shadowmedia.model.NetworkStorageKind
+import top.cylunex.shadowmedia.model.NetworkStorageStatus
 import top.cylunex.shadowmedia.model.ProviderDescriptor
 import top.cylunex.shadowmedia.model.UnifiedMediaItem
 import top.cylunex.shadowmedia.model.UnifiedPlaybackRequest
@@ -64,13 +68,15 @@ import top.cylunex.shadowmedia.model.SegmentSource
 import top.cylunex.shadowmedia.model.SegmentType
 import top.cylunex.shadowmedia.network.IntegrationRepository
 import top.cylunex.shadowmedia.network.IntegrationStore
+import top.cylunex.shadowmedia.network.NetworkStorageRepository
+import top.cylunex.shadowmedia.network.NetworkStorageStore
 import top.cylunex.shadowmedia.database.MediaMomentEntity
 import top.cylunex.shadowmedia.database.PlaybackMetricEntity
 import top.cylunex.shadowmedia.database.SourceHealthEntity
 
 enum class Screen {
     SERVERS, LOGIN, HOME, LIBRARIES, ITEMS, DETAIL, SOURCES, EXTERNAL_ITEMS, EXTERNAL_PLAYER,
-    DISCOVER, PROVIDER_DETAIL, INTEGRATIONS, INSIGHTS, SETTINGS, PLAYER
+    DISCOVER, PROVIDER_DETAIL, NETWORK_STORAGES, INTEGRATIONS, INSIGHTS, SETTINGS, PLAYER
 }
 
 data class MainUiState(
@@ -117,6 +123,8 @@ data class MainUiState(
     val discoverResults: List<UnifiedMediaItem> = emptyList(),
     val providerSearchFailures: List<ProviderSearchFailure> = emptyList(),
     val selectedUnifiedDetail: MediaDetail? = null,
+    val providerDetailBackStack: List<MediaDetail> = emptyList(),
+    val providerDetailReturnScreen: Screen = Screen.DISCOVER,
     val isSearchingProviders: Boolean = false,
     val integrations: List<IntegrationConnection> = emptyList(),
     val integrationStatuses: Map<String, IntegrationStatus> = emptyMap(),
@@ -129,6 +137,22 @@ data class MainUiState(
     val integrationEpgUrl: String = "",
     val integrationMessage: String? = null,
     val isSavingIntegration: Boolean = false,
+    val networkStorages: List<NetworkStorageConnection> = emptyList(),
+    val networkStorageStatuses: Map<String, NetworkStorageStatus> = emptyMap(),
+    val networkStorageKind: NetworkStorageKind = NetworkStorageKind.OPENLIST,
+    val networkStorageName: String = "",
+    val networkStorageAddress: String = "",
+    val networkStorageUsername: String = "",
+    val networkStoragePassword: String = "",
+    val networkStorageDomain: String = "",
+    val networkStorageShare: String = "",
+    val networkStorageRootPath: String = "/",
+    val networkStorageAllowInsecureHttp: Boolean = false,
+    val networkStorageReadNfo: Boolean = true,
+    val networkStorageResolveStrm: Boolean = true,
+    val networkStorageMessage: String? = null,
+    val isSavingNetworkStorage: Boolean = false,
+    val networkStorageReturnScreen: Screen = Screen.HOME,
     val mediaSegments: List<MediaSegment> = emptyList(),
     val insightMessage: String? = null,
     val selectedItem: MediaItem? = null,
@@ -158,6 +182,8 @@ class MainViewModel(
     private val handoffInbox: HandoffInbox,
     private val integrationRepository: IntegrationRepository,
     private val integrationStore: IntegrationStore,
+    private val networkStorageRepository: NetworkStorageRepository,
+    private val networkStorageStore: NetworkStorageStore,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     private var playbackRequest: Job? = null
@@ -187,6 +213,7 @@ class MainViewModel(
                 savedSessions = saved,
             )
         }
+        syncProviders()
         viewModelScope.launch {
             handoffInbox.intents.collect { uri ->
                 val handoff = uri.toMediaHandoffOrNull() ?: return@collect
@@ -323,6 +350,115 @@ class MainViewModel(
     }
 
     fun showSettings() = update { copy(screen = Screen.SETTINGS, errorMessage = null) }
+
+    fun showNetworkStorages() {
+        val returnScreen = state.value.screen
+        update {
+            copy(
+                screen = Screen.NETWORK_STORAGES,
+                networkStorages = networkStorageStore.loadAll(),
+                networkStorageMessage = null,
+                errorMessage = null,
+                networkStorageReturnScreen = returnScreen,
+            )
+        }
+        refreshNetworkStorages()
+    }
+
+    fun updateNetworkStorageKind(value: NetworkStorageKind) = update { copy(networkStorageKind = value) }
+    fun updateNetworkStorageName(value: String) = update { copy(networkStorageName = value, networkStorageMessage = null) }
+    fun updateNetworkStorageAddress(value: String) = update { copy(networkStorageAddress = value, networkStorageMessage = null) }
+    fun updateNetworkStorageUsername(value: String) = update { copy(networkStorageUsername = value, networkStorageMessage = null) }
+    fun updateNetworkStoragePassword(value: String) = update { copy(networkStoragePassword = value, networkStorageMessage = null) }
+    fun updateNetworkStorageDomain(value: String) = update { copy(networkStorageDomain = value, networkStorageMessage = null) }
+    fun updateNetworkStorageShare(value: String) = update { copy(networkStorageShare = value, networkStorageMessage = null) }
+    fun updateNetworkStorageRootPath(value: String) = update { copy(networkStorageRootPath = value, networkStorageMessage = null) }
+    fun updateNetworkStorageAllowInsecure(value: Boolean) = update { copy(networkStorageAllowInsecureHttp = value) }
+    fun updateNetworkStorageReadNfo(value: Boolean) = update { copy(networkStorageReadNfo = value) }
+    fun updateNetworkStorageResolveStrm(value: Boolean) = update { copy(networkStorageResolveStrm = value) }
+
+    fun saveNetworkStorage() {
+        val snapshot = state.value
+        if (snapshot.isSavingNetworkStorage) return
+        val connection = NetworkStorageConnection(
+            id = UUID.randomUUID().toString(),
+            name = snapshot.networkStorageName.trim(),
+            kind = snapshot.networkStorageKind,
+            address = snapshot.networkStorageAddress.trim(),
+            username = snapshot.networkStorageUsername.trim(),
+            password = snapshot.networkStoragePassword,
+            domain = snapshot.networkStorageDomain.trim(),
+            share = snapshot.networkStorageShare.trim(),
+            rootPath = snapshot.networkStorageRootPath.trim().ifBlank { "/" },
+            allowInsecureHttp = snapshot.networkStorageAllowInsecureHttp,
+            readNfo = snapshot.networkStorageReadNfo,
+            resolveStrm = snapshot.networkStorageResolveStrm,
+        )
+        viewModelScope.launch {
+            runCatching {
+                require(connection.name.isNotBlank()) { "请填写媒体库名称" }
+                require(connection.address.isNotBlank()) { "请填写服务地址或 SMB 主机" }
+                if (connection.kind == NetworkStorageKind.SMB) require(connection.share.isNotBlank()) { "请填写 SMB 共享名" }
+                update { copy(isSavingNetworkStorage = true, networkStorageMessage = "正在验证连接") }
+                val status = networkStorageRepository.probe(connection)
+                if (status.health != NetworkStorageHealth.ONLINE) throw IllegalArgumentException(status.message)
+                networkStorageStore.save(connection)
+                syncProviders()
+                status
+            }.onSuccess { status ->
+                update {
+                    copy(
+                        networkStorages = networkStorageStore.loadAll(),
+                        networkStorageStatuses = networkStorageStatuses + (connection.id to status),
+                        networkStorageName = "",
+                        networkStorageAddress = "",
+                        networkStorageUsername = "",
+                        networkStoragePassword = "",
+                        networkStorageDomain = "",
+                        networkStorageShare = "",
+                        networkStorageRootPath = "/",
+                        isSavingNetworkStorage = false,
+                        networkStorageMessage = "已添加 ${connection.name}",
+                    )
+                }
+            }.onFailure { error ->
+                update { copy(isSavingNetworkStorage = false, networkStorageMessage = "连接失败：${error.message ?: "未知错误"}") }
+            }
+        }
+    }
+
+    fun removeNetworkStorage(connectionId: String) {
+        networkStorageStore.remove(connectionId)
+        syncProviders()
+        update {
+            copy(
+                networkStorages = networkStorageStore.loadAll(),
+                networkStorageStatuses = networkStorageStatuses - connectionId,
+                networkStorageMessage = "已移除网络媒体库",
+            )
+        }
+    }
+
+    fun refreshNetworkStorages() {
+        networkStorageStore.loadAll().forEach { connection ->
+            viewModelScope.launch {
+                val status = networkStorageRepository.probe(connection)
+                update { copy(networkStorageStatuses = networkStorageStatuses + (connection.id to status)) }
+            }
+        }
+    }
+
+    fun openNetworkStorage(connection: NetworkStorageConnection) {
+        syncProviders()
+        val providerId = "storage:${connection.id}"
+        val provider = providerRegistry.provider(providerId) ?: return
+        viewModelScope.launch {
+            update { copy(screen = Screen.PROVIDER_DETAIL, selectedUnifiedDetail = null, providerDetailBackStack = emptyList(), providerDetailReturnScreen = Screen.NETWORK_STORAGES, isLoading = true, errorMessage = null) }
+            runCatching { provider.detail(MediaKey(providerId, connection.rootPath.normalizedStoragePath())) }
+                .onSuccess { detail -> update { copy(selectedUnifiedDetail = detail, isLoading = false) } }
+                .onFailure(::showError)
+        }
+    }
 
     fun showIntegrations() {
         val connections = integrationStore.loadAll()
@@ -574,8 +710,21 @@ class MainViewModel(
 
     fun openUnifiedItem(item: UnifiedMediaItem) {
         val provider = providerRegistry.provider(item.key.providerId) ?: return
+        val currentScreen = state.value.screen
+        val currentDetail = state.value.selectedUnifiedDetail
         viewModelScope.launch {
-            update { copy(screen = Screen.PROVIDER_DETAIL, selectedUnifiedDetail = null, isLoading = true, errorMessage = null) }
+            update {
+                copy(
+                    screen = Screen.PROVIDER_DETAIL,
+                    selectedUnifiedDetail = null,
+                    providerDetailBackStack = if (currentScreen == Screen.PROVIDER_DETAIL && currentDetail != null) {
+                        providerDetailBackStack + currentDetail
+                    } else emptyList(),
+                    providerDetailReturnScreen = if (currentScreen == Screen.PROVIDER_DETAIL) providerDetailReturnScreen else currentScreen,
+                    isLoading = true,
+                    errorMessage = null,
+                )
+            }
             runCatching { provider.detail(item.key) }
                 .onSuccess { detail -> update { copy(selectedUnifiedDetail = detail, isLoading = false) } }
                 .onFailure(::showError)
@@ -616,6 +765,13 @@ class MainViewModel(
                                     group = provider.descriptor.name,
                                     logoUrl = item.posterUrl,
                                     requestHeaders = candidate.requiredHeaders,
+                                    credentialOrigin = candidate.credentialOrigin,
+                                    startPositionMs = item.progressMs,
+                                    isDiscImage = candidate.isDiscImage || item.key.itemId.substringBefore('|')
+                                        .substringBefore('?').substringAfterLast('.', "")
+                                        .equals("iso", ignoreCase = true) ||
+                                        candidate.url.substringBefore('|').substringBefore('?')
+                                            .substringAfterLast('.', "").equals("iso", ignoreCase = true),
                                 ),
                                 isLoading = false,
                             )
@@ -1114,8 +1270,12 @@ class MainViewModel(
     }
 
     private fun syncProviders() {
+        val storedNetworkConnections = networkStorageStore.loadAll()
         val providers = buildList {
             state.value.session?.let { add(EmbyMediaProvider(it, repository)) }
+            storedNetworkConnections.forEach { connection ->
+                add(networkStorageRepository.provider(connection))
+            }
             externalSourceStore.loadAll().forEach { summary ->
                 val imported = externalSourceStore.load(summary.id) ?: return@forEach
                 val entries = runCatching { externalSourceRepository.entries(imported) }.getOrDefault(emptyList())
@@ -1131,6 +1291,7 @@ class MainViewModel(
         update {
             copy(
                 providerDescriptors = providers.map { it.descriptor },
+                networkStorages = storedNetworkConnections,
                 integrations = integrationStore.loadAll(),
             )
         }
@@ -1275,8 +1436,19 @@ class MainViewModel(
             Screen.DETAIL -> update {
                 copy(screen = Screen.ITEMS, selectedSeries = null, detailEpisodes = emptyList())
             }
-            Screen.PROVIDER_DETAIL -> update {
-                copy(screen = Screen.DISCOVER, selectedUnifiedDetail = null, errorMessage = null)
+            Screen.PROVIDER_DETAIL -> {
+                val stack = state.value.providerDetailBackStack
+                if (stack.isNotEmpty()) {
+                    update {
+                        copy(
+                            selectedUnifiedDetail = stack.last(),
+                            providerDetailBackStack = stack.dropLast(1),
+                            errorMessage = null,
+                        )
+                    }
+                } else {
+                    update { copy(screen = providerDetailReturnScreen, selectedUnifiedDetail = null, errorMessage = null) }
+                }
             }
             Screen.ITEMS -> update {
                 copy(
@@ -1286,6 +1458,7 @@ class MainViewModel(
                     items = emptyList(),
                 )
             }
+            Screen.NETWORK_STORAGES -> update { copy(screen = networkStorageReturnScreen, errorMessage = null) }
             Screen.LIBRARIES, Screen.SOURCES, Screen.DISCOVER, Screen.SETTINGS, Screen.INTEGRATIONS,
             Screen.INSIGHTS -> showHome()
             Screen.HOME -> showServers()
@@ -1373,6 +1546,8 @@ class MainViewModel(
                         container.handoffInbox,
                         container.integrationRepository,
                         container.integrationStore,
+                        container.networkStorageRepository,
+                        container.networkStorageStore,
                     ) as T
             }
     }
@@ -1411,6 +1586,12 @@ private fun UnifiedMediaItem.toEmbyMediaItem() = MediaItem(
     communityRating = rating,
     externalIds = externalIds,
 )
+
+private fun String.normalizedStoragePath(): String =
+    "/" + replace('\\', '/').trim('/').split('/').filter { it.isNotBlank() && it != "." }.fold(mutableListOf<String>()) { path, part ->
+        if (part == "..") { if (path.isNotEmpty()) path.removeAt(path.lastIndex) } else path += part
+        path
+    }.joinToString("/")
 
 private fun formatPosition(positionMs: Long): String {
     val totalSeconds = positionMs.coerceAtLeast(0) / 1_000

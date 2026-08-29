@@ -261,11 +261,14 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
             ScreenHeader(
                 title = detail?.item?.title?.withoutEmoji() ?: "内容详情",
                 subtitle = detail?.item?.subtitle?.withoutEmoji() ?: "正在读取 Provider 元数据",
-                actionLabel = "返回发现",
+                actionLabel = "返回",
                 onAction = viewModel::back,
             )
         }
         if (detail != null) {
+            val firstTarget = detail.children.firstOrNull { !it.type.equals("Folder", true) }
+                ?: detail.children.firstOrNull()
+                ?: detail.item.takeUnless { it.type.equals("Folder", true) }
             item {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 20.dp),
@@ -284,12 +287,25 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                             style = MaterialTheme.typography.labelLarge,
                         )
                         Button(
-                            onClick = { viewModel.playUnifiedItem(detail.children.firstOrNull() ?: detail.item) },
+                            onClick = {
+                                firstTarget?.let { target ->
+                                    if (target.type.equals("Folder", true)) viewModel.openUnifiedItem(target)
+                                    else viewModel.playUnifiedItem(target)
+                                }
+                            },
+                            enabled = firstTarget != null,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Icon(Icons.Rounded.PlayArrow, null)
+                            Icon(if (firstTarget?.type.equals("Folder", true) == true) Icons.Rounded.FolderOpen else Icons.Rounded.PlayArrow, null)
                             Spacer(Modifier.width(8.dp))
-                            Text(if (detail.children.isEmpty()) "立即播放" else "播放第一集")
+                            Text(
+                                when {
+                                    firstTarget == null -> "没有可播放条目"
+                                    firstTarget.type.equals("Folder", true) -> "打开文件夹"
+                                    detail.children.isEmpty() -> "立即播放"
+                                    else -> "播放第一集"
+                                }
+                            )
                         }
                         OutlinedButton(
                             onClick = {
@@ -355,7 +371,7 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
             if (detail.children.isNotEmpty()) {
                 item {
                     Text(
-                        "选集与线路",
+                        "目录与选集",
                         modifier = Modifier.padding(horizontal = 20.dp),
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
@@ -363,7 +379,10 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                 }
                 items(detail.children, key = { it.key.stableId }) { child ->
                     Card(
-                        onClick = { viewModel.playUnifiedItem(child) },
+                        onClick = {
+                            if (child.type.equals("Folder", true)) viewModel.openUnifiedItem(child)
+                            else viewModel.playUnifiedItem(child)
+                        },
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f),
@@ -371,13 +390,16 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                         ),
                     ) {
                         Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Rounded.Movie, null, tint = MaterialTheme.colorScheme.primary)
+                            UnifiedPoster(child, Modifier.size(width = 58.dp, height = 82.dp))
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(child.title.withoutEmoji(), style = MaterialTheme.typography.titleMedium)
                                 child.subtitle?.let { Text(it.withoutEmoji(), style = MaterialTheme.typography.bodySmall) }
                             }
-                            Icon(Icons.Rounded.PlayArrow, "播放")
+                            Icon(
+                                if (child.type.equals("Folder", true)) Icons.Rounded.ChevronRight else Icons.Rounded.PlayArrow,
+                                if (child.type.equals("Folder", true)) "打开" else "播放",
+                            )
                         }
                     }
                 }
@@ -398,7 +420,12 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
 private fun UnifiedPoster(item: UnifiedMediaItem, modifier: Modifier) {
     Surface(modifier = modifier.clip(MaterialTheme.shapes.medium), color = MaterialTheme.colorScheme.primaryContainer) {
         Box(contentAlignment = Alignment.Center) {
-            Icon(Icons.Rounded.Movie, null, modifier = Modifier.size(30.dp), tint = MaterialTheme.colorScheme.primary)
+            Icon(
+                if (item.type.equals("Folder", true)) Icons.Rounded.FolderOpen else Icons.Rounded.Movie,
+                null,
+                modifier = Modifier.size(30.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
             if (item.posterUrl != null) {
                 AsyncImage(
                     model = item.posterUrl,
@@ -432,9 +459,11 @@ internal fun MediaHomeScreen(state: MainUiState, viewModel: MainViewModel) {
                 libraryCount = state.libraries.size,
                 sourceCount = state.externalSources.size,
                 providerCount = state.providerDescriptors.size,
+                storageCount = state.networkStorages.size,
                 onLibraries = viewModel::showLibraries,
                 onSources = viewModel::showSources,
                 onDiscover = viewModel::showDiscover,
+                onNetworkStorages = viewModel::showNetworkStorages,
                 onSettings = viewModel::showSettings,
             )
         }
@@ -471,9 +500,11 @@ private fun MediaHubActions(
     libraryCount: Int,
     sourceCount: Int,
     providerCount: Int,
+    storageCount: Int,
     onLibraries: () -> Unit,
     onSources: () -> Unit,
     onDiscover: () -> Unit,
+    onNetworkStorages: () -> Unit,
     onSettings: () -> Unit,
 ) {
     Column(
@@ -498,10 +529,10 @@ private fun MediaHubActions(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             HubActionCard(
-                title = "影视仓",
-                subtitle = "$sourceCount 个订阅",
-                icon = { Icon(Icons.Rounded.Dns, null) },
-                onClick = onSources,
+                title = "网络媒体库",
+                subtitle = "$storageCount 个存储",
+                icon = { Icon(Icons.Rounded.Storage, null) },
+                onClick = onNetworkStorages,
                 modifier = Modifier.weight(1f),
             )
             HubActionCard(
@@ -509,6 +540,15 @@ private fun MediaHubActions(
                 subtitle = "功能与诊断",
                 icon = { Icon(Icons.Rounded.Tune, null) },
                 onClick = onSettings,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            HubActionCard(
+                title = "影视仓",
+                subtitle = "$sourceCount 个订阅",
+                icon = { Icon(Icons.Rounded.Dns, null) },
+                onClick = onSources,
                 modifier = Modifier.weight(1f),
             )
         }

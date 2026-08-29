@@ -32,5 +32,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
+    implementation(libs.smbj)
+    runtimeOnly(libs.slf4j.nop)
     testImplementation(libs.junit)
 }

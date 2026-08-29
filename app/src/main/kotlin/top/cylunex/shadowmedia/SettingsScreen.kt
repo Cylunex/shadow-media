@@ -27,6 +27,7 @@ import androidx.compose.material.icons.rounded.Science
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Subscriptions
 import androidx.compose.material.icons.rounded.SettingsEthernet
+import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -60,6 +61,15 @@ internal fun SettingsScreen(viewModel: MainViewModel) {
                 actionLabel = "返回媒体中心",
                 onAction = viewModel::back,
             )
+        }
+        item {
+            FilledTonalButton(
+                onClick = viewModel::showNetworkStorages,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            ) {
+                Icon(Icons.Rounded.Storage, null)
+                Text("  网络媒体库")
+            }
         }
         item {
             Row(
