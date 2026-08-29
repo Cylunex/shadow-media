@@ -14,6 +14,14 @@ Emby origin
   保留 Media3 生成的 Range、User-Agent 和非敏感播放头
 ```
 
+OpenList/115 的临时直链可能在缓存失效、签名刷新或 CDN 限流时返回超时、403、429 或 5xx。
+普通视频播放器会限制单 host 并发，并在这些临时 CDN 响应下重新请求原始 Emby URL，让
+MediaWarp/OpenList 生成新的 302；不会直接重试已过期的 CDN URL。Emby origin 自身返回 403 时不会
+自动重试，避免把真实权限错误误判为 CDN 抖动。
+
+脱敏诊断只记录最终 host、HTTP 状态、跳转次数、尝试次数和响应头耗时。不会记录完整 URL、查询
+参数、Location、响应头正文或任何凭据。
+
 客户端不会无条件写入 `Range: bytes=0-`。普通视频由 Media3 依据 DataSpec 生成正确 Range；
 ISO 数据源则按 libbluray/libdvdnav 的随机访问请求生成精确闭区间。ISO 上游必须返回 206 和匹配
 的 Content-Range；200、越界响应、文件长度或验证器变化都会被拒绝，避免把错误字节交给解析器。

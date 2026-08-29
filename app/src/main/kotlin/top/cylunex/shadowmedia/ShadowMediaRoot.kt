@@ -1172,7 +1172,25 @@ private fun ActivePlayer(
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("播放链路", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
-                    Text("${diagnostics.method} · ${diagnostics.requestHost}", color = Color.White)
+                    Text(
+                        buildString {
+                            append(diagnostics.method)
+                            append(" · ")
+                            append(diagnostics.requestHost)
+                            diagnostics.resolvedHost?.takeIf { it != diagnostics.requestHost }?.let {
+                                append(" → ")
+                                append(it)
+                            }
+                        },
+                        color = Color.White,
+                    )
+                    Text(
+                        "HTTP ${diagnostics.httpStatus ?: "等待"} · " +
+                            "跳转 ${diagnostics.redirectCount} · " +
+                            "尝试 ${diagnostics.networkAttempt}/3 · " +
+                            "响应头 ${diagnostics.responseHeadersMs?.let { "${it}ms" } ?: "等待"}",
+                        color = Color.White.copy(alpha = 0.74f),
+                    )
                     Text(
                         "${diagnostics.videoType ?: "Video"} / ${diagnostics.container ?: "?"} · " +
                             "${diagnostics.videoCodec ?: "?"} / ${diagnostics.audioCodec ?: "?"} · " +

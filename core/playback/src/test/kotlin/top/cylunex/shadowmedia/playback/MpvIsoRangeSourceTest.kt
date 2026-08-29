@@ -119,18 +119,18 @@ class MpvIsoRangeSourceTest {
     }
 }
 
-private data class TestRequest(val headers: Map<String, String>) {
+internal data class TestRequest(val headers: Map<String, String>) {
     fun header(name: String): String? = headers[name.lowercase()]
 }
 
-private data class TestResponse(
+internal data class TestResponse(
     val status: Int,
     val reason: String,
     val headers: Map<String, String> = emptyMap(),
     val body: ByteArray = byteArrayOf(),
 )
 
-private class TestHttpServer(
+internal class TestHttpServer(
     private val handler: (TestRequest) -> TestResponse,
 ) : Closeable {
     private val socket = ServerSocket(0, 50, InetAddress.getLoopbackAddress())

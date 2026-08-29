@@ -17,6 +17,7 @@ import androidx.media3.session.MediaSession
 import java.io.Closeable
 import java.util.concurrent.TimeUnit
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.PlayMethod
@@ -54,6 +56,11 @@ data class PlaybackDiagnostics(
     val supportsDirectPlay: Boolean,
     val supportsDirectStream: Boolean,
     val supportsTranscoding: Boolean,
+    val resolvedHost: String? = null,
+    val httpStatus: Int? = null,
+    val redirectCount: Int = 0,
+    val networkAttempt: Int = 1,
+    val responseHeadersMs: Long? = null,
     val lastError: String? = null,
 )
 
@@ -69,17 +76,6 @@ class PlaybackRuntime(
     private val onTerminalError: (positionMs: Long, message: String) -> Unit = { _, _ -> },
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val playbackClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .followSslRedirects(true)
-        .addNetworkInterceptor(
-            ScopedPlaybackHeadersInterceptor(
-                PlaybackHeaderPolicy(session.serverUrl.toHttpUrl(), session, clientIdentity)
-            )
-        )
-        .build()
     private var candidateIndex = 0
     private var positionOffsetMs = 0L
     private var started = false
@@ -95,8 +91,34 @@ class PlaybackRuntime(
     private var telemetryErrorCode: String? = null
     private var telemetryErrorMessage: String? = null
     private var terminalFailure = false
+    private val httpTrace = AtomicReference(PlaybackHttpTrace())
     private val diagnosticsState = MutableStateFlow(diagnostics())
     private val tracksState = MutableStateFlow(PlaybackTracksState())
+    private val embyOrigin = session.serverUrl.toHttpUrl()
+    private val playbackClient = OkHttpClient.Builder()
+        .dispatcher(
+            Dispatcher().apply {
+                maxRequests = 6
+                maxRequestsPerHost = 2
+            }
+        )
+        .connectTimeout(25, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .addInterceptor(
+            ResilientPlaybackHttpInterceptor(embyOrigin) { trace ->
+                httpTrace.set(trace)
+                diagnosticsState.value = diagnostics(diagnosticsState.value.lastError)
+            }
+        )
+        .addNetworkInterceptor(
+            ScopedPlaybackHeadersInterceptor(
+                PlaybackHeaderPolicy(embyOrigin, session, clientIdentity)
+            )
+        )
+        .build()
 
     val diagnostics: StateFlow<PlaybackDiagnostics> = diagnosticsState.asStateFlow()
     val tracks: StateFlow<PlaybackTracksState> = tracksState.asStateFlow()
@@ -271,6 +293,7 @@ class PlaybackRuntime(
 
     private fun diagnostics(error: String? = null): PlaybackDiagnostics {
         val candidate = currentCandidate()
+        val trace = httpTrace.get()
         return PlaybackDiagnostics(
             method = candidate.method,
             candidateIndex = candidateIndex,
@@ -284,7 +307,12 @@ class PlaybackRuntime(
             supportsDirectPlay = plan.supportsDirectPlay,
             supportsDirectStream = plan.supportsDirectStream,
             supportsTranscoding = plan.supportsTranscoding,
-            lastError = error,
+            resolvedHost = trace.resolvedHost,
+            httpStatus = trace.responseCode,
+            redirectCount = trace.redirectCount,
+            networkAttempt = trace.attempt,
+            responseHeadersMs = trace.responseHeadersMs,
+            lastError = error ?: trace.lastNetworkError,
         )
     }
 
