@@ -72,7 +72,10 @@ internal fun IntegrationScreen(state: MainUiState, viewModel: MainViewModel) {
         item {
             Card(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f)),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f),
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                ),
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("新增连接", style = MaterialTheme.typography.titleLarge)
@@ -195,7 +198,10 @@ private fun IntegrationCard(
     val context = LocalContext.current
     Card(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).shadowTvFocus(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f)),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {

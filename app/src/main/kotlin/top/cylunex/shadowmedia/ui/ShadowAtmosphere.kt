@@ -65,7 +65,7 @@ private fun DrawScope.drawAtmosphere(
 ) {
     drawRect(
         Brush.linearGradient(
-            colors = listOf(background, background.copy(alpha = 0.96f), Color(0xFF05070A)),
+            colors = listOf(background, background.copy(alpha = 0.96f), Color(0xFF050806)),
             start = Offset.Zero,
             end = Offset(size.width, size.height),
         )
@@ -105,6 +105,7 @@ fun ShadowGlassPanel(
         ),
         shape = shape,
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
     ) {
         Box(

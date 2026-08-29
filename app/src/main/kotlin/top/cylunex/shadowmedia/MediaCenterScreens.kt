@@ -179,7 +179,10 @@ internal fun DiscoverScreen(state: MainUiState, viewModel: MainViewModel) {
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.72f)),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.72f),
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    ),
                 ) {
                     Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Icon(Icons.Rounded.ErrorOutline, null, tint = MaterialTheme.colorScheme.error)
@@ -219,7 +222,10 @@ private fun UnifiedResultCard(item: UnifiedMediaItem, providerName: String, onCl
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).shadowTvFocus(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f)),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
     ) {
         Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
             UnifiedPoster(item, Modifier.size(width = 78.dp, height = 108.dp))
@@ -359,7 +365,10 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                     Card(
                         onClick = { viewModel.playUnifiedItem(child) },
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f)),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f),
+                            contentColor = MaterialTheme.colorScheme.onSurface,
+                        ),
                     ) {
                         Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Rounded.Movie, null, tint = MaterialTheme.colorScheme.primary)
@@ -517,7 +526,10 @@ private fun HubActionCard(
     Card(
         onClick = onClick,
         modifier = modifier.shadowTvFocus(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.66f)),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.66f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
@@ -642,7 +654,12 @@ internal fun SeriesDetailScreen(state: MainUiState, viewModel: MainViewModel) {
         }
         series?.overview?.takeIf(String::isNotBlank)?.let { overview ->
             item(span = { GridItemSpan(maxLineSpan) }) {
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                    )
+                ) {
                     Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(overview, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 6, overflow = TextOverflow.Ellipsis)
                         FilledTonalButton(onClick = { viewModel.toggleFavorite(series) }) {
@@ -704,7 +721,10 @@ internal fun ExternalSourcesScreen(state: MainUiState, viewModel: MainViewModel)
         item {
             Card(
                 modifier = Modifier.padding(horizontal = 20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ),
             ) {
                 Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Icon(Icons.Rounded.Security, null, tint = MaterialTheme.colorScheme.primary)
@@ -799,7 +819,10 @@ private fun ExternalSourceCard(
     Card(
         onClick = onOpen,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).shadowTvFocus(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(16.dp),
@@ -929,7 +952,10 @@ internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
         item {
             Card(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ),
             ) {
                 Row(
                     Modifier.fillMaxWidth().padding(14.dp),
@@ -1000,7 +1026,10 @@ private fun LiveChannelCard(
     Card(
         onClick = { onPlay(stream) },
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).shadowTvFocus(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {

@@ -111,7 +111,10 @@ fun ServerCard(
     Card(
         onClick = onClick,
         modifier = modifier.fillMaxWidth().shadowTvFocus(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.64f)),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.64f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(16.dp),
@@ -166,7 +169,10 @@ fun ContinueFeedCard(currentIndex: Int, onClick: () -> Unit) {
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth().shadowTvFocus(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.92f)),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.92f),
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+        ),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(18.dp),
@@ -351,7 +357,10 @@ fun PlayerTopBar(
 fun EmptyStatePanel(message: String, modifier: Modifier = Modifier) {
     Card(
         modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
     ) {
         Column(
             Modifier.fillMaxWidth().padding(32.dp),

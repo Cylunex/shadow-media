@@ -287,7 +287,10 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
                 modifier = Modifier.align(Alignment.BottomCenter)
                     .navigationBarsPadding()
                     .padding(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xE81B1114)),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xE81B1114),
+                    contentColor = Color.White,
+                ),
             ) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("播放失败", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
@@ -354,7 +357,10 @@ private fun LoginScreen(state: MainUiState, viewModel: MainViewModel) {
                     modifier = Modifier.padding(top = 8.dp, bottom = 24.dp),
                 )
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                    ),
                 ) {
                     Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         OutlinedTextField(
@@ -685,7 +691,10 @@ private fun FeedPage(
             Card(
                 Modifier.align(Alignment.TopCenter).statusBarsPadding()
                     .padding(start = 16.dp, end = 16.dp, top = 76.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xE81B1114)),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xE81B1114),
+                    contentColor = Color.White,
+                ),
             ) {
                 Text(errorMessage, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
             }
@@ -695,7 +704,7 @@ private fun FeedPage(
             Surface(
                 modifier = Modifier.align(Alignment.Center).padding(horizontal = 28.dp),
                 shape = RoundedCornerShape(18.dp),
-                color = Color(0xEB173344),
+                color = Color(0xEB19371D),
             ) {
                 Text(
                     message,
@@ -896,7 +905,10 @@ private fun IsoPlayer(
             Card(
                 Modifier.fillMaxWidth().statusBarsPadding()
                     .padding(start = 16.dp, end = 16.dp, top = 124.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xEE111820)),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xEE111713),
+                    contentColor = Color.White,
+                ),
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("ISO 播放链路", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
@@ -979,7 +991,7 @@ private fun IsoPlaybackControls(
     Column(
         modifier = modifier.fillMaxWidth()
             .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
-            .background(Color(0xE611151C))
+            .background(Color(0xE6111612))
             .navigationBarsPadding()
             .padding(horizontal = 20.dp, vertical = 14.dp),
     ) {
@@ -1168,7 +1180,10 @@ private fun ActivePlayer(
             Card(
                 Modifier.fillMaxWidth().statusBarsPadding()
                     .padding(start = 16.dp, end = 16.dp, top = 124.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xEE111820)),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xEE111713),
+                    contentColor = Color.White,
+                ),
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("播放链路", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
@@ -1257,7 +1272,7 @@ private fun PlaybackControls(
     Column(
         modifier = modifier.fillMaxWidth()
             .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
-            .background(Color(0xE611151C))
+            .background(Color(0xE6111612))
             .navigationBarsPadding()
             .padding(horizontal = 20.dp, vertical = 14.dp),
     ) {
@@ -1366,7 +1381,10 @@ private fun FeedPlaceholder(isLoading: Boolean, errorMessage: String?, onRetry: 
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Card(
             modifier = Modifier.padding(28.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xE611151C)),
+            colors = CardDefaults.cardColors(
+                containerColor = Color(0xE6111612),
+                contentColor = Color.White,
+            ),
         ) {
             Column(
                 modifier = Modifier.padding(24.dp),

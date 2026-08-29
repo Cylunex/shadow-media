@@ -103,6 +103,7 @@ internal fun InsightsScreen(viewModel: MainViewModel) {
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                     shape = RoundedCornerShape(18.dp),
                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f),
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                 ) {
                     Text(message, modifier = Modifier.padding(14.dp), color = MaterialTheme.colorScheme.onPrimaryContainer)
                 }
@@ -142,7 +143,7 @@ private fun InsightHero(metrics: List<PlaybackMetricEntity>, health: List<Source
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)
             .background(
                 Brush.linearGradient(
-                    listOf(Color(0xCC193F53), Color(0xE61A1833), Color(0xDD371B36)),
+                    listOf(Color(0xCC163A20), Color(0xE6111D14), Color(0xDD203226)),
                 ),
                 RoundedCornerShape(30.dp),
             )
@@ -274,6 +275,7 @@ private fun EmptyInsight(message: String) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.34f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
     ) {
         Text(message, modifier = Modifier.padding(18.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
