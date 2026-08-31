@@ -19,6 +19,9 @@ OpenList/115 的临时直链可能在缓存失效、签名刷新或 CDN 限流�
 MediaWarp/OpenList 生成新的 302；不会直接重试已过期的 CDN URL。Emby origin 自身返回 403 时不会
 自动重试，避免把真实权限错误误判为 CDN 抖动。
 
+如果 PlaybackInfo 直接通告了外部 CDN URL，403/404 不会在同一个地址上重复等待，而是立即交给
+播放器切换标准 Emby 静态流候选；候选耗尽后再刷新 PlaybackInfo 获取新租约。
+
 PlaybackInfo 返回的已知 Emby 媒体路由即使带有内网绝对 host，也会重建到登录时配置的服务器入口。
 这保证列表、详情、播放和进度请求使用同一反代边界；播放器只在收到实时 302 后访问 CDN，不保存
 最终 Location。

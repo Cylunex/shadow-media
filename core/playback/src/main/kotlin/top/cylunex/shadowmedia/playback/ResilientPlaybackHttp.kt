@@ -16,9 +16,9 @@ data class PlaybackHttpTrace(
 )
 
 /**
- * Reopens the original Emby URL when a temporary CDN response is returned. Retrying the signed
- * CDN URL itself would keep using the same expired 115 link, while reopening the Emby URL lets
- * MediaWarp/OpenList resolve a fresh redirect without ever exposing Emby credentials off-origin.
+ * Reopens an original Emby route when its redirected CDN response is temporary. A candidate that
+ * already starts at an external URL is not retried here; the player can immediately fall back to
+ * the canonical Emby route or refresh PlaybackInfo instead of waiting on the same expired lease.
  */
 internal class ResilientPlaybackHttpInterceptor(
     private val embyOrigin: HttpUrl,
@@ -43,7 +43,7 @@ internal class ResilientPlaybackHttpInterceptor(
                     responseHeadersMs = System.nanoTime().elapsedMillisecondsSince(startedAt),
                 )
                 onTrace(trace)
-                if (!response.shouldRetry(attempt)) return response
+                if (!response.shouldRetry(attempt, original.url)) return response
                 val retryDelayMs = response.retryDelayMs(attempt)
                 response.close()
                 if (!chain.call().isCanceled()) Thread.sleep(retryDelayMs)
@@ -63,10 +63,10 @@ internal class ResilientPlaybackHttpInterceptor(
         throw lastFailure ?: IOException("播放链路重试结束但没有收到响应")
     }
 
-    private fun Response.shouldRetry(attempt: Int): Boolean {
+    private fun Response.shouldRetry(attempt: Int, originalUrl: HttpUrl): Boolean {
         if (attempt >= maxAttempts) return false
         return when (code) {
-            403, 404 -> !request.url.sameOriginAs(embyOrigin)
+            403, 404 -> originalUrl.sameOriginAs(embyOrigin) && !request.url.sameOriginAs(embyOrigin)
             408, 425, 429, 500, 502, 503, 504 -> true
             else -> false
         }

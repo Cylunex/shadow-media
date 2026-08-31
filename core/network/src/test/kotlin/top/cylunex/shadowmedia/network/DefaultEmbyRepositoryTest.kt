@@ -95,7 +95,7 @@ class DefaultEmbyRepositoryTest {
     }
 
     @Test
-    fun `routes every media source through proxy before advertised and transcode fallbacks`() = runBlocking {
+    fun `prefers advertised mediawarp routes before synthesized and transcode fallbacks`() = runBlocking {
         val responseJson = """
             {
               "PlaySessionId": "play-multi",
@@ -122,11 +122,12 @@ class DefaultEmbyRepositoryTest {
 
         assertEquals(2, plan.sourceCount)
         assertEquals(listOf("source-4k", "source-1080p"), plan.candidates.take(2).map { it.mediaSourceId })
-        assertTrue(plan.candidates.take(2).all { it.url.startsWith("https://media.example.com/emby/Videos/") })
         assertEquals(
             "https://media.example.com/emby/Videos/item-1/stream.mkv?MediaSourceId=source-4k",
-            plan.candidates[2].url,
+            plan.candidates[0].url,
         )
+        assertEquals("https://temporary.example.net/movie.mp4?sign=short", plan.candidates[1].url)
+        assertTrue(plan.candidates[2].url.contains("Static=true"))
         assertEquals(PlayMethod.TRANSCODE, plan.candidates.last().method)
     }
 

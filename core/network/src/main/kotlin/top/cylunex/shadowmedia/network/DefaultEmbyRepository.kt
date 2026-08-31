@@ -239,9 +239,9 @@ class DefaultEmbyRepository(
             if (!discImage && !supportsDirectPlay && !supportsDirectStream && directStreamUrl.isNullOrBlank()) {
                 return null
             }
-            // The canonical Emby stream route is intentionally first. A configured
-            // MediaWarp/OpenList proxy must see the request before the client follows its
-            // short-lived 302 Location to the storage CDN.
+            // This is a compatibility fallback for servers that omit or return an unusable
+            // DirectStreamUrl. Prefer the server-advertised route because MediaWarp may rewrite
+            // it with mode-specific parameters that cannot be reconstructed client-side.
             return PlaybackCandidate(
                 url = EmbyEndpoints.directPlayUrl(
                     serverUrl = session.serverUrl,
@@ -292,8 +292,8 @@ class DefaultEmbyRepository(
         }
 
         val candidates = (
-            orderedSources.mapNotNull(MediaSourceDto::canonicalCandidate) +
-                orderedSources.mapNotNull(MediaSourceDto::advertisedDirectCandidate) +
+            orderedSources.mapNotNull(MediaSourceDto::advertisedDirectCandidate) +
+                orderedSources.mapNotNull(MediaSourceDto::canonicalCandidate) +
                 orderedSources.flatMap(MediaSourceDto::transcodingCandidates)
             ).ifEmpty {
                 // Some Emby versions return a MediaSource but omit all capabilities and URLs.

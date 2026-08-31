@@ -107,6 +107,27 @@ class ResilientPlaybackHttpTest {
         }
     }
 
+    @Test
+    fun `advertised external url fails fast instead of retrying same expired lease`() {
+        val requests = AtomicInteger()
+        val cdn = TestHttpServer {
+            requests.incrementAndGet()
+            TestResponse(status = 403, reason = "Expired")
+        }
+        val emby = TestHttpServer { TestResponse(status = 200, reason = "OK") }
+        val client = playbackClient(testSession(emby.port))
+
+        try {
+            client.newCall(
+                Request.Builder().url("http://127.0.0.1:${cdn.port}/temporary.mkv").build()
+            ).execute().use { response -> assertEquals(403, response.code) }
+            assertEquals(1, requests.get())
+        } finally {
+            emby.close()
+            cdn.close()
+        }
+    }
+
     private fun playbackClient(
         session: EmbySession,
         onTrace: (PlaybackHttpTrace) -> Unit = {},
