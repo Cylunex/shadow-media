@@ -110,6 +110,14 @@ class LibraryRepository(context: Context) {
 
     suspend fun publicationFile(asset: LibraryAssetEntity): File = withContext(Dispatchers.IO) {
         val source = localFile(asset)
+        if (asset.format == "epub") {
+            val safe = File(folder(asset.id), "safe-v1.epub")
+            if (!safe.exists() || safe.lastModified() < source.lastModified()) {
+                val tmp = File(folder(asset.id), "safe.part")
+                try { PublicationSanitizer.sanitize(source, tmp); check(tmp.renameTo(safe)) } finally { tmp.delete() }
+            }
+            return@withContext safe
+        }
         if (asset.format != "txt") return@withContext source
         val epub = File(folder(asset.id), "text-v1.epub")
         if (!epub.exists() || epub.lastModified() < source.lastModified()) {

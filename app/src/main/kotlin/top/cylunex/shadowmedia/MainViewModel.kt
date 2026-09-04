@@ -209,7 +209,7 @@ class MainViewModel(
         val active = sessionStore.load()
         if (active != null) restoreSession(active, saved) else {
             mutableState.value = MainUiState(
-                screen = if (saved.isEmpty()) Screen.LOGIN else Screen.SERVERS,
+                screen = Screen.HOME,
                 savedSessions = saved,
             )
         }

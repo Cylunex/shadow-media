@@ -16,27 +16,27 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LocalContentColor
 
 private val ShadowDarkColors = darkColorScheme(
-    primary = Color(0xFF52B54B),
-    onPrimary = Color(0xFF071507),
-    primaryContainer = Color(0xFF18371A),
-    onPrimaryContainer = Color(0xFFB8F0B4),
+    primary = Color(0xFF76A9F5),
+    onPrimary = Color(0xFF08234B),
+    primaryContainer = Color(0xFF203A60),
+    onPrimaryContainer = Color(0xFFDAE8FF),
     secondary = Color(0xFFC1C8C2),
     onSecondary = Color(0xFF1B211C),
     secondaryContainer = Color(0xFF252B26),
     onSecondaryContainer = Color(0xFFDEE5DE),
-    tertiary = Color(0xFF87CF8D),
-    onTertiary = Color(0xFF0A210E),
+    tertiary = Color(0xFFCBB38A),
+    onTertiary = Color(0xFF292116),
     error = Color(0xFFFFB4AB),
     onError = Color(0xFF300909),
     errorContainer = Color(0xFF5B1D1D),
     onErrorContainer = Color(0xFFFFDAD6),
-    background = Color(0xFF070908),
+    background = Color(0xFF101114),
     onBackground = Color(0xFFF0F2F5),
-    surface = Color(0xFF101311),
+    surface = Color(0xFF191B20),
     onSurface = Color(0xFFF0F2F5),
-    surfaceVariant = Color(0xFF1A1E1B),
-    onSurfaceVariant = Color(0xFFBDC4BE),
-    outline = Color(0xFF454C46),
+    surfaceVariant = Color(0xFF24272E),
+    onSurfaceVariant = Color(0xFFB7BDC9),
+    outline = Color(0xFF454B57),
 )
 
 private val ShadowLightColors = lightColorScheme(

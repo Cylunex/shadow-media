@@ -147,7 +147,7 @@ import top.cylunex.shadowmedia.ui.ServerCard
 import top.cylunex.shadowmedia.ui.rememberEmbyImageLoader
 
 @Composable
-fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
+fun LegacyMediaRoot(viewModel: MainViewModel, container: AppContainer) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val rootContext = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(state.screen) {

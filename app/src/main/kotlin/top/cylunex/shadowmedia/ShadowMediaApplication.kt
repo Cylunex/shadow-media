@@ -40,6 +40,7 @@ class ShadowMediaApplication : Application() {
 }
 
 class AppContainer(application: Application) {
+    val library = top.cylunex.shadowmedia.library.LibraryRepository(application)
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val database = ShadowMediaDatabase.create(application)
     val localMediaState = LocalMediaStateRepository(database.dao())
