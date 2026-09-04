@@ -27,7 +27,12 @@ class LibraryRepository(context: Context) {
     suspend fun addRemote(item: UnifiedMediaItem, format: String): LibraryAssetEntity {
         val id = digest("${item.key.providerId.length}:${item.key.providerId}:${item.key.itemId}")
         return dao.asset(id) ?: LibraryAssetEntity(id, item.key.providerId, item.key.itemId, item.title,
-            author = item.subtitle.orEmpty(), kind = contentKind(item.type).name, format = format, addedAt = System.currentTimeMillis()).also { dao.putAsset(it) }
+            author = item.subtitle.orEmpty(), kind = contentKind(item.type).name, format = format, addedAt = System.currentTimeMillis()).also {
+            dao.putAsset(it)
+            if (contentKind(item.type) == ContentKind.AUDIOBOOK && (item.progressMs > 0 || item.played)) dao.seedProgress(ContentProgressEntity(id,
+                locatorType = "time", locatorJson = JSONObject().put("trackId", id).put("positionMs", item.progressMs).put("durationMs", item.durationMs).toString(),
+                completed = item.played, updatedAt = System.currentTimeMillis()))
+        }
     }
 
     suspend fun fetchRemote(asset: LibraryAssetEntity, candidate: PlaybackCandidate, onProgress: (Long, Long?) -> Unit = { _, _ -> }): LibraryAssetEntity {
@@ -160,8 +165,8 @@ class LibraryRepository(context: Context) {
         }
         input.copyTo(target, overwrite = true)
         val old = dao.asset(id)
-        if (old != null && old.revision != revision) dao.removeProgress(id)
-        LibraryAssetEntity(id, providerId, itemId, title, author, kind.name, format,
+        if (old != null && old.revision.isNotBlank() && old.revision != revision) dao.removeProgress(id)
+        LibraryAssetEntity(id, providerId, itemId, title, author.ifBlank { old?.author.orEmpty() }, kind.name, format,
             Uri.fromFile(target).toString(), cover, revision, System.currentTimeMillis(), old?.favorite ?: false).also { dao.putAsset(it) }
     }
 
@@ -197,8 +202,9 @@ class LibraryRepository(context: Context) {
         val record = ContentProgressEntity(id, locatorType = type, locatorJson = locator.toString(),
             progression = fraction?.takeIf(Double::isFinite)?.coerceIn(0.0, 1.0), completed = completed, updatedAt = System.currentTimeMillis())
         val asset = dao.asset(id)
-        val operation = asset?.takeIf { it.providerId.startsWith("catalog:KOMGA:") || it.providerId.startsWith("catalog:AUDIOBOOKSHELF:") }?.let {
-            SyncOperationEntity(UUID.randomUUID().toString(), it.providerId, id, "progress", JSONObject(locator.toString()).put("completed", completed).toString(), System.currentTimeMillis())
+        val operation = asset?.takeIf { it.providerId.startsWith("catalog:KOMGA:") || it.providerId.startsWith("catalog:AUDIOBOOKSHELF:") ||
+            (it.providerId.startsWith("emby:") && it.localUri.isNotBlank() && it.kind == "AUDIOBOOK") }?.let {
+            SyncOperationEntity(UUID.randomUUID().toString(), it.providerId, id, if (it.providerId.startsWith("emby:")) "offline-audio" else "progress", JSONObject(locator.toString()).put("completed", completed).toString(), System.currentTimeMillis())
         }
         dao.saveAndEnqueue(record, operation)
     }

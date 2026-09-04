@@ -156,9 +156,11 @@ class ComicActivity : ComponentActivity() {
         var local by remember(index, asset?.revision) { mutableStateOf<File?>(null) }
         var failure by remember(index) { mutableStateOf<String?>(null) }
         LaunchedEffect(index, asset?.revision) {
-            try { local = withContext(Dispatchers.IO) { preparePage(index) } }
+            var prepared: File? = null
+            try { withContext(Dispatchers.IO) { prepared = preparePage(index) }; local = prepared; prepared = null }
             catch (e: CancellationException) { throw e }
             catch (_: Exception) { failure = "第 ${index + 1} 页读取失败" }
+            finally { prepared?.delete() }
         }
         Box(modifier) {
             val image = local

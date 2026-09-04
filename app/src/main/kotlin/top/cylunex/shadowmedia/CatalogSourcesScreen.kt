@@ -83,7 +83,7 @@ import top.cylunex.shadowmedia.library.*
                 if (connection?.kind == CatalogKind.AUDIOBOOKSHELF && page?.entries?.any { it.format.isNotBlank() } == true) item {
                     Button(enabled = !loading, onClick = { val c = connection ?: return@Button; job = scope.launch {
                         loading = true
-                        try { onQueue(page!!.entries.filter { it.format.isNotBlank() }.map { repository.add(c, it) }) }
+                        try { onQueue(repository.addQueue(c, page!!.entries.filter { it.format.isNotBlank() })) }
                         catch (e: CancellationException) { throw e }
                         catch (e: Exception) { error = e.message }
                         finally { loading = false }

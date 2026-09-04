@@ -122,6 +122,8 @@ data class MainUiState(
     val discoverQuery: String = "",
     val discoverResults: List<UnifiedMediaItem> = emptyList(),
     val providerSearchFailures: List<ProviderSearchFailure> = emptyList(),
+    val providerSearchNext: Map<String, String> = emptyMap(),
+    val loadingSearchPages: Set<String> = emptySet(),
     val selectedUnifiedDetail: MediaDetail? = null,
     val pendingPublication: UnifiedMediaItem? = null,
     val providerDetailBackStack: List<MediaDetail> = emptyList(),
@@ -192,6 +194,9 @@ class MainViewModel(
     private var deleteRequest: Job? = null
     private var liveGuideRequest: Job? = null
     private var providerSearchRequest: Job? = null
+    private val searchPageJobs = mutableMapOf<String, Job>()
+    private var searchGeneration = 0L
+    private var submittedQuery = ""
     val state: StateFlow<MainUiState> = mutableState.asStateFlow()
     val featureFlags: StateFlow<Map<FeatureId, Boolean>> = localMediaState.featureFlags()
         .stateIn(
@@ -674,18 +679,25 @@ class MainViewModel(
         update { copy(screen = Screen.DISCOVER, errorMessage = null) }
     }
 
-    fun updateDiscoverQuery(value: String) = update { copy(discoverQuery = value, errorMessage = null) }
+    fun updateDiscoverQuery(value: String) {
+        providerSearchRequest?.cancel(); searchPageJobs.values.forEach { it.cancel() }; searchPageJobs.clear(); searchGeneration++
+        update { copy(discoverQuery = value, errorMessage = null, isSearchingProviders = false, providerSearchNext = emptyMap(), loadingSearchPages = emptySet(), providerSearchFailures = emptyList(), discoverResults = emptyList()) }
+    }
 
     fun searchProviders() {
         val query = state.value.discoverQuery.trim()
         if (query.isEmpty()) return
         providerSearchRequest?.cancel()
+        searchPageJobs.values.forEach { it.cancel() }; searchPageJobs.clear()
+        val generation = ++searchGeneration
+        submittedQuery = query
         providerSearchRequest = viewModelScope.launch {
             update {
                 copy(
                     isSearchingProviders = true,
                     discoverResults = emptyList(),
                     providerSearchFailures = emptyList(),
+                    providerSearchNext = emptyMap(), loadingSearchPages = emptySet(),
                     errorMessage = null,
                 )
             }
@@ -695,13 +707,34 @@ class MainViewModel(
                     providerRegistry.providers.first(),
                     ProviderSearchRequest(query = query, pageSize = 60),
                 ).collect { result ->
-                    update { copy(discoverResults = result.items, providerSearchFailures = result.failures, isSearchingProviders = result.pendingProviderIds.isNotEmpty()) }
+                    if (generation == searchGeneration) update { copy(discoverResults = result.items, providerSearchFailures = result.failures, providerSearchNext = result.nextPageTokens, isSearchingProviders = result.pendingProviderIds.isNotEmpty()) }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) {
                 update { copy(isSearchingProviders = false) }
                 showError(e)
             }
+        }
+    }
+
+    fun loadSearchPage(providerId: String, retry: Boolean = false) {
+        if (state.value.isSearchingProviders || providerId in state.value.loadingSearchPages || submittedQuery.isBlank()) return
+        val provider = providerRegistry.provider(providerId) ?: return
+        val token = if (retry) null else state.value.providerSearchNext[providerId] ?: return
+        val generation = searchGeneration; val query = submittedQuery
+        update { copy(loadingSearchPages = loadingSearchPages + providerId) }
+        searchPageJobs[providerId] = viewModelScope.launch {
+            try {
+                val page = kotlinx.coroutines.withTimeout(12_000) { provider.search(ProviderSearchRequest(query, pageToken = token)) }
+                if (generation == searchGeneration) update { copy(
+                    discoverResults = (discoverResults + page.items).distinctBy { it.key },
+                    providerSearchNext = (providerSearchNext - providerId) + (page.nextPageToken?.takeUnless { it == token }?.let { mapOf(providerId to it) } ?: emptyMap()),
+                    providerSearchFailures = providerSearchFailures.filterNot { it.providerId == providerId }) }
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                if (generation == searchGeneration) update { copy(errorMessage = "${provider.descriptor.name} 加载超时，可重试") }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { if (generation == searchGeneration) update { copy(errorMessage = "${provider.descriptor.name} 加载失败，可重试") } }
+            finally { if (generation == searchGeneration) update { copy(loadingSearchPages = loadingSearchPages - providerId) } }
         }
     }
 

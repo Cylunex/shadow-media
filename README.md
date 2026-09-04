@@ -1,10 +1,17 @@
 # Shadow Media
 
-一个以 Emby 私有媒体库为第一方核心、以原生播放为基础的 Android 媒体客户端。它提供媒体中心、
-封面墙和刷片体验，并为用户自带的外部配置与直播订阅建立受控入口。项目不登录网盘、不刮削媒体，
+一个私有库优先、用户自带源的 Android 全媒介客户端，整合影视、直播、小说、漫画与听书。
+它保留原生播放、封面墙和刷片体验，并为图书服务、网络存储与本地文件建立专用阅读和音频入口。项目不登录网盘、不刮削媒体，
 也不会预置或分发公开内容源。
 
 当前 `1.1.1` 已经打通主要播放闭环，并加入不依赖 Emby 的网络媒体库：
+
+当前开发分支新增五入口界面：**影视 / 直播 / 阅读 / 听书 / 来源**。阅读支持 EPUB/TXT、
+PDF 基础翻页、CBZ/ZIP 与图片目录；听书使用独立后台音频服务；来源增加 OPDS、Komga 和
+Audiobookshelf，多 Emby 与已导入书库可渐进搜索和继续翻页。界面采用中性深色、蓝色强调，
+提供浅色与跟随系统选项。新增体验尚待真机验收，不等同于已经发布的新版本。
+
+接入方法、支持范围及未完成项见 [全媒介实施说明](docs/MULTIMEDIA_IMPLEMENTATION.md)。
 
 ```text
 选择或添加多个 Emby 登录
@@ -89,7 +96,7 @@
 - 媒体记忆页统一展示可续播时刻、当前片段地图、首帧/缓冲/失败统计和线路健康度，并可导出不含
   地址、片名、Token 或完整线路标识的脱敏诊断；
 - 可关闭的功能控制台，以及电影感动态背景、玻璃层次和统一 Material Icons 视觉系统；
-- 启动图标、TV 横幅和界面状态图标使用深色中性底、Emby 绿色强调及克制的语义色阶；
+- 界面沿用 Material Icons，采用中性深色、蓝色强调及克制的语义色阶；阅读纸色独立设置；
 
 ## 工程结构
 
@@ -100,6 +107,9 @@ core/provider/   统一媒体 Provider 协议与注册表
 core/database/   Room 本地状态、Paging 数据源和播放质量数据
 core/network/    Emby、OpenList、WebDAV、SMB、NFO/STRM 与 Keystore 凭据存储
 core/playback/   Media3、libmpv ISO 引擎、302 请求头隔离、回退与播放上报
+core/library/    本地书库、出版物安全、图书协议、资源获取与进度写入
+experience/audio/   MediaSessionService、听书队列与按需资源解析
+experience/reading/ Readium 小说阅读、离线朗读、漫画分块与 PDF 翻页
 docs/            架构决策、播放安全与迭代路线
 ```
 
@@ -153,5 +163,6 @@ ISO 是光盘镜像而不是普通视频容器。Emby Server 不支持 ISO 转�
 `DefaultPreloadManager.Builder`。最终 CDN URL 只解析当前项和后续 1–2 项，不落盘。
 
 本项目整体以 GPL-3.0 发布。详见 [架构说明](docs/ARCHITECTURE.md)、
+[全媒介实施说明](docs/MULTIMEDIA_IMPLEMENTATION.md)、
 [ISO 播放说明](docs/ISO_PLAYBACK.md)、[第三方来源](third_party/webhtv-mpv/NOTICE.md)、
 [参考实现与取舍](docs/REFERENCES.md) 与 [路线图](docs/ROADMAP.md)。

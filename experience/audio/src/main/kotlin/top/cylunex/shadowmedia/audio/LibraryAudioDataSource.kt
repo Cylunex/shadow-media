@@ -28,6 +28,7 @@ internal class LibraryAudioDataSource(private val context: Context, private val 
             val origin = (candidate.credentialOrigin ?: candidate.url).toHttpUrlOrNull()
             val client = baseClient.newBuilder().addNetworkInterceptor { chain ->
                 val request = chain.request(); val url = request.url; val builder = request.newBuilder()
+                if (origin?.isHttps == true && !url.isHttps) throw IOException("拒绝将加密音频资源降级到 HTTP")
                 if (origin == null || origin.scheme != url.scheme || origin.host != url.host || origin.port != url.port) {
                     listOf("Authorization", "Cookie", "X-Emby-Token", "X-Emby-Authorization", "X-MediaBrowser-Token", "X-MediaBrowser-Authorization", "X-API-Key").forEach(builder::removeHeader)
                 }

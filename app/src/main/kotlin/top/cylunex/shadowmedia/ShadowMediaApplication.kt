@@ -64,6 +64,7 @@ class AppContainer(application: Application) {
         clientIdentity = clientIdentity,
     )
     val playbackOutbox: PlaybackOutbox = PersistentPlaybackOutbox(application, embyRepository)
+    private val audioReporter = EmbyAudioReporter(applicationScope, playbackOutbox)
     val feedSessionStore = FeedSessionStore(application)
     val externalClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -83,11 +84,26 @@ class AppContainer(application: Application) {
 
     fun initializeLibraryResources() {
         top.cylunex.shadowmedia.library.LibraryResources.networkStorage = networkStorageRepository
+        top.cylunex.shadowmedia.library.LibraryResources.audioEvent = audioReporter::progress
         top.cylunex.shadowmedia.library.LibraryResources.pageManifest = catalogs::pages
         top.cylunex.shadowmedia.library.LibraryResources.pageReader = catalogs::page
         applicationScope.launch {
             while (true) {
                 try { catalogs.flush() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { /* Keep persisted operations for reconnect. */ }
+                sessionStore.loadAll().forEach { account ->
+                    for (operation in library.dao.pending("emby:${account.serverId}:${account.userId}").filter { it.kind == "offline-audio" }) {
+                        if (operation.nextAttemptAt > System.currentTimeMillis()) continue
+                        try {
+                            val asset = library.dao.asset(operation.target)
+                            if (asset != null) {
+                                val value = org.json.JSONObject(operation.payload)
+                                embyRepository.updateAudioPosition(account, asset.itemId, value.optLong("positionMs"), value.optBoolean("completed"))
+                            }
+                            library.dao.acknowledge(operation.id)
+                        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                        catch (_: Exception) { library.dao.retry(operation.id, System.currentTimeMillis() + 30_000L * (operation.attempts + 1).coerceAtMost(10)) }
+                    }
+                }
                 kotlinx.coroutines.delay(30_000)
             }
         }
@@ -101,7 +117,7 @@ class AppContainer(application: Application) {
                 }
                 asset.providerId.startsWith("emby:") -> {
                     val session = requireNotNull(sessionStore.loadAll().firstOrNull { "emby:${it.serverId}:${it.userId}" == asset.providerId }) { "Emby 账号已移除" }
-                    embyRepository.audioPlan(session, asset.itemId).candidates
+                    embyRepository.audioPlan(session, asset.itemId).also { audioReporter.resolved(asset.id, session, it) }.candidates
                 }
                 else -> requireNotNull(providerRegistry.provider(asset.providerId)) { "来源不可用，请重新连接" }.resolve(top.cylunex.shadowmedia.model.UnifiedPlaybackRequest(key))
             }

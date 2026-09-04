@@ -56,6 +56,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     val scope = rememberCoroutineScope()
     val assets by container.library.assets.collectAsStateWithLifecycle(emptyList())
     val progress by container.library.progress.collectAsStateWithLifecycle(emptyList())
+    val pendingSync by container.library.dao.pendingCount().collectAsStateWithLifecycle(0)
     val progressError by top.cylunex.shadowmedia.library.ProgressWriter.error.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var audioExpanded by rememberSaveable { mutableStateOf(false) }
@@ -179,6 +180,21 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                     })
                     tab == 2 || tab == 3 -> PublicationShelf(assets, progress, audio = tab == 3, onImport = { importer.launch(arrayOf("*/*")) }, onOpen = ::open,
                         onDirectory = { directoryImporter.launch(null) },
+                        onOffline = { item ->
+                            importJob?.cancel()
+                            importJob = scope.launch {
+                                try {
+                                    importing = "准备离线保存"
+                                    val candidate = top.cylunex.shadowmedia.library.LibraryResources.resolve(item)
+                                    container.library.fetchRemote(if (item.format == "komga") item.copy(format = "cbz") else item, candidate) { bytes, total ->
+                                        importing = "离线保存 ${bytes / 1024 / 1024} MiB" + (total?.let { " / ${it / 1024 / 1024} MiB" } ?: "")
+                                    }
+                                    message = "已保存离线副本，原文件未修改"
+                                } catch (e: CancellationException) { throw e }
+                                catch (_: Exception) { message = "离线保存失败，可能超出 1 GiB、空间不足或服务端原文件格式不受支持" }
+                                finally { importing = null }
+                            }
+                        },
                         onFavorite = { item -> scope.launch { container.library.dao.favorite(item.id, !item.favorite) } },
                         onRemove = { item -> scope.launch {
                             controller?.let { control ->
@@ -186,7 +202,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                             }
                             container.library.remove(item.id)
                         } })
-                    tab == 4 && state.screen == Screen.HOME -> SourcesHub(state, viewModel, onImport = { importer.launch(arrayOf("*/*")) }, onCatalogs = { catalogScreen = true })
+                    tab == 4 && state.screen == Screen.HOME -> SourcesHub(state, viewModel, pendingSync, onImport = { importer.launch(arrayOf("*/*")) }, onCatalogs = { catalogScreen = true })
                     tab == 1 && state.screen == Screen.HOME -> LiveLanding(state, container, viewModel)
                     else -> LegacyMediaRoot(viewModel, container)
                 }
@@ -216,7 +232,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
 
 @Composable private fun PublicationShelf(
     assets: List<LibraryAssetEntity>, progress: List<ContentProgressEntity>, audio: Boolean,
-    onImport: () -> Unit, onDirectory: () -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onFavorite: (LibraryAssetEntity) -> Unit, onRemove: (LibraryAssetEntity) -> Unit,
+    onImport: () -> Unit, onDirectory: () -> Unit, onOffline: (LibraryAssetEntity) -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onFavorite: (LibraryAssetEntity) -> Unit, onRemove: (LibraryAssetEntity) -> Unit,
 ) {
     var filter by rememberSaveable(audio) { mutableStateOf("全部") }
     var query by rememberSaveable(audio) { mutableStateOf("") }
@@ -277,7 +293,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(item.title, Modifier.weight(1f).clickable { onOpen(item) }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
-                IconButton(onClick = { selected = item }, Modifier.size(32.dp)) { Icon(Icons.Rounded.MoreHoriz, "作品选项") }
+                IconButton(onClick = { selected = item }) { Icon(Icons.Rounded.MoreHoriz, "作品选项") }
             }
             Text(item.author.ifBlank { item.format.uppercase() }, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, style = MaterialTheme.typography.labelSmall)
             progressMap[item.id]?.progression?.let { LinearProgressIndicator(progress = { it.toFloat() }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp), trackColor = MaterialTheme.colorScheme.surfaceVariant) }
@@ -287,6 +303,8 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
         Column(Modifier.padding(24.dp)) {
             Text(item.title, style = MaterialTheme.typography.titleLarge)
             TextButton(onClick = { selected = null; onOpen(item) }) { Text(if (audio) "开始收听" else "打开阅读") }
+            if (item.providerId != "local" && item.localUri.isBlank()) TextButton(onClick = { selected = null; onOffline(item) }) { Text("保存离线副本（最多 1 GiB）") }
+            if (item.localUri.isNotBlank()) Text("此内容可从本机打开", color = MaterialTheme.colorScheme.onSurfaceVariant)
             TextButton(onClick = { selected = null; onFavorite(item) }) { Text(if (item.favorite) "取消收藏" else "收藏") }
             TextButton(onClick = { selected = null; removing = item }) { Text("从书架移除", color = MaterialTheme.colorScheme.error) }
         }
@@ -306,7 +324,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     }
 }
 
-@Composable private fun SourcesHub(state: MainUiState, viewModel: MainViewModel, onImport: () -> Unit, onCatalogs: () -> Unit) {
+@Composable private fun SourcesHub(state: MainUiState, viewModel: MainViewModel, pendingSync: Int, onImport: () -> Unit, onCatalogs: () -> Unit) {
     val context = LocalContext.current
     val appearance = remember { context.getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE) }
     var theme by remember { mutableStateOf(appearance.getString("theme", "深色")) }
@@ -319,6 +337,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
         item { SourceTile("图书与有声书服务", "OPDS / Komga / Audiobookshelf", Icons.AutoMirrored.Rounded.MenuBook, onCatalogs) }
         item { SourceTile("聚合搜索", "搜索已连接的内容服务", Icons.Rounded.Search, viewModel::showDiscover) }
         item { SourceTile("设置与诊断", "功能开关、播放记录与问题排查", Icons.Rounded.Tune, viewModel::showSettings) }
+        item { Text(if (pendingSync > 0) "待发送进度：$pendingSync 条 · 应用打开时自动重试，已移除账号的记录保留在本机" else "当前没有待发送的进度记录", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item { Text("界面外观", style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("深色", "浅色", "跟随系统").forEach { value ->
                 FilterChip(theme == value, { theme = value; appearance.edit().putString("theme", value).apply() }, { Text(value) })

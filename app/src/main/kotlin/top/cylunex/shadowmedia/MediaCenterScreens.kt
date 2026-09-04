@@ -144,7 +144,7 @@ internal fun DiscoverScreen(state: MainUiState, viewModel: MainViewModel) {
                     onValueChange = viewModel::updateDiscoverQuery,
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    label = { Text("搜索电影、剧集或频道") },
+                    label = { Text("搜索影视、频道和我的书库") },
                     leadingIcon = { Icon(Icons.Rounded.Search, null) },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { viewModel.searchProviders() }),
@@ -194,6 +194,12 @@ internal fun DiscoverScreen(state: MainUiState, viewModel: MainViewModel) {
                     }
                 }
             }
+            items(state.providerSearchFailures, key = { "retry:${it.providerId}" }) { failure ->
+                TextButton(enabled = !state.isSearchingProviders && failure.providerId !in state.loadingSearchPages,
+                    onClick = { viewModel.loadSearchPage(failure.providerId, retry = true) }, modifier = Modifier.padding(horizontal = 20.dp)) {
+                    Text("重试 ${failure.providerName}")
+                }
+            }
         }
         if (state.discoverResults.isEmpty() && !state.isSearchingProviders) {
             item {
@@ -210,6 +216,12 @@ internal fun DiscoverScreen(state: MainUiState, viewModel: MainViewModel) {
                 providerName = providerNames[item.key.providerId].orEmpty(),
                 onClick = { viewModel.openUnifiedItem(item) },
             )
+        }
+        items(state.providerSearchNext.keys.toList(), key = { "next:$it" }) { id ->
+            OutlinedButton(enabled = !state.isSearchingProviders && id !in state.loadingSearchPages,
+                onClick = { viewModel.loadSearchPage(id) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+                Text(if (id in state.loadingSearchPages) "正在加载" else "更多 · ${providerNames[id].orEmpty()}")
+            }
         }
         state.errorMessage?.let { message ->
             item { Text(message, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 20.dp)) }

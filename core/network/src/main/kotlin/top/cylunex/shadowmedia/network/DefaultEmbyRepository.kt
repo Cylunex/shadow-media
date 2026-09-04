@@ -237,6 +237,16 @@ class DefaultEmbyRepository(
             runTimeTicks = source.runTimeTicks, supportsDirectStream = true)
     }
 
+    override suspend fun updateAudioPosition(session: EmbySession, itemId: String, positionMs: Long, completed: Boolean) {
+        require(positionMs >= 0)
+        val body = kotlinx.serialization.json.buildJsonObject {
+            put("PlaybackPositionTicks", kotlinx.serialization.json.JsonPrimitive(positionMs.coerceAtMost(Long.MAX_VALUE / 10_000) * 10_000))
+            put("Played", kotlinx.serialization.json.JsonPrimitive(completed))
+        }
+        executeEmpty(authenticatedRequest(session, EmbyEndpoints.endpoint(session.serverUrl, "Users", session.userId, "Items", itemId, "UserData"))
+            .post(body.toString().toRequestBody(JSON_MEDIA_TYPE)).build())
+    }
+
     override suspend fun playbackPlan(session: EmbySession, itemId: String): PlaybackPlan {
         val url = EmbyEndpoints.endpoint(session.serverUrl, "Items", itemId, "PlaybackInfo")
         val requestBody = json.encodeToString(PlaybackInfoRequestDto(userId = session.userId))

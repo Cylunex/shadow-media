@@ -50,7 +50,7 @@ class AudiobookService : MediaSessionService() {
             addListener(object : Player.Listener {
                 override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
                     if (oldPosition.mediaItem?.mediaId != newPosition.mediaItem?.mediaId) {
-                        save(oldPosition.mediaItem?.mediaId, oldPosition.positionMs, null, reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION)
+                        save(oldPosition.mediaItem?.mediaId, oldPosition.positionMs, null, reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION, stopped = true)
                     }
                 }
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -83,11 +83,13 @@ class AudiobookService : MediaSessionService() {
         }
     }
 
-    private fun saveCurrent(completed: Boolean = false) = save(player.currentMediaItem?.mediaId, player.currentPosition, player.duration.takeIf { it > 0 }, completed)
-    private fun save(id: String?, position: Long, duration: Long?, completed: Boolean) {
+    private fun saveCurrent(completed: Boolean = false) = save(player.currentMediaItem?.mediaId, player.currentPosition, player.duration.takeIf { it > 0 }, completed, stopped = completed)
+    private fun save(id: String?, position: Long, duration: Long?, completed: Boolean, stopped: Boolean = false) {
         if (id.isNullOrBlank()) return
         val locator = JSONObject().put("trackId", id).put("positionMs", position.coerceAtLeast(0)).put("durationMs", duration)
         ProgressWriter.save(library, id, "time", locator, duration?.let { position.toDouble() / it }, completed)
+        LibraryResources.audioEvent?.invoke(top.cylunex.shadowmedia.library.AudioProgressSnapshot(id, position.coerceAtLeast(0), !player.isPlaying,
+            player.isCurrentMediaItemSeekable, player.playbackState == Player.STATE_READY || completed, stopped))
     }
     private fun clearSleep() { sleepDeadline = 0; stopAfterTrack = false; AudioSleep.remaining.value = 0 }
     private suspend fun resolveItem(item: MediaItem): MediaItem {
@@ -109,6 +111,7 @@ class AudiobookService : MediaSessionService() {
         val position = player.currentPosition.coerceAtLeast(0)
         val duration = player.duration.takeIf { it > 0 }
         if (id != null) ProgressWriter.save(library, id, "time", JSONObject().put("trackId", id).put("positionMs", position).put("durationMs", duration), duration?.let { position.toDouble() / it }, player.playbackState == Player.STATE_ENDED)
+        if (id != null) LibraryResources.audioEvent?.invoke(top.cylunex.shadowmedia.library.AudioProgressSnapshot(id, position, true, player.isCurrentMediaItemSeekable, false, true))
         scope.cancel(); clearSleep(); session?.release(); player.release(); super.onDestroy()
     }
 

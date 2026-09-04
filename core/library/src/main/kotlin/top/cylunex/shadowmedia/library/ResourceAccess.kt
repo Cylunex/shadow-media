@@ -17,8 +17,11 @@ object LibraryResources {
     var networkStorage: NetworkStorageRepository? = null
     var pageManifest: (suspend (LibraryAssetEntity) -> List<String>)? = null
     var pageReader: (suspend (LibraryAssetEntity, String, File) -> Unit)? = null
+    var audioEvent: ((AudioProgressSnapshot) -> Unit)? = null
     suspend fun resolve(asset: LibraryAssetEntity): PlaybackCandidate = requireNotNull(resolver) { "来源服务尚未初始化" }(asset)
 }
+
+data class AudioProgressSnapshot(val assetId: String, val positionMs: Long, val paused: Boolean, val canSeek: Boolean, val ready: Boolean, val stopped: Boolean)
 
 /** No preflight probes; one bounded GET. Credentials are reapplied only at their original origin. */
 class ResourceDownloader(private val client: OkHttpClient = OkHttpClient()) {

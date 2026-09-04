@@ -101,16 +101,24 @@ class NativeCatalogRepository(context: Context, private val library: LibraryRepo
     }
     private suspend fun absItem(c: CatalogConnection, id: String) = json(c, api(c, "api", "items", id).newBuilder().addQueryParameter("expanded", "1").addQueryParameter("include", "progress").build())
 
-    suspend fun add(c: CatalogConnection, entry: CatalogEntry): LibraryAssetEntity {
+    suspend fun addQueue(c: CatalogConnection, entries: List<CatalogEntry>): List<LibraryAssetEntity> {
+        require(c.kind == CatalogKind.AUDIOBOOKSHELF && entries.isNotEmpty() && entries.size <= 2000)
+        val bookId = entries.first().locator.substringBefore("::")
+        require(entries.all { it.locator.substringBefore("::") == bookId }) { "队列必须来自同一本书" }
+        val metadata = absItem(c, bookId)
+        return entries.mapIndexed { index, entry -> add(c, entry, metadata, artwork = index == 0) }
+    }
+
+    suspend fun add(c: CatalogConnection, entry: CatalogEntry, metadata: JSONObject? = null, artwork: Boolean = true): LibraryAssetEntity {
         val kind = if (entry.format == "komga") ContentKind.COMIC else contentKindForFile("file.${entry.format}")
         require(kind in setOf(ContentKind.BOOK, ContentKind.COMIC, ContentKind.AUDIOBOOK)) { "尚不支持这个文件格式" }
         val asset = library.addRemote(UnifiedMediaItem(MediaKey(providerId(c), entry.locator), entry.title, kind.name, subtitle = entry.author), entry.format)
         if (library.dao.progress(asset.id) == null) {
-            try { pullInitialProgress(c, asset) }
+            try { pullInitialProgress(c, asset, metadata) }
             catch (e: CancellationException) { throw e }
             catch (_: Exception) { /* Missing progress capability must not prevent consumption. */ }
         }
-        if (entry.cover != null && asset.coverPath.isBlank()) {
+        if (artwork && entry.cover != null && asset.coverPath.isBlank()) {
             val target = File(library.folder(asset.id), "cover.img")
             try {
                 ResourceDownloader(client).download(candidate(c, entry.cover), target, 12L * 1024 * 1024)
@@ -122,7 +130,7 @@ class NativeCatalogRepository(context: Context, private val library: LibraryRepo
     }
 
     /** Only seeds a never-opened resource. Existing local progress/edits are never overwritten. */
-    private suspend fun pullInitialProgress(c: CatalogConnection, asset: LibraryAssetEntity) {
+    private suspend fun pullInitialProgress(c: CatalogConnection, asset: LibraryAssetEntity, metadata: JSONObject? = null) {
         val record = when (c.kind) {
             CatalogKind.KOMGA -> {
                 val book = json(c, api(c, "api", "v1", "books", asset.itemId))
@@ -135,7 +143,7 @@ class NativeCatalogRepository(context: Context, private val library: LibraryRepo
                     completed = read.optBoolean("completed"), updatedAt = System.currentTimeMillis())
             }
             CatalogKind.AUDIOBOOKSHELF -> {
-                val book = absItem(c, asset.itemId.substringBefore("::"))
+                val book = metadata ?: absItem(c, asset.itemId.substringBefore("::"))
                 val read = book.optJSONObject("userMediaProgress") ?: return
                 val tracks = book.getJSONObject("media").optJSONArray("tracks").objects()
                 val track = tracks.firstOrNull { it.optString("ino") == asset.itemId.substringAfter("::") } ?: return
