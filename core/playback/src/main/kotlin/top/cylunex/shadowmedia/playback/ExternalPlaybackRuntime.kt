@@ -88,7 +88,7 @@ class ExternalPlaybackRuntime(
     }
 }
 
-private class RoutingDataSource(
+class RoutingDataSource(
     private val http: DataSource,
     private val networkStorageRepository: NetworkStorageRepository?,
 ) : DataSource {

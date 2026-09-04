@@ -26,6 +26,7 @@ kotlin {
 }
 
 dependencies {
+    implementation(project(":core:database"))
     api(project(":core:model"))
     implementation(project(":core:provider"))
     implementation(libs.androidx.core.ktx)

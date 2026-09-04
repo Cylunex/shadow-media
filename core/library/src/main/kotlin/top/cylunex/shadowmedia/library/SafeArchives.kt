@@ -58,14 +58,21 @@ object SafeArchives {
         return result.toByteArray()
     }
 
-    fun xml(bytes: ByteArray): Document = DocumentBuilderFactory.newInstance().apply {
-        isNamespaceAware = true
-        setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-        setFeature("http://xml.org/sax/features/external-general-entities", false)
-        setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-        isXIncludeAware = false
-        isExpandEntityReferences = false
-    }.newDocumentBuilder().parse(bytes.inputStream())
+    fun xml(bytes: ByteArray): Document {
+        // Android's XML factory does not implement every Xerces feature. Reject DTDs before
+        // parsing and install a rejecting resolver, even when a hardening flag is unsupported.
+        val probe = bytes.toString(Charsets.ISO_8859_1).replace("\u0000", "")
+        require(!probe.contains("<!DOCTYPE", true) && !probe.contains("<!ENTITY", true)) { "不允许 XML 外部实体或 DTD" }
+        val factory = DocumentBuilderFactory.newInstance().apply {
+            isNamespaceAware = true
+            runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
+            runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
+            runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
+            runCatching { isXIncludeAware = false }
+            isExpandEntityReferences = false
+        }
+        return factory.newDocumentBuilder().apply { setEntityResolver { _, _ -> throw org.xml.sax.SAXException("外部 XML 资源被阻止") } }.parse(bytes.inputStream())
+    }
 
     val naturalOrder = Comparator<String> { a, b ->
         val chunks = Regex("\\d+|\\D+")

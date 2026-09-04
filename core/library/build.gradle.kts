@@ -22,4 +22,6 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.1.0")
     implementation("org.jsoup:jsoup:1.21.2")
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20250517")
+    testImplementation("com.squareup.okhttp3:mockwebserver:5.1.0")
 }

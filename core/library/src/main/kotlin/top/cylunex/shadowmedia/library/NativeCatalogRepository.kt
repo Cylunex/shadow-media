@@ -1,0 +1,174 @@
+package top.cylunex.shadowmedia.library
+
+import android.content.Context
+import java.io.File
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.*
+import okhttp3.*
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+import top.cylunex.shadowmedia.database.LibraryAssetEntity
+import top.cylunex.shadowmedia.model.*
+
+class NativeCatalogRepository(context: Context, private val library: LibraryRepository) {
+    val store = CatalogConnectionStore(context)
+    private val client = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+    fun providerId(connection: CatalogConnection) = "catalog:${connection.kind.name}:${connection.id}"
+    fun connection(providerId: String) = requireNotNull(store.load().firstOrNull { providerId(it) == providerId }) { "来源已移除，请重新连接" }
+    private fun api(c: CatalogConnection, vararg segments: String): HttpUrl = c.base().newBuilder().apply {
+        if (!c.base().encodedPath.endsWith('/')) addPathSegment("")
+        segments.forEach(::addPathSegment)
+    }.build()
+    private fun sameOrigin(a: HttpUrl, b: HttpUrl) = a.scheme == b.scheme && a.host == b.host && a.port == b.port
+    private fun credentials(c: CatalogConnection, url: HttpUrl): Map<String, String> {
+        if (!sameOrigin(c.base(), url)) return emptyMap()
+        return when {
+            c.token.isNotBlank() -> if (c.kind == CatalogKind.KOMGA) mapOf("X-API-Key" to c.token) else mapOf("Authorization" to "Bearer ${c.token}")
+            c.username.isNotBlank() -> mapOf("Authorization" to Credentials.basic(c.username, c.password))
+            else -> emptyMap()
+        }
+    }
+    private fun candidate(c: CatalogConnection, url: String) = PlaybackCandidate(url, PlayMethod.DIRECT_PLAY, credentials(c, url.toHttpUrl()), credentialOrigin = c.base().toString())
+    private suspend fun request(c: CatalogConnection, url: HttpUrl, body: JSONObject? = null): ByteArray = withContext(Dispatchers.IO) {
+        require(url.isHttps || c.allowHttp) { "来源包含未经允许的 HTTP 地址" }
+        require(url.username.isBlank() && url.password.isBlank())
+        val scoped = client.newBuilder().addNetworkInterceptor { chain ->
+            val req = chain.request(); val builder = req.newBuilder()
+            if (body != null && !sameOrigin(c.base(), req.url)) throw java.io.IOException("拒绝跨域发送阅读进度")
+            if (!sameOrigin(c.base(), req.url)) listOf("Authorization", "Cookie", "X-API-Key").forEach(builder::removeHeader)
+            if (!req.url.isHttps && !c.allowHttp) throw java.io.IOException("重定向使用未经允许的 HTTP")
+            chain.proceed(builder.build())
+        }.build()
+        val call = scoped.newCall(Request.Builder().url(url).apply {
+            credentials(c, url).forEach { (k, v) -> header(k, v) }
+            if (body != null) { require(sameOrigin(c.base(), url)); patch(body.toString().toRequestBody("application/json".toMediaType())) }
+        }.build())
+        val cancellation = launch { try { awaitCancellation() } finally { call.cancel() } }
+        try { call.execute().use { response ->
+            require(response.isSuccessful) { "来源请求失败 HTTP ${response.code}" }
+            response.body?.byteStream()?.use { SafeArchives.readBounded(it, 8L * 1024 * 1024) } ?: byteArrayOf()
+        } } finally { cancellation.cancel() }
+    }
+    private suspend fun json(c: CatalogConnection, url: HttpUrl) = JSONObject(request(c, url).toString(Charsets.UTF_8))
+    private fun JSONArray?.objects() = this?.let { (0 until length()).mapNotNull { optJSONObject(it) } }.orEmpty()
+
+    suspend fun browse(c: CatalogConnection, node: String? = null, next: String? = null, query: String = ""): CatalogPage = when (c.kind) {
+        CatalogKind.OPDS -> {
+            val url = (next ?: node ?: c.url).toHttpUrl()
+            OpdsCatalog.parse(request(c, url), url.toString())
+        }
+        CatalogKind.KOMGA -> {
+            val page = next?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+            val url = api(c, "api", "v1", "books").newBuilder().addQueryParameter("page", page.toString()).addQueryParameter("size", "60").apply { if (query.isNotBlank()) addQueryParameter("search", query) }.build()
+            val data = json(c, url)
+            CatalogPage(c.name, data.optJSONArray("content").objects().map { book ->
+                val metadata = book.optJSONObject("metadata"); val id = book.getString("id")
+                CatalogEntry(id, metadata?.optString("title")?.ifBlank { null } ?: book.optString("name"),
+                    metadata?.optJSONArray("authors").objects().joinToString("、") { it.optString("name") }, format = "komga",
+                    cover = api(c, "api", "v1", "books", id, "thumbnail").toString())
+            }, if (!data.optBoolean("last", true)) (page + 1).toString() else null)
+        }
+        CatalogKind.AUDIOBOOKSHELF -> {
+            when {
+                node == null -> {
+                    val data = json(c, api(c, "api", "libraries"))
+                    CatalogPage(c.name, data.optJSONArray("libraries").objects().filter { it.optString("mediaType") == "book" }.map { CatalogEntry(it.getString("id"), it.optString("name"), navigation = "library:${it.getString("id")}") })
+                }
+                node.startsWith("library:") -> {
+                    val page = next?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+                    val data = json(c, api(c, "api", "libraries", node.removePrefix("library:"), "items").newBuilder().addQueryParameter("limit", "60").addQueryParameter("page", page.toString()).build())
+                    CatalogPage(c.name, data.optJSONArray("results").objects().map { book ->
+                        val meta = book.optJSONObject("media")?.optJSONObject("metadata")
+                        CatalogEntry(book.getString("id"), meta?.optString("title").orEmpty(), meta?.optString("authorName").orEmpty(), navigation = "item:${book.getString("id")}")
+                    }, if ((page + 1) * 60 < data.optInt("total")) (page + 1).toString() else null)
+                }
+                node.startsWith("item:") -> {
+                    val id = node.removePrefix("item:"); val data = absItem(c, id); val media = data.getJSONObject("media")
+                    val meta = media.getJSONObject("metadata")
+                    val tracks = media.optJSONArray("tracks").objects().ifEmpty { media.optJSONArray("audioFiles").objects().filterNot { it.optBoolean("exclude") } }
+                    CatalogPage(meta.optString("title"), tracks.map { track ->
+                        val metadata = track.optJSONObject("metadata")
+                        CatalogEntry("$id::${track.getString("ino")}", track.optString("title").ifBlank { metadata?.optString("filename").orEmpty() }, meta.optString("title"),
+                            OpdsCatalog.format(track.optString("mimeType"), metadata?.optString("filename").orEmpty()).ifBlank { "m4b" }, cover = api(c, "api", "items", id, "cover").toString())
+                    })
+                }
+                else -> error("未知的听书目录")
+            }
+        }
+    }
+    private suspend fun absItem(c: CatalogConnection, id: String) = json(c, api(c, "api", "items", id).newBuilder().addQueryParameter("expanded", "1").build())
+
+    suspend fun add(c: CatalogConnection, entry: CatalogEntry): LibraryAssetEntity {
+        val kind = if (entry.format == "komga") ContentKind.COMIC else contentKindForFile("file.${entry.format}")
+        require(kind in setOf(ContentKind.BOOK, ContentKind.COMIC, ContentKind.AUDIOBOOK)) { "尚不支持这个文件格式" }
+        val asset = library.addRemote(UnifiedMediaItem(MediaKey(providerId(c), entry.locator), entry.title, kind.name, subtitle = entry.author), entry.format)
+        if (entry.cover != null && asset.coverPath.isBlank()) {
+            val target = File(library.folder(asset.id), "cover.img")
+            try {
+                ResourceDownloader(client).download(candidate(c, entry.cover), target, 12L * 1024 * 1024)
+                return asset.copy(coverPath = target.path).also { library.dao.putAsset(it) }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { /* A cover must not block opening the work. */ }
+        }
+        return asset
+    }
+    suspend fun resolve(asset: LibraryAssetEntity): PlaybackCandidate {
+        val c = connection(asset.providerId)
+        return when (c.kind) {
+            CatalogKind.OPDS -> {
+                val (catalog, id) = OpdsCatalog.decodeLocator(asset.itemId)
+                val entry = browse(c, catalog).entries.firstOrNull { it.id == id && it.format == asset.format } ?: error("目录条目已变更，请重新加入")
+                candidate(c, requireNotNull(entry.acquisition))
+            }
+            CatalogKind.KOMGA -> candidate(c, api(c, "api", "v1", "books", asset.itemId, "file").toString())
+            CatalogKind.AUDIOBOOKSHELF -> {
+                val book = asset.itemId.substringBefore("::"); val ino = asset.itemId.substringAfter("::")
+                val media = absItem(c, book).getJSONObject("media")
+                require(media.optJSONArray("audioFiles").objects().any { it.optString("ino") == ino && !it.optBoolean("exclude") }) { "音频文件已替换，请刷新本书目录" }
+                candidate(c, api(c, "api", "items", book, "file", ino).toString())
+            }
+        }
+    }
+    suspend fun pages(asset: LibraryAssetEntity): List<String> {
+        val c = connection(asset.providerId); require(c.kind == CatalogKind.KOMGA)
+        val data = JSONArray(request(c, api(c, "api", "v1", "books", asset.itemId, "pages")).toString(Charsets.UTF_8))
+        require(data.length() in 1..30000)
+        return (0 until data.length()).map { data.getJSONObject(it).optInt("number", it + 1).toString() }
+    }
+    suspend fun page(asset: LibraryAssetEntity, number: String, target: File) {
+        val c = connection(asset.providerId); require(c.kind == CatalogKind.KOMGA)
+        require(number.toInt() > 0)
+        ResourceDownloader(client).download(candidate(c, api(c, "api", "v1", "books", asset.itemId, "pages", number).toString()), target, SafeArchives.MAX_ENTRY_BYTES)
+    }
+
+    suspend fun flush() {
+        for (c in store.load().filter { it.kind != CatalogKind.OPDS }) {
+            for (operation in library.dao.pending(providerId(c))) {
+                if (operation.nextAttemptAt > System.currentTimeMillis()) continue
+                try {
+                    val asset = library.dao.asset(operation.target)
+                    if (asset == null) { library.dao.acknowledge(operation.id); continue }
+                    val progress = JSONObject(operation.payload)
+                    when (c.kind) {
+                        CatalogKind.KOMGA -> request(c, api(c, "api", "v1", "books", asset.itemId, "read-progress"), JSONObject().put("page", progress.optInt("pageIndex") + 1).put("completed", progress.optBoolean("completed")))
+                        CatalogKind.AUDIOBOOKSHELF -> {
+                            val id = asset.itemId.substringBefore("::"); val ino = asset.itemId.substringAfter("::")
+                            val media = absItem(c, id).getJSONObject("media")
+                            val track = media.optJSONArray("tracks").objects().firstOrNull { it.optString("ino") == ino } ?: error("远端轨道已更换，保留本地进度")
+                            val duration = media.optDouble("duration")
+                            val seconds = track.optDouble("startOffset", 0.0) + progress.optLong("positionMs") / 1000.0
+                            require(duration.isFinite() && duration > 0)
+                            request(c, api(c, "api", "me", "progress", id), JSONObject().put("currentTime", seconds).put("duration", duration).put("progress", (seconds / duration).coerceIn(0.0, 1.0)))
+                        }
+                        else -> Unit
+                    }
+                    library.dao.acknowledge(operation.id)
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { library.dao.retry(operation.id, System.currentTimeMillis() + 30_000L * (operation.attempts + 1).coerceAtMost(10)) }
+            }
+        }
+    }
+}

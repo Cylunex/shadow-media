@@ -28,6 +28,8 @@ import org.readium.r2.navigator.epub.*
 import org.readium.r2.navigator.util.DirectionalNavigationAdapter
 import org.readium.r2.navigator.preferences.Theme
 import org.readium.r2.shared.publication.*
+import org.readium.r2.shared.publication.services.search.search
+import org.readium.r2.shared.publication.services.search.SearchIterator
 import org.readium.r2.shared.util.asset.AssetRetriever
 import org.readium.r2.shared.util.getOrElse
 import org.readium.r2.shared.util.http.DefaultHttpClient
@@ -47,6 +49,9 @@ class ReaderActivity : FragmentActivity() {
     private var locator by mutableStateOf<Locator?>(null)
     private var prefs by mutableStateOf(EpubPreferences())
     private var initial: Locator? = null
+    private var aloud: ReadAloud? = null
+    private var narrating by mutableStateOf(false)
+    private var searchJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // The factory requires an asynchronously opened publication. Restore our versioned Locator,
@@ -112,10 +117,17 @@ class ReaderActivity : FragmentActivity() {
             background = Color(0xFFF2E9D6), surface = Color(0xFFF2E9D6), primary = Color(0xFF755F39), onSurface = Color(0xFF342D22))) {
             var panel by remember { mutableStateOf<String?>(null) }
             var message by remember { mutableStateOf<String?>(null) }
+            var searchQuery by remember { mutableStateOf("") }
+            var matches by remember { mutableStateOf<List<Locator>>(emptyList()) }
+            var searching by remember { mutableStateOf(false) }
+            var searchIterator by remember { mutableStateOf<SearchIterator?>(null) }
+            var hasMore by remember { mutableStateOf(false) }
             val scope = rememberCoroutineScope()
+            DisposableEffect(searchIterator) { val iterator = searchIterator; onDispose { iterator?.close() } }
             Scaffold(topBar = { TopAppBar(title = { Text(asset?.title ?: "阅读", maxLines = 1, overflow = TextOverflow.Ellipsis) }, navigationIcon = {
                 IconButton(onClick = { finish() }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回书架") }
             }, actions = {
+                IconButton(onClick = { panel = "搜索" }) { Icon(Icons.Rounded.Search, "全文搜索") }
                 IconButton(onClick = { panel = "目录" }) { Icon(Icons.Rounded.FormatListBulleted, "目录") }
                 IconButton(onClick = { panel = "书签" }) { Icon(Icons.Rounded.Bookmarks, "书签") }
                 IconButton(onClick = { panel = "排版" }) { Icon(Icons.Rounded.TextFields, "排版") }
@@ -127,6 +139,17 @@ class ReaderActivity : FragmentActivity() {
                         if (location != null) asset?.let { library.bookmark(it.id, location.toJSON().toString(), location.text.highlight ?: location.title ?: "书签"); message = "已保存书签或选中文本" }
                     } }) { Text("${((locator?.locations?.totalProgression ?: 0.0) * 100).toInt()}% · 标记") }
                     IconButton(onClick = { navigator?.goForward() }) { Icon(Icons.AutoMirrored.Rounded.NavigateNext, "下一页") }
+                    IconButton(onClick = {
+                        if (narrating) aloud?.stop() else scope.launch {
+                            try {
+                                narrating = true
+                                val reader = aloud ?: ReadAloud(this@ReaderActivity).also { aloud = it }
+                                publication?.let { reader.read(it, locator) { location -> navigator?.go(location) } }
+                            } catch (e: CancellationException) { throw e }
+                            catch (e: Exception) { message = e.message ?: "朗读失败" }
+                            finally { narrating = false }
+                        }
+                    }) { Icon(if (narrating) Icons.Rounded.Stop else Icons.Rounded.RecordVoiceOver, if (narrating) "停止朗读" else "离线朗读，退出阅读时停止") }
                 }
             }) { padding ->
                 Box(Modifier.fillMaxSize().padding(padding)) {
@@ -141,6 +164,36 @@ class ReaderActivity : FragmentActivity() {
                 Column(Modifier.fillMaxWidth().padding(20.dp)) {
                     Text(panel!!, style = MaterialTheme.typography.titleLarge)
                     when (panel) {
+                        "搜索" -> {
+                            OutlinedTextField(searchQuery, { searchQuery = it }, Modifier.fillMaxWidth(), placeholder = { Text("输入书中内容") }, singleLine = true)
+                            TextButton(enabled = searchQuery.isNotBlank(), onClick = {
+                                searchJob?.cancel()
+                                searchJob = scope.launch {
+                                    searching = true; matches = emptyList(); searchIterator = null; hasMore = false
+                                    try {
+                                        val iterator = publication?.search(searchQuery.trim()) ?: error("本书不支持全文搜索")
+                                        searchIterator = iterator
+                                        val page = withContext(Dispatchers.IO) { iterator.next().getOrElse { error("搜索失败") } }
+                                        matches = page?.locators.orEmpty(); hasMore = page != null
+                                    } catch (e: CancellationException) { throw e }
+                                    catch (e: Exception) { message = e.message }
+                                    finally { searching = false }
+                                }
+                            }) { Text("搜索") }
+                            if (searching) LinearProgressIndicator(Modifier.fillMaxWidth())
+                            LazyColumn(Modifier.heightIn(max = 380.dp)) { items(matches) { found ->
+                                TextButton(onClick = { navigator?.go(found); panel = null }) { Text(listOfNotNull(found.text.before, found.text.highlight, found.text.after).joinToString(""), maxLines = 3) }
+                            } }
+                            if (hasMore) TextButton(enabled = !searching, onClick = { searchJob = scope.launch {
+                                searching = true
+                                try {
+                                    val page = withContext(Dispatchers.IO) { searchIterator?.next()?.getOrElse { error("搜索失败") } }
+                                    matches = matches + page?.locators.orEmpty(); hasMore = page != null
+                                } catch (e: CancellationException) { throw e }
+                                catch (e: Exception) { message = e.message }
+                                finally { searching = false }
+                            } }) { Text("更多结果") }
+                        }
                         "目录" -> LazyColumn(Modifier.heightIn(max = 480.dp)) {
                             fun flatten(links: List<Link>): List<Link> = links.flatMap { listOf(it) + flatten(it.children) }
                             items(flatten(publication?.tableOfContents.orEmpty()).ifEmpty { publication?.readingOrder.orEmpty() }) { link ->
@@ -170,5 +223,6 @@ class ReaderActivity : FragmentActivity() {
             message?.let { AlertDialog(onDismissRequest = { message = null }, text = { Text(it) }, confirmButton = { TextButton(onClick = { message = null }) { Text("确定") } }) }
         }
     }
-    override fun onDestroy() { super.onDestroy(); publication?.close() }
+    override fun onStop() { aloud?.stop(); super.onStop() }
+    override fun onDestroy() { searchJob?.cancel(); aloud?.close(); super.onDestroy(); publication?.close() }
 }

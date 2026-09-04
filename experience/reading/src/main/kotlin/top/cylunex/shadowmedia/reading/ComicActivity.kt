@@ -53,10 +53,11 @@ class ComicActivity : ComponentActivity() {
         lifecycleScope.launch {
             try {
                 val item = requireNotNull(intent.getStringExtra("assetId")?.let { library.dao.asset(it) }) { "文件已移除" }
-                val source = library.localFile(item)
+                val source = if (item.format == "komga") null else library.localFile(item)
                 val manifest = withContext(Dispatchers.IO) {
-                    if (item.format == "pdf") PdfRenderer(ParcelFileDescriptor.open(source, ParcelFileDescriptor.MODE_READ_ONLY)).use { renderer -> List(renderer.pageCount) { it.toString() } }
-                    else { SafeArchives.validate(source); LibraryRepository.comicPages(source) }
+                    if (item.format == "komga") requireNotNull(LibraryResources.pageManifest)(item)
+                    else if (item.format == "pdf") PdfRenderer(ParcelFileDescriptor.open(requireNotNull(source), ParcelFileDescriptor.MODE_READ_ONLY)).use { renderer -> List(renderer.pageCount) { it.toString() } }
+                    else { SafeArchives.validate(requireNotNull(source)); LibraryRepository.comicPages(source) }
                 }
                 require(manifest.isNotEmpty()) { "未找到可显示的页面" }
                 val progress = library.dao.progress(item.id)?.let { runCatching { JSONObject(it.locatorJson) }.getOrNull() }
@@ -187,11 +188,15 @@ class ComicActivity : ComponentActivity() {
         DisposableEffect(local) { onDispose { local?.delete() } }
     }
 
-    private fun preparePage(index: Int): File {
-        val source = requireNotNull(file)
+    private suspend fun preparePage(index: Int): File {
         val directory = File(cacheDir, "comic-pages").apply { mkdirs() }
         val result = File.createTempFile("page-", ".img", directory)
         try {
+            if (asset?.format == "komga") {
+                requireNotNull(LibraryResources.pageReader)(requireNotNull(asset), pages[index], result)
+                return result
+            }
+            val source = requireNotNull(file)
             if (asset?.format == "pdf") {
                 PdfRenderer(ParcelFileDescriptor.open(source, ParcelFileDescriptor.MODE_READ_ONLY)).use { renderer -> renderer.openPage(index).use { page ->
                     val ratio = minOf(2048f / page.width, 2048f / page.height, 2f)

@@ -123,6 +123,7 @@ data class MainUiState(
     val discoverResults: List<UnifiedMediaItem> = emptyList(),
     val providerSearchFailures: List<ProviderSearchFailure> = emptyList(),
     val selectedUnifiedDetail: MediaDetail? = null,
+    val pendingPublication: UnifiedMediaItem? = null,
     val providerDetailBackStack: List<MediaDetail> = emptyList(),
     val providerDetailReturnScreen: Screen = Screen.DISCOVER,
     val isSearchingProviders: Boolean = false,
@@ -676,7 +677,7 @@ class MainViewModel(
 
     fun searchProviders() {
         val query = state.value.discoverQuery.trim()
-        if (query.isEmpty() || state.value.isSearchingProviders) return
+        if (query.isEmpty()) return
         providerSearchRequest?.cancel()
         providerSearchRequest = viewModelScope.launch {
             update {
@@ -688,22 +689,17 @@ class MainViewModel(
                 )
             }
             localMediaState.addSearch(query)
-            runCatching {
-                aggregateSearchEngine.search(
+            try {
+                aggregateSearchEngine.searchSnapshots(
                     providerRegistry.providers.first(),
                     ProviderSearchRequest(query = query, pageSize = 60),
-                )
-            }.onSuccess { result ->
-                update {
-                    copy(
-                        discoverResults = result.items,
-                        providerSearchFailures = result.failures,
-                        isSearchingProviders = false,
-                    )
+                ).collect { result ->
+                    update { copy(discoverResults = result.items, providerSearchFailures = result.failures, isSearchingProviders = result.pendingProviderIds.isNotEmpty()) }
                 }
-            }.onFailure {
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) {
                 update { copy(isSearchingProviders = false) }
-                showError(it)
+                showError(e)
             }
         }
     }
@@ -732,6 +728,11 @@ class MainViewModel(
     }
 
     fun playUnifiedItem(item: UnifiedMediaItem) {
+        if (top.cylunex.shadowmedia.model.contentKind(item.type) in setOf(
+                top.cylunex.shadowmedia.model.ContentKind.BOOK, top.cylunex.shadowmedia.model.ContentKind.COMIC, top.cylunex.shadowmedia.model.ContentKind.AUDIOBOOK)) {
+            update { copy(pendingPublication = item) }
+            return
+        }
         val provider = providerRegistry.provider(item.key.providerId) ?: return
         if (provider is EmbyMediaProvider) {
             val embyItem = provider.mediaItem(item.key) ?: item.toEmbyMediaItem()
@@ -785,6 +786,8 @@ class MainViewModel(
     fun setFeatureEnabled(feature: FeatureId, enabled: Boolean) {
         viewModelScope.launch { localMediaState.setFeatureEnabled(feature, enabled) }
     }
+
+    fun clearPendingPublication() = update { copy(pendingPublication = null) }
 
     fun selectLibrary(library: MediaLibrary) {
         update {

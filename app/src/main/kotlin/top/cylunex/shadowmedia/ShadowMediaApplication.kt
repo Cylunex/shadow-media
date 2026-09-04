@@ -37,10 +37,12 @@ import top.cylunex.shadowmedia.model.MediaItem
 
 class ShadowMediaApplication : Application() {
     val container: AppContainer by lazy { AppContainer(this) }
+    override fun onCreate() { super.onCreate(); container.initializeLibraryResources() }
 }
 
 class AppContainer(application: Application) {
     val library = top.cylunex.shadowmedia.library.LibraryRepository(application)
+    val catalogs = top.cylunex.shadowmedia.library.NativeCatalogRepository(application, library)
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val database = ShadowMediaDatabase.create(application)
     val localMediaState = LocalMediaStateRepository(database.dao())
@@ -76,6 +78,34 @@ class AppContainer(application: Application) {
     val networkStorageRepository = DefaultNetworkStorageRepository(application, externalClient) { providerId, itemId ->
         localMediaState.history("$providerId:$itemId")?.let { history ->
             (if (history.completed) 0L else history.positionMs) to history.completed
+        }
+    }
+
+    fun initializeLibraryResources() {
+        top.cylunex.shadowmedia.library.LibraryResources.networkStorage = networkStorageRepository
+        top.cylunex.shadowmedia.library.LibraryResources.pageManifest = catalogs::pages
+        top.cylunex.shadowmedia.library.LibraryResources.pageReader = catalogs::page
+        applicationScope.launch {
+            while (true) {
+                try { catalogs.flush() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { /* Keep persisted operations for reconnect. */ }
+                kotlinx.coroutines.delay(30_000)
+            }
+        }
+        top.cylunex.shadowmedia.library.LibraryResources.resolver = { asset ->
+            val key = top.cylunex.shadowmedia.model.MediaKey(asset.providerId, asset.itemId)
+            val candidates = when {
+                asset.providerId.startsWith("catalog:") -> listOf(catalogs.resolve(asset))
+                asset.providerId.startsWith("storage:") -> {
+                    val connection = requireNotNull(networkStorageStore.loadAll().firstOrNull { "storage:${it.id}" == asset.providerId }) { "网络存储连接已移除" }
+                    networkStorageRepository.provider(connection).resolve(top.cylunex.shadowmedia.model.UnifiedPlaybackRequest(key))
+                }
+                asset.providerId.startsWith("emby:") -> {
+                    val session = requireNotNull(sessionStore.loadAll().firstOrNull { "emby:${it.serverId}:${it.userId}" == asset.providerId }) { "Emby 账号已移除" }
+                    embyRepository.playbackPlan(session, asset.itemId).candidates
+                }
+                else -> requireNotNull(providerRegistry.provider(asset.providerId)) { "来源不可用，请重新连接" }.resolve(top.cylunex.shadowmedia.model.UnifiedPlaybackRequest(key))
+            }
+            requireNotNull(candidates.firstOrNull()) { "来源没有返回资源" }
         }
     }
 

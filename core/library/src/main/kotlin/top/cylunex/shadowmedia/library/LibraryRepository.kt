@@ -24,6 +24,20 @@ class LibraryRepository(context: Context) {
     val progress = dao.progress()
     private val root = File(this.context.filesDir, "publications").apply { mkdirs() }
 
+    suspend fun addRemote(item: UnifiedMediaItem, format: String): LibraryAssetEntity {
+        val id = digest("${item.key.providerId.length}:${item.key.providerId}:${item.key.itemId}")
+        return dao.asset(id) ?: LibraryAssetEntity(id, item.key.providerId, item.key.itemId, item.title,
+            author = item.subtitle.orEmpty(), kind = contentKind(item.type).name, format = format, addedAt = System.currentTimeMillis()).also { dao.putAsset(it) }
+    }
+
+    suspend fun fetchRemote(asset: LibraryAssetEntity, candidate: PlaybackCandidate, onProgress: (Long, Long?) -> Unit = { _, _ -> }): LibraryAssetEntity {
+        val temp = File.createTempFile("resource-", ".part", folder(asset.id))
+        return try {
+            ResourceDownloader().download(candidate, temp, onProgress = onProgress)
+            importPrepared(asset.id, asset.providerId, asset.itemId, "${asset.title}.${asset.format}", asset.format, temp)
+        } finally { temp.delete() }
+    }
+
     suspend fun importDocument(uri: Uri): LibraryAssetEntity = withContext(Dispatchers.IO) {
         require(uri.scheme == "content") { "请使用系统文件选择器" }
         val name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
@@ -136,8 +150,13 @@ class LibraryRepository(context: Context) {
     }
 
     suspend fun saveProgress(id: String, type: String, locator: JSONObject, fraction: Double? = null, completed: Boolean = false) {
-        dao.putProgress(ContentProgressEntity(id, locatorType = type, locatorJson = locator.toString(),
-            progression = fraction?.takeIf(Double::isFinite)?.coerceIn(0.0, 1.0), completed = completed, updatedAt = System.currentTimeMillis()))
+        val record = ContentProgressEntity(id, locatorType = type, locatorJson = locator.toString(),
+            progression = fraction?.takeIf(Double::isFinite)?.coerceIn(0.0, 1.0), completed = completed, updatedAt = System.currentTimeMillis())
+        val asset = dao.asset(id)
+        val operation = asset?.takeIf { it.providerId.startsWith("catalog:KOMGA:") || it.providerId.startsWith("catalog:AUDIOBOOKSHELF:") }?.let {
+            SyncOperationEntity(UUID.randomUUID().toString(), it.providerId, id, "progress", JSONObject(locator.toString()).put("completed", completed).toString(), System.currentTimeMillis())
+        }
+        dao.saveAndEnqueue(record, operation)
     }
 
     suspend fun bookmark(id: String, locator: String, note: String) = dao.putAnnotation(

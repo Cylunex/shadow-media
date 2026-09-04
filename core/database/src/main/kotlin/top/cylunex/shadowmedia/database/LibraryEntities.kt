@@ -86,6 +86,10 @@ interface LibraryDao {
     }
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun enqueue(operation: SyncOperationEntity)
+    @Transaction suspend fun enqueueCoalesced(operation: SyncOperationEntity, coalesce: Boolean) {
+        if (coalesce) removeSuperseded(operation.scope, operation.target, operation.kind)
+        enqueue(operation)
+    }
     @Query("SELECT * FROM sync_operations WHERE scope = :scope ORDER BY createdAt, id")
     suspend fun pending(scope: String): List<SyncOperationEntity>
     @Query("SELECT COUNT(*) FROM sync_operations")

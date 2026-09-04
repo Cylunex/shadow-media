@@ -9,6 +9,12 @@ import android.os.Bundle
 import android.os.SystemClock
 import androidx.media3.common.*
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
+import okhttp3.OkHttpClient
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import androidx.media3.session.*
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -19,6 +25,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import top.cylunex.shadowmedia.library.LibraryRepository
+import top.cylunex.shadowmedia.library.LibraryResources
+import top.cylunex.shadowmedia.model.PlaybackCandidate
+import top.cylunex.shadowmedia.playback.RoutingDataSource
 
 /** UI/controller never owns the player. Progress is captured before changing tracks. */
 class AudiobookService : MediaSessionService() {
@@ -32,7 +41,8 @@ class AudiobookService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         library = LibraryRepository(this)
-        player = ExoPlayer.Builder(this).build().apply {
+        val factory = DefaultMediaSourceFactory(DataSource.Factory { LibraryAudioDataSource(this, library) })
+        player = ExoPlayer.Builder(this).setMediaSourceFactory(factory).build().apply {
             setAudioAttributes(AudioAttributes.Builder().setContentType(C.AUDIO_CONTENT_TYPE_SPEECH).setUsage(C.USAGE_MEDIA).build(), true)
             setHandleAudioBecomingNoisy(true)
             setWakeMode(C.WAKE_MODE_LOCAL)
@@ -79,6 +89,17 @@ class AudiobookService : MediaSessionService() {
         scope.launch { library.saveProgress(id, "time", locator, duration?.let { position.toDouble() / it }, completed) }
     }
     private fun clearSleep() { sleepDeadline = 0; stopAfterTrack = false; AudioSleep.remaining.value = 0 }
+    private suspend fun resolveItem(item: MediaItem): MediaItem {
+        val asset = requireNotNull(library.dao.asset(item.mediaId)) { "音频已从书库移除" }
+        require(asset.kind == "AUDIOBOOK")
+        // Resolve remote URLs only when that track is actually opened by the loader, not for the
+        // entire queue. Signed URLs must not expire while waiting behind hundreds of other tracks.
+        val uri = Uri.parse(asset.localUri.ifBlank { "shadow-audio://${asset.id}/audio.${asset.format}" })
+        require(uri.scheme in setOf("content", "file", "shadow-audio"))
+        if (uri.scheme == "file") library.localFile(asset)
+        return item.buildUpon().setUri(uri).setMediaMetadata(MediaMetadata.Builder().setTitle(asset.title).setArtist(asset.author)
+            .setArtworkUri(asset.coverPath.takeIf(String::isNotBlank)?.let { Uri.fromFile(java.io.File(it)) }).build()).build()
+    }
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
     override fun onTaskRemoved(rootIntent: android.content.Intent?) { if (!player.playWhenReady) stopSelf() }
     override fun onDestroy() {
@@ -107,15 +128,7 @@ class AudiobookService : MediaSessionService() {
             val future = SettableFuture.create<List<MediaItem>>()
             val job = scope.launch {
                 try {
-                    val resolved = mediaItems.take(2000).map { item ->
-                        val asset = requireNotNull(library.dao.asset(item.mediaId)) { "音频已从书库移除" }
-                        require(asset.kind == "AUDIOBOOK")
-                        val uri = Uri.parse(asset.localUri)
-                        require(uri.scheme in setOf("content", "file")) { "请先导入可离线读取的音频" }
-                        if (uri.scheme == "file") library.localFile(asset)
-                        item.buildUpon().setUri(uri).setMediaMetadata(MediaMetadata.Builder().setTitle(asset.title).setArtist(asset.author)
-                            .setArtworkUri(asset.coverPath.takeIf(String::isNotBlank)?.let { Uri.fromFile(java.io.File(it)) }).build()).build()
-                    }
+                    val resolved = mediaItems.take(2000).map { item -> resolveItem(item) }
                     future.set(resolved)
                 } catch (e: Exception) { future.setException(e) }
             }

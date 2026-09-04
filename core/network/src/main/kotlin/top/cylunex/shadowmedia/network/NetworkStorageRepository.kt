@@ -666,7 +666,12 @@ private class NetworkStorageMediaProvider(
         return UnifiedMediaItem(
             key = MediaKey(descriptor.id, file.path),
             title = nfo?.title ?: cleanTitle(file.name.substringBeforeLast('.')),
-            type = if (file.extension() == "strm") "Strm" else "Video",
+            type = when (top.cylunex.shadowmedia.model.contentKindForFile(file.name)) {
+                top.cylunex.shadowmedia.model.ContentKind.BOOK -> "Book"
+                top.cylunex.shadowmedia.model.ContentKind.COMIC -> "Comic"
+                top.cylunex.shadowmedia.model.ContentKind.AUDIOBOOK -> "AudioBook"
+                else -> if (file.extension() == "strm") "Strm" else "Video"
+            },
             subtitle = listOfNotNull(episode.takeIf(String::isNotBlank), file.extension().uppercase()).joinToString(" · "),
             overview = nfo?.plot,
             posterUrl = poster,
@@ -846,7 +851,8 @@ private fun InputStream.skipFully(position: Long) {
 private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 private val XML_MEDIA_TYPE = "application/xml; charset=utf-8".toMediaType()
 private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
-private val PLAYABLE_EXTENSIONS = setOf("mp4", "mkv", "avi", "mov", "m4v", "ts", "m2ts", "webm", "flv", "wmv", "mpg", "mpeg", "iso", "strm")
+private val PLAYABLE_EXTENSIONS = setOf("mp4", "mkv", "avi", "mov", "m4v", "ts", "m2ts", "webm", "flv", "wmv", "mpg", "mpeg", "iso", "strm",
+    "epub", "txt", "pdf", "cbz", "zip", "m4b", "m4a", "mp3", "aac", "ogg", "opus", "flac", "wav")
 private val SAFE_STRM_HEADERS = setOf("User-Agent", "Referer", "Origin")
 private const val WEBDAV_PROPFIND = """<?xml version="1.0" encoding="utf-8" ?>
 <d:propfind xmlns:d="DAV:"><d:prop><d:displayname/><d:resourcetype/><d:getcontentlength/><d:getlastmodified/></d:prop></d:propfind>"""

@@ -63,6 +63,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     var message by remember { mutableStateOf<String?>(null) }
     var importing by remember { mutableStateOf<String?>(null) }
     var importJob by remember { mutableStateOf<Job?>(null) }
+    var catalogScreen by rememberSaveable { mutableStateOf(false) }
     val playerScreen = state.screen in setOf(Screen.PLAYER, Screen.EXTERNAL_PLAYER)
     val television = LocalConfiguration.current.uiMode and Configuration.UI_MODE_TYPE_MASK == Configuration.UI_MODE_TYPE_TELEVISION
     DisposableEffect(Unit) {
@@ -85,12 +86,30 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             if (control == null) { message = "音频服务正在连接，请稍后重试"; return }
             scope.launch {
                 try {
-                    AudiobookController.play(context, control, assets.filter { it.kind == "AUDIOBOOK" }.sortedWith(compareBy { it.title }).map { it.id }, item.id)
+                    AudiobookController.play(context, control, listOf(item.id), item.id)
                     audioExpanded = true
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { message = "无法打开音频，请检查文件授权或重新导入" }
             }
         } else {
+            if (item.format == "komga") {
+                context.startActivity(Intent(context, ComicActivity::class.java).putExtra("assetId", item.id))
+                return
+            }
+            if (item.localUri.isBlank()) {
+                scope.launch {
+                    try {
+                        importing = "准备保存到本机，完成后离线阅读"
+                        val candidate = top.cylunex.shadowmedia.library.LibraryResources.resolve(item)
+                        val saved = container.library.fetchRemote(item, candidate) { read, total -> importing = "已下载 ${read / 1024 / 1024} MiB" + (total?.let { " / ${it / 1024 / 1024} MiB" } ?: "") }
+                        val target = if (saved.kind == "COMIC" || saved.format == "pdf") ComicActivity::class.java else ReaderActivity::class.java
+                        context.startActivity(Intent(context, target).putExtra("assetId", saved.id))
+                    } catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { message = "资源获取失败，请检查来源连接、权限和文件格式" }
+                    finally { importing = null }
+                }.also { importJob = it }
+                return
+            }
             val target = if (item.kind == "COMIC" || item.format == "pdf") ComicActivity::class.java else ReaderActivity::class.java
             context.startActivity(Intent(context, target).putExtra("assetId", item.id))
         }
@@ -114,7 +133,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             }
         }
     }
-    fun select(index: Int) { tab = index; audioExpanded = false; viewModel.showHome() }
+    fun select(index: Int) { tab = index; audioExpanded = false; catalogScreen = false; viewModel.showHome() }
     if (playerScreen) { LegacyMediaRoot(viewModel, container); return }
     BackHandler(enabled = audioExpanded) { audioExpanded = false }
     Scaffold(bottomBar = {
@@ -134,6 +153,14 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             Box(Modifier.weight(1f)) {
                 when {
                     audioExpanded -> AudioNowPlaying(audioState, controller, assets, container.library, onBack = { audioExpanded = false })
+                    catalogScreen -> CatalogSourcesScreen(container.catalogs, onBack = { catalogScreen = false }, onOpen = ::open, onQueue = { tracks ->
+                        val control = controller
+                        if (control != null && tracks.isNotEmpty()) scope.launch {
+                            val selected = tracks.firstOrNull { track -> progress.firstOrNull { it.assetId == track.id }?.completed != true } ?: tracks.first()
+                            AudiobookController.play(context, control, tracks.map { it.id }, selected.id)
+                            audioExpanded = true
+                        }
+                    })
                     tab == 2 || tab == 3 -> PublicationShelf(assets, progress, audio = tab == 3, onImport = { importer.launch(arrayOf("*/*")) }, onOpen = ::open,
                         onFavorite = { item -> scope.launch { container.library.dao.favorite(item.id, !item.favorite) } },
                         onRemove = { item -> scope.launch {
@@ -142,7 +169,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                             }
                             container.library.remove(item.id)
                         } })
-                    tab == 4 && state.screen == Screen.HOME -> SourcesHub(state, viewModel, onImport = { importer.launch(arrayOf("*/*")) })
+                    tab == 4 && state.screen == Screen.HOME -> SourcesHub(state, viewModel, onImport = { importer.launch(arrayOf("*/*")) }, onCatalogs = { catalogScreen = true })
                     tab == 1 && state.screen == Screen.HOME -> LiveLanding(state, container, viewModel)
                     else -> LegacyMediaRoot(viewModel, container)
                 }
@@ -151,6 +178,18 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     }
     importing?.let { label -> AlertDialog(onDismissRequest = {}, title = { Text(label) }, text = { LinearProgressIndicator(Modifier.fillMaxWidth()) }, confirmButton = { TextButton(onClick = { importJob?.cancel() }) { Text("取消") } }) }
     message?.let { text -> AlertDialog(onDismissRequest = { message = null }, text = { Text(text) }, confirmButton = { TextButton(onClick = { message = null }) { Text("知道了") } }) }
+    state.pendingPublication?.let { item ->
+        AlertDialog(onDismissRequest = viewModel::clearPendingPublication, title = { Text(item.title) }, text = { Text(if (item.type.equals("AudioBook", true)) "加入听书库并在线播放，不需要下载整本。" else "将下载一份本机副本后打开阅读，最大 1 GiB。会使用网络和本机空间，可随时取消；不修改来源文件。") },
+            confirmButton = { TextButton(onClick = {
+                viewModel.clearPendingPublication()
+                scope.launch {
+                    val format = item.key.itemId.substringBefore('?').substringAfterLast('.', "").lowercase()
+                    val extension = if (format in setOf("epub", "txt", "pdf", "cbz", "zip", "m4b", "mp3", "m4a", "aac", "flac", "ogg", "opus", "wav")) format else if (item.type.equals("AudioBook", true)) "m4b" else "epub"
+                    val asset = container.library.addRemote(item, extension)
+                    open(asset)
+                }
+            }) { Text("加入并打开") } }, dismissButton = { TextButton(onClick = viewModel::clearPendingPublication) { Text("取消") } })
+    }
 }
 
 @Composable private fun PublicationShelf(
@@ -244,13 +283,14 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     }
 }
 
-@Composable private fun SourcesHub(state: MainUiState, viewModel: MainViewModel, onImport: () -> Unit) {
+@Composable private fun SourcesHub(state: MainUiState, viewModel: MainViewModel, onImport: () -> Unit, onCatalogs: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { Text("来源", style = MaterialTheme.typography.headlineLarge); Text("你的内容，按自己的方式连接", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item { SourceTile("Emby 媒体服务", "${state.savedSessions.size} 个已保存账号", Icons.Rounded.Dns, viewModel::showServers) }
         item { SourceTile("网络存储", "OpenList / WebDAV / SMB · ${state.networkStorages.size} 个连接", Icons.Rounded.FolderOpen, viewModel::showNetworkStorages) }
         item { SourceTile("影视与直播订阅", "${state.externalSources.size} 个订阅 · 导入、更新与诊断", Icons.Rounded.LiveTv, viewModel::showSources) }
         item { SourceTile("本地书籍与音频", "系统文件选择器 · 不需要全盘存储权限", Icons.Rounded.FileOpen, onImport) }
+        item { SourceTile("图书与有声书服务", "OPDS / Komga / Audiobookshelf", Icons.AutoMirrored.Rounded.MenuBook, onCatalogs) }
         item { SourceTile("聚合搜索", "搜索已连接的内容服务", Icons.Rounded.Search, viewModel::showDiscover) }
         item { SourceTile("设置与诊断", "功能开关、播放记录与问题排查", Icons.Rounded.Tune, viewModel::showSettings) }
     }
