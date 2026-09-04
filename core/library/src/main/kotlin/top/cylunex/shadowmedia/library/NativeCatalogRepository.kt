@@ -99,12 +99,17 @@ class NativeCatalogRepository(context: Context, private val library: LibraryRepo
             }
         }
     }
-    private suspend fun absItem(c: CatalogConnection, id: String) = json(c, api(c, "api", "items", id).newBuilder().addQueryParameter("expanded", "1").build())
+    private suspend fun absItem(c: CatalogConnection, id: String) = json(c, api(c, "api", "items", id).newBuilder().addQueryParameter("expanded", "1").addQueryParameter("include", "progress").build())
 
     suspend fun add(c: CatalogConnection, entry: CatalogEntry): LibraryAssetEntity {
         val kind = if (entry.format == "komga") ContentKind.COMIC else contentKindForFile("file.${entry.format}")
         require(kind in setOf(ContentKind.BOOK, ContentKind.COMIC, ContentKind.AUDIOBOOK)) { "尚不支持这个文件格式" }
         val asset = library.addRemote(UnifiedMediaItem(MediaKey(providerId(c), entry.locator), entry.title, kind.name, subtitle = entry.author), entry.format)
+        if (library.dao.progress(asset.id) == null) {
+            try { pullInitialProgress(c, asset) }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { /* Missing progress capability must not prevent consumption. */ }
+        }
         if (entry.cover != null && asset.coverPath.isBlank()) {
             val target = File(library.folder(asset.id), "cover.img")
             try {
@@ -114,6 +119,40 @@ class NativeCatalogRepository(context: Context, private val library: LibraryRepo
             catch (_: Exception) { /* A cover must not block opening the work. */ }
         }
         return asset
+    }
+
+    /** Only seeds a never-opened resource. Existing local progress/edits are never overwritten. */
+    private suspend fun pullInitialProgress(c: CatalogConnection, asset: LibraryAssetEntity) {
+        val record = when (c.kind) {
+            CatalogKind.KOMGA -> {
+                val book = json(c, api(c, "api", "v1", "books", asset.itemId))
+                val read = book.optJSONObject("readProgress") ?: return
+                val page = (read.optInt("page", 1) - 1).coerceAtLeast(0)
+                val count = book.optJSONObject("media")?.optInt("pagesCount") ?: 0
+                top.cylunex.shadowmedia.database.ContentProgressEntity(asset.id, locatorType = "page",
+                    locatorJson = JSONObject().put("chapterId", asset.id).put("pageIndex", page).put("offset", 0).toString(),
+                    progression = if (count > 0) (page.toDouble() / count).coerceIn(0.0, 1.0) else null,
+                    completed = read.optBoolean("completed"), updatedAt = System.currentTimeMillis())
+            }
+            CatalogKind.AUDIOBOOKSHELF -> {
+                val book = absItem(c, asset.itemId.substringBefore("::"))
+                val read = book.optJSONObject("userMediaProgress") ?: return
+                val tracks = book.getJSONObject("media").optJSONArray("tracks").objects()
+                val track = tracks.firstOrNull { it.optString("ino") == asset.itemId.substringAfter("::") } ?: return
+                val duration = track.optDouble("duration")
+                val start = track.optDouble("startOffset", 0.0)
+                val absolute = read.optDouble("currentTime", 0.0)
+                if (!duration.isFinite() || duration <= 0 || !start.isFinite() || !absolute.isFinite()) return
+                val position = (absolute - start).coerceIn(0.0, duration)
+                if (position <= 0 && !read.optBoolean("isFinished")) return
+                top.cylunex.shadowmedia.database.ContentProgressEntity(asset.id, locatorType = "time",
+                    locatorJson = JSONObject().put("trackId", asset.id).put("positionMs", (position * 1000).toLong()).put("durationMs", (duration * 1000).toLong()).toString(),
+                    progression = position / duration, completed = read.optBoolean("isFinished") || absolute >= start + duration,
+                    updatedAt = System.currentTimeMillis())
+            }
+            else -> return
+        }
+        library.dao.seedProgress(record)
     }
     suspend fun resolve(asset: LibraryAssetEntity): PlaybackCandidate {
         val c = connection(asset.providerId)

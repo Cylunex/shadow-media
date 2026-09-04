@@ -14,6 +14,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LocalContentColor
+import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.isSystemInDarkTheme
 
 private val ShadowDarkColors = darkColorScheme(
     primary = Color(0xFF76A9F5),
@@ -40,10 +43,10 @@ private val ShadowDarkColors = darkColorScheme(
 )
 
 private val ShadowLightColors = lightColorScheme(
-    primary = Color(0xFF3E8437),
+    primary = Color(0xFF285EAD),
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFCFF3CB),
-    onPrimaryContainer = Color(0xFF0A220A),
+    primaryContainer = Color(0xFFD8E6FF),
+    onPrimaryContainer = Color(0xFF102D52),
     secondary = Color(0xFF59615A),
     onSecondary = Color.White,
     tertiary = Color(0xFF3E7F49),
@@ -67,8 +70,17 @@ private val ShadowTypography = Typography(
 
 @Composable
 fun ShadowMediaTheme(content: @Composable () -> Unit) {
+    val context = LocalContext.current
+    val preferences = remember { context.getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE) }
+    var mode by remember { mutableStateOf(preferences.getString("theme", "深色")) }
+    DisposableEffect(preferences) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key -> if (key == "theme") mode = preferences.getString("theme", "深色") }
+        preferences.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+    val dark = when (mode) { "浅色" -> false; "跟随系统" -> isSystemInDarkTheme(); else -> true }
     MaterialTheme(
-        colorScheme = ShadowDarkColors,
+        colorScheme = if (dark) ShadowDarkColors else ShadowLightColors,
         typography = ShadowTypography,
         shapes = Shapes(
             extraSmall = RoundedCornerShape(8.dp),

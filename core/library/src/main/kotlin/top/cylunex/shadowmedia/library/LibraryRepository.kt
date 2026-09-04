@@ -73,6 +73,49 @@ class LibraryRepository(context: Context) {
         } finally { temp.delete() }
     }
 
+    /** Snapshot one explicitly selected comic folder. Never traverses sibling directories. */
+    suspend fun importImageDirectory(uri: Uri): LibraryAssetEntity = withContext(Dispatchers.IO) {
+        val directory = requireNotNull(DocumentFile.fromTreeUri(context, uri)) { "目录授权无效" }
+        require(directory.isDirectory) { "请选择漫画图片所在目录" }
+        val files = directory.listFiles().filter { it.isFile && (it.name?.substringAfterLast('.')?.lowercase() in setOf("jpg", "jpeg", "png", "webp") || it.name == "ComicInfo.xml") }
+        require(files.any { it.name != "ComicInfo.xml" }) { "此目录没有图片，请直接选择图片所在的章节目录" }
+        require(files.size <= 30000) { "单章页面过多，请分章导入" }
+        val id = digest("local-directory:$uri")
+        val temp = File.createTempFile("directory-", ".part", folder(id))
+        try {
+            var total = 0L
+            java.util.zip.ZipOutputStream(temp.outputStream()).use { zip ->
+                zip.setLevel(0)
+                files.forEach { document ->
+                    ensureActive()
+                    val name = requireNotNull(document.name)
+                    require('/' !in name && '\\' !in name && ':' !in name && name !in setOf(".", ".."))
+                    zip.putNextEntry(java.util.zip.ZipEntry(name))
+                    requireNotNull(context.contentResolver.openInputStream(document.uri)).use { input ->
+                        val buffer = ByteArray(64 * 1024); var size = 0L
+                        while (true) {
+                            ensureActive(); val n = input.read(buffer); if (n < 0) break
+                            size += n; total += n
+                            require(size <= SafeArchives.MAX_ENTRY_BYTES && total <= 1024L * 1024 * 1024) { "漫画超过单页 64 MiB 或单章 1 GiB 限制" }
+                            require(temp.parentFile!!.usableSpace > 32 * 1024 * 1024) { "存储空间不足" }
+                            zip.write(buffer, 0, n)
+                        }
+                    }
+                    zip.closeEntry()
+                }
+            }
+            importPrepared(id, "local", uri.toString(), "${directory.name ?: "漫画"}.cbz", "cbz", temp)
+        } finally { temp.delete() }
+    }
+
+    fun textEncoding(id: String): String = context.getSharedPreferences("text_encoding", Context.MODE_PRIVATE).getString(id, "自动") ?: "自动"
+    suspend fun setTextEncoding(id: String, encoding: String) {
+        require(encoding in setOf("自动", "UTF-8", "GB18030", "Big5", "UTF-16LE", "UTF-16BE"))
+        context.getSharedPreferences("text_encoding", Context.MODE_PRIVATE).edit().putString(id, encoding).apply()
+        // Different decoding can change chapter boundaries; don't reuse incompatible coordinates.
+        dao.removeProgress(id)
+    }
+
     /** Only the caller's scoped downloader may supply this file. No URL/headers are persisted. */
     suspend fun importPrepared(id: String, providerId: String, itemId: String, name: String, format: String, input: File): LibraryAssetEntity = withContext(Dispatchers.IO) {
         val kind = contentKindForFile("item.$format")
@@ -133,10 +176,11 @@ class LibraryRepository(context: Context) {
             return@withContext safe
         }
         if (asset.format != "txt") return@withContext source
-        val epub = File(folder(asset.id), "text-v1.epub")
+        val encoding = textEncoding(asset.id)
+        val epub = File(folder(asset.id), "text-v2-${encoding}.epub")
         if (!epub.exists() || epub.lastModified() < source.lastModified()) {
             val tmp = File(folder(asset.id), "text.part")
-            try { TextPublication.convert(source, tmp, asset.title); check(tmp.renameTo(epub)) } finally { tmp.delete() }
+            try { TextPublication.convert(source, tmp, asset.title, encoding.takeUnless { it == "自动" }); check(tmp.renameTo(epub)) } finally { tmp.delete() }
         }
         epub
     }

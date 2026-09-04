@@ -17,6 +17,16 @@ import top.cylunex.shadowmedia.model.MediaSort
 import top.cylunex.shadowmedia.model.PlayMethod
 
 class DefaultEmbyRepositoryTest {
+    @Test fun `audio uses authenticated audio route through proxy without token in url`() = runBlocking {
+        val plan = repositoryReturning("""{"PlaySessionId":"p1","MediaSources":[{"Id":"audio1","Container":"m4b"}]}""")
+            .audioPlan(SESSION, "book1")
+        assertTrue(plan.primary.url.startsWith("https://media.example.com/emby/Audio/book1/stream?"))
+        assertTrue(plan.primary.url.contains("MediaSourceId=audio1"))
+        assertTrue(plan.primary.url.contains("Static=true"))
+        assertFalse(plan.primary.url.contains(SESSION.accessToken))
+        assertEquals(SESSION.accessToken, plan.primary.requiredHeaders["X-Emby-Token"])
+        assertEquals(SESSION.serverUrl, plan.primary.credentialOrigin)
+    }
     @Test
     fun `builds static stream when playback info omits derived urls`() = runBlocking {
         val responseJson = """

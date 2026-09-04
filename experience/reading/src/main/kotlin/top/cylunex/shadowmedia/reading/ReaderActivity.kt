@@ -25,6 +25,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
 import org.json.JSONObject
 import org.readium.r2.navigator.epub.*
+import org.readium.r2.navigator.Decoration
 import org.readium.r2.navigator.util.DirectionalNavigationAdapter
 import org.readium.r2.navigator.preferences.Theme
 import org.readium.r2.shared.publication.*
@@ -38,6 +39,7 @@ import org.readium.r2.streamer.PublicationOpener
 import org.readium.r2.streamer.parser.DefaultPublicationParser
 import top.cylunex.shadowmedia.database.LibraryAssetEntity
 import top.cylunex.shadowmedia.library.LibraryRepository
+import top.cylunex.shadowmedia.library.ProgressWriter
 
 class ReaderActivity : FragmentActivity() {
     private lateinit var library: LibraryRepository
@@ -62,7 +64,7 @@ class ReaderActivity : FragmentActivity() {
         val saved = savedInstanceState?.getString("locator")
         val settings = getSharedPreferences("reader_preferences", MODE_PRIVATE)
         prefs = EpubPreferences(fontSize = settings.getFloat("font", 115f).toDouble(), lineHeight = settings.getFloat("line", 1.7f).toDouble(),
-            theme = runCatching { Theme.valueOf(settings.getString("theme", "SEPIA")!!) }.getOrDefault(Theme.SEPIA), publisherStyles = false)
+            theme = runCatching { Theme.valueOf(settings.getString("theme", "SEPIA")!!) }.getOrDefault(Theme.SEPIA), publisherStyles = false, scroll = settings.getBoolean("scroll", false))
         lifecycleScope.launch {
             try {
                 val item = requireNotNull(id?.let { library.dao.asset(it) }) { "图书已移除" }
@@ -100,15 +102,25 @@ class ReaderActivity : FragmentActivity() {
         lifecycleScope.launch {
             fragment.currentLocator.collectLatest { current ->
                 locator = current
-                asset?.let { library.saveProgress(it.id, "text", current.toJSON(), current.locations.totalProgression) }
+                asset?.let { ProgressWriter.save(library, it.id, "text", current.toJSON(), current.locations.totalProgression) }
             }
         }
+        asset?.let { item -> lifecycleScope.launch {
+            library.dao.annotations(item.id).collectLatest { marks ->
+                fragment.applyDecorations(marks.mapNotNull { mark ->
+                    val location = runCatching { Locator.fromJSON(JSONObject(mark.locatorJson)) }.getOrNull()
+                    location?.takeIf { !it.text.highlight.isNullOrBlank() }?.let {
+                        Decoration(mark.id, it, Decoration.Style.Highlight(android.graphics.Color.rgb(180, 202, 230)))
+                    }
+                }, "shadow.annotations")
+            }
+        } }
     }
 
     private fun updatePrefs(next: EpubPreferences) {
         prefs = next; navigator?.submitPreferences(next)
         getSharedPreferences("reader_preferences", MODE_PRIVATE).edit().putFloat("font", (next.fontSize ?: 115.0).toFloat())
-            .putFloat("line", (next.lineHeight ?: 1.7).toFloat()).putString("theme", (next.theme ?: Theme.SEPIA).name).apply()
+            .putFloat("line", (next.lineHeight ?: 1.7).toFloat()).putString("theme", (next.theme ?: Theme.SEPIA).name).putBoolean("scroll", next.scroll == true).apply()
     }
 
     @Composable private fun ReaderChrome() {
@@ -122,6 +134,9 @@ class ReaderActivity : FragmentActivity() {
             var searching by remember { mutableStateOf(false) }
             var searchIterator by remember { mutableStateOf<SearchIterator?>(null) }
             var hasMore by remember { mutableStateOf(false) }
+            var encodingChange by remember { mutableStateOf<String?>(null) }
+            var editingNote by remember { mutableStateOf<top.cylunex.shadowmedia.database.ContentAnnotationEntity?>(null) }
+            var noteText by remember { mutableStateOf("") }
             val scope = rememberCoroutineScope()
             DisposableEffect(searchIterator) { val iterator = searchIterator; onDispose { iterator?.close() } }
             Scaffold(topBar = { TopAppBar(title = { Text(asset?.title ?: "阅读", maxLines = 1, overflow = TextOverflow.Ellipsis) }, navigationIcon = {
@@ -205,6 +220,7 @@ class ReaderActivity : FragmentActivity() {
                             if (marks.isEmpty()) Text("选中文字或点击底部“标记”保存位置。", Modifier.padding(vertical = 16.dp))
                             LazyColumn(Modifier.heightIn(max = 480.dp)) { items(marks, key = { it.id }) { mark ->
                                 Row { TextButton(onClick = { runCatching { Locator.fromJSON(JSONObject(mark.locatorJson)) }.getOrNull()?.let { navigator?.go(it) }; panel = null }, Modifier.weight(1f)) { Text(mark.note, maxLines = 3) }
+                                    IconButton(onClick = { editingNote = mark; noteText = mark.note }) { Icon(Icons.Rounded.EditNote, "编辑笔记") }
                                     IconButton(onClick = { scope.launch { library.dao.removeAnnotation(mark.id) } }) { Icon(Icons.Rounded.DeleteOutline, "删除书签") } }
                             } }
                         }
@@ -215,12 +231,31 @@ class ReaderActivity : FragmentActivity() {
                             Slider(value = (prefs.lineHeight ?: 1.7).toFloat(), onValueChange = { updatePrefs(prefs.copy(lineHeight = it.toDouble())) }, valueRange = 1.2f..2.5f)
                             Row { listOf("纸色" to Theme.SEPIA, "夜间" to Theme.DARK, "浅色" to Theme.LIGHT).forEach { (label, theme) -> TextButton(onClick = { updatePrefs(prefs.copy(theme = theme)) }) { Text(label) } } }
                             Row { Text("连续滚动", Modifier.weight(1f)); Switch(checked = prefs.scroll == true, onCheckedChange = { updatePrefs(prefs.copy(scroll = it)) }) }
+                            if (asset?.format == "txt") {
+                                Text("文本编码：${asset?.let { library.textEncoding(it.id) }}", style = MaterialTheme.typography.labelLarge)
+                                LazyColumn(Modifier.heightIn(max = 180.dp)) {
+                                    items(listOf("自动", "UTF-8", "GB18030", "Big5", "UTF-16LE", "UTF-16BE")) { encoding ->
+                                        TextButton(onClick = { encodingChange = encoding }) { Text(encoding) }
+                                    }
+                                }
+                            }
                         }
                     }
                     Spacer(Modifier.height(24.dp))
                 }
             }
             message?.let { AlertDialog(onDismissRequest = { message = null }, text = { Text(it) }, confirmButton = { TextButton(onClick = { message = null }) { Text("确定") } }) }
+            editingNote?.let { mark -> AlertDialog(onDismissRequest = { editingNote = null }, title = { Text("笔记") },
+                text = { OutlinedTextField(noteText, { noteText = it.take(10000) }, label = { Text("你的想法") }, minLines = 3) },
+                confirmButton = { TextButton(onClick = { scope.launch { library.dao.putAnnotation(mark.copy(note = noteText)); editingNote = null } }) { Text("保存") } },
+                dismissButton = { TextButton(onClick = { editingNote = null }) { Text("取消") } }) }
+            encodingChange?.let { encoding -> AlertDialog(onDismissRequest = { encodingChange = null }, title = { Text("切换为 $encoding？") },
+                text = { Text("重新解码可能改变章节位置，将从头打开。原 TXT 和已有书签不会删除，但旧书签位置可能失效。") },
+                confirmButton = { TextButton(onClick = { asset?.let { item -> lifecycleScope.launch {
+                    library.setTextEncoding(item.id, encoding)
+                    startActivity(android.content.Intent(this@ReaderActivity, ReaderActivity::class.java).putExtra("assetId", item.id))
+                    finish()
+                } }; encodingChange = null }) { Text("重新打开") } }, dismissButton = { TextButton(onClick = { encodingChange = null }) { Text("取消") } }) }
         }
     }
     override fun onStop() { aloud?.stop(); super.onStop() }

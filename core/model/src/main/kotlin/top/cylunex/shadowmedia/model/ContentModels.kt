@@ -12,8 +12,8 @@ fun contentKind(type: String): ContentKind = when (type.lowercase()) {
     "livechannel", "livestream" -> ContentKind.LIVE_CHANNEL
     "book", "ebook", "novel", "epub", "txt", "pdf" -> ContentKind.BOOK
     "comic", "cbz", "imagedirectory" -> ContentKind.COMIC
-    "audiobook", "audio", "musicalbum", "m4b", "mp3" -> ContentKind.AUDIOBOOK
-    "folder", "collectionfolder" -> ContentKind.FOLDER
+    "audiobook", "audio", "m4b", "mp3" -> ContentKind.AUDIOBOOK
+    "folder", "collectionfolder", "musicalbum" -> ContentKind.FOLDER
     else -> ContentKind.UNKNOWN
 }
 

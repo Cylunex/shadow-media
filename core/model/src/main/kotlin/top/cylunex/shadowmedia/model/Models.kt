@@ -182,6 +182,7 @@ enum class PlayMethod {
 }
 
 enum class ProviderKind {
+    LOCAL_LIBRARY,
     EMBY,
     OPENLIST,
     JELLYFIN,

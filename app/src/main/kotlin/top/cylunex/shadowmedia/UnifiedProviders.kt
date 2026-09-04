@@ -26,7 +26,7 @@ import top.cylunex.shadowmedia.provider.ProviderSearchRequest
 import top.cylunex.shadowmedia.provider.ProviderSection
 
 internal class EmbyMediaProvider(
-    private val session: EmbySession,
+    val session: EmbySession,
     private val repository: EmbyRepository,
 ) : MediaProvider {
     override val descriptor = ProviderDescriptor(
@@ -61,7 +61,7 @@ internal class EmbyMediaProvider(
             BrowseRequest(
                 parentId = request.parentKey?.itemId.orEmpty(),
                 includeItemTypes = request.type?.let(::setOf)
-                    ?: setOf("Movie", "Series", "Episode", "Video"),
+                    ?: setOf("Movie", "Series", "Episode", "Video", "Audio", "MusicAlbum"),
                 sort = runCatching { MediaSort.valueOf(request.sort.orEmpty()) }.getOrDefault(MediaSort.DATE_ADDED),
                 startIndex = offset,
                 limit = request.pageSize.coerceIn(1, 200),
@@ -82,7 +82,7 @@ internal class EmbyMediaProvider(
             BrowseRequest(
                 parentId = "",
                 includeItemTypes = request.type?.let(::setOf)
-                    ?: setOf("Movie", "Series", "Episode", "Video"),
+                    ?: setOf("Movie", "Series", "Episode", "Video", "Audio", "MusicAlbum"),
                 searchTerm = request.query,
                 sort = MediaSort.NAME,
                 filter = MediaFilter.ALL,
@@ -100,19 +100,11 @@ internal class EmbyMediaProvider(
 
     override suspend fun detail(key: MediaKey): MediaDetail {
         require(key.providerId == descriptor.id) { "媒体不属于这个 Emby Provider" }
-        val item = cache[key.itemId] ?: MediaItem(
-            id = key.itemId,
-            name = key.itemId,
-            type = "Video",
-            seriesName = null,
-            seasonNumber = null,
-            episodeNumber = null,
-            runTimeTicks = null,
-            playbackPositionTicks = 0,
-            played = false,
-            favorite = false,
-        )
-        val children = if (item.type.equals("Series", true) || item.type.equals("BoxSet", true)) {
+        val item = cache[key.itemId] ?: repository.item(session, key.itemId).also { cache[it.id] = it }
+        val children = if (item.type.equals("MusicAlbum", true)) {
+            repository.browse(session, BrowseRequest(parentId = item.id, includeItemTypes = setOf("Audio"), limit = 200))
+                .items.also { values -> values.forEach { cache[it.id] = it } }
+        } else if (item.type.equals("Series", true) || item.type.equals("BoxSet", true)) {
             repository.children(session, item.id).also { values -> values.forEach { cache[it.id] = it } }
         } else emptyList()
         return MediaDetail(item = toUnified(item), children = children.map(::toUnified))

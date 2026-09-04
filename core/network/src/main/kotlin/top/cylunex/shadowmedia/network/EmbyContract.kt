@@ -92,6 +92,8 @@ interface EmbyRepository {
     suspend fun home(session: EmbySession, libraryIds: List<String>): List<MediaSection>
     suspend fun browse(session: EmbySession, request: BrowseRequest): MediaPage
     suspend fun children(session: EmbySession, parentId: String): List<MediaItem>
+    suspend fun item(session: EmbySession, itemId: String): MediaItem = error("此来源不支持详情回源")
+    suspend fun audioPlan(session: EmbySession, itemId: String): PlaybackPlan = error("此来源不支持音频")
     suspend fun setFavorite(session: EmbySession, itemId: String, favorite: Boolean)
 
     suspend fun playbackPlan(session: EmbySession, itemId: String): PlaybackPlan

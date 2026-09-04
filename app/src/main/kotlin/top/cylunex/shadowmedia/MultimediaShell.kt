@@ -56,6 +56,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     val scope = rememberCoroutineScope()
     val assets by container.library.assets.collectAsStateWithLifecycle(emptyList())
     val progress by container.library.progress.collectAsStateWithLifecycle(emptyList())
+    val progressError by top.cylunex.shadowmedia.library.ProgressWriter.error.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var audioExpanded by rememberSaveable { mutableStateOf(false) }
     var controller by remember { mutableStateOf<MediaController?>(null) }
@@ -133,6 +134,21 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             }
         }
     }
+    val directoryImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            importJob?.cancel()
+            importJob = scope.launch {
+                importing = "正在保存漫画目录的离线副本"
+                try {
+                    context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    container.library.importImageDirectory(uri)
+                    message = "漫画目录已导入，原图片未修改"
+                } catch (e: CancellationException) { throw e }
+                catch (e: Exception) { message = e.message ?: "目录导入失败" }
+                finally { importing = null }
+            }
+        }
+    }
     fun select(index: Int) { tab = index; audioExpanded = false; catalogScreen = false; viewModel.showHome() }
     if (playerScreen) { LegacyMediaRoot(viewModel, container); return }
     BackHandler(enabled = audioExpanded) { audioExpanded = false }
@@ -162,6 +178,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                         }
                     })
                     tab == 2 || tab == 3 -> PublicationShelf(assets, progress, audio = tab == 3, onImport = { importer.launch(arrayOf("*/*")) }, onOpen = ::open,
+                        onDirectory = { directoryImporter.launch(null) },
                         onFavorite = { item -> scope.launch { container.library.dao.favorite(item.id, !item.favorite) } },
                         onRemove = { item -> scope.launch {
                             controller?.let { control ->
@@ -178,13 +195,18 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     }
     importing?.let { label -> AlertDialog(onDismissRequest = {}, title = { Text(label) }, text = { LinearProgressIndicator(Modifier.fillMaxWidth()) }, confirmButton = { TextButton(onClick = { importJob?.cancel() }) { Text("取消") } }) }
     message?.let { text -> AlertDialog(onDismissRequest = { message = null }, text = { Text(text) }, confirmButton = { TextButton(onClick = { message = null }) { Text("知道了") } }) }
+    if (progressError != null) Text(progressError!!, Modifier.statusBarsPadding().padding(16.dp), color = MaterialTheme.colorScheme.error)
     state.pendingPublication?.let { item ->
-        AlertDialog(onDismissRequest = viewModel::clearPendingPublication, title = { Text(item.title) }, text = { Text(if (item.type.equals("AudioBook", true)) "加入听书库并在线播放，不需要下载整本。" else "将下载一份本机副本后打开阅读，最大 1 GiB。会使用网络和本机空间，可随时取消；不修改来源文件。") },
+        AlertDialog(onDismissRequest = viewModel::clearPendingPublication, title = { Text(item.title) }, text = { Text(if (item.key.providerId == "library") "打开书架中的内容并恢复本机进度。" else if (top.cylunex.shadowmedia.model.contentKind(item.type) == top.cylunex.shadowmedia.model.ContentKind.AUDIOBOOK) "加入听书库并在线播放，不需要下载整本。" else "将下载一份本机副本后打开阅读，最大 1 GiB。会使用网络和本机空间，可随时取消；不修改来源文件。") },
             confirmButton = { TextButton(onClick = {
                 viewModel.clearPendingPublication()
                 scope.launch {
+                    if (item.key.providerId == "library") {
+                        container.library.dao.asset(item.key.itemId)?.let(::open)
+                        return@launch
+                    }
                     val format = item.key.itemId.substringBefore('?').substringAfterLast('.', "").lowercase()
-                    val extension = if (format in setOf("epub", "txt", "pdf", "cbz", "zip", "m4b", "mp3", "m4a", "aac", "flac", "ogg", "opus", "wav")) format else if (item.type.equals("AudioBook", true)) "m4b" else "epub"
+                    val extension = if (format in setOf("epub", "txt", "pdf", "cbz", "zip", "m4b", "mp3", "m4a", "aac", "flac", "ogg", "opus", "wav")) format else if (top.cylunex.shadowmedia.model.contentKind(item.type) == top.cylunex.shadowmedia.model.ContentKind.AUDIOBOOK) "m4b" else "epub"
                     val asset = container.library.addRemote(item, extension)
                     open(asset)
                 }
@@ -194,7 +216,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
 
 @Composable private fun PublicationShelf(
     assets: List<LibraryAssetEntity>, progress: List<ContentProgressEntity>, audio: Boolean,
-    onImport: () -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onFavorite: (LibraryAssetEntity) -> Unit, onRemove: (LibraryAssetEntity) -> Unit,
+    onImport: () -> Unit, onDirectory: () -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onFavorite: (LibraryAssetEntity) -> Unit, onRemove: (LibraryAssetEntity) -> Unit,
 ) {
     var filter by rememberSaveable(audio) { mutableStateOf("全部") }
     var query by rememberSaveable(audio) { mutableStateOf("") }
@@ -214,6 +236,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) { Text(if (audio) "听书" else "阅读", style = MaterialTheme.typography.headlineLarge); Text(if (audio) "让故事陪你走远一点" else "把时间留给下一章", color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     IconButton(onClick = onImport) { Icon(Icons.Rounded.Add, "导入文件") }
+                    if (!audio) IconButton(onClick = onDirectory) { Icon(Icons.Rounded.FolderOpen, "导入漫画图片目录") }
                 }
                 Spacer(Modifier.height(20.dp))
                 OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("搜索标题、作者") }, leadingIcon = { Icon(Icons.Rounded.Search, null) }, singleLine = true, shape = RoundedCornerShape(18.dp))
@@ -284,6 +307,9 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
 }
 
 @Composable private fun SourcesHub(state: MainUiState, viewModel: MainViewModel, onImport: () -> Unit, onCatalogs: () -> Unit) {
+    val context = LocalContext.current
+    val appearance = remember { context.getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE) }
+    var theme by remember { mutableStateOf(appearance.getString("theme", "深色")) }
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { Text("来源", style = MaterialTheme.typography.headlineLarge); Text("你的内容，按自己的方式连接", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item { SourceTile("Emby 媒体服务", "${state.savedSessions.size} 个已保存账号", Icons.Rounded.Dns, viewModel::showServers) }
@@ -293,6 +319,11 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
         item { SourceTile("图书与有声书服务", "OPDS / Komga / Audiobookshelf", Icons.AutoMirrored.Rounded.MenuBook, onCatalogs) }
         item { SourceTile("聚合搜索", "搜索已连接的内容服务", Icons.Rounded.Search, viewModel::showDiscover) }
         item { SourceTile("设置与诊断", "功能开关、播放记录与问题排查", Icons.Rounded.Tune, viewModel::showSettings) }
+        item { Text("界面外观", style = MaterialTheme.typography.titleMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("深色", "浅色", "跟随系统").forEach { value ->
+                FilterChip(theme == value, { theme = value; appearance.edit().putString("theme", value).apply() }, { Text(value) })
+            } }
+        }
     }
 }
 
@@ -344,7 +375,7 @@ private fun audioTime(value: Long): String { val seconds = value.coerceAtLeast(0
         } }
         item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { controller?.seekToPreviousMediaItem() }, enabled = controller?.hasPreviousMediaItem() == true) { Icon(Icons.Rounded.SkipPrevious, "上一轨") }
-            IconButton(onClick = { controller?.seekTo((state.position - 15000).coerceAtLeast(0)) }) { Icon(Icons.Rounded.Replay10, "后退 15 秒") }
+            IconButton(onClick = { controller?.seekTo((state.position - 10000).coerceAtLeast(0)) }) { Icon(Icons.Rounded.Replay10, "后退 10 秒") }
             FilledIconButton(onClick = { controller?.let { if (it.isPlaying) it.pause() else it.play() } }, Modifier.size(76.dp)) { if (state.buffering) CircularProgressIndicator(Modifier.size(30.dp)) else Icon(if (state.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (state.playing) "暂停" else "播放", Modifier.size(42.dp)) }
             IconButton(onClick = { controller?.seekTo((state.position + 30000).coerceAtMost(state.duration.takeIf { it > 0 } ?: Long.MAX_VALUE)) }) { Icon(Icons.Rounded.Forward30, "前进 30 秒") }
             IconButton(onClick = { controller?.seekToNextMediaItem() }, enabled = controller?.hasNextMediaItem() == true) { Icon(Icons.Rounded.SkipNext, "下一轨") }

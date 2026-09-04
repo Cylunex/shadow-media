@@ -23,6 +23,10 @@ data class CatalogConnection(val id: String = UUID.randomUUID().toString(), val 
         require(it.isHttps || allowHttp) { "请明确允许 HTTP 明文连接" }
     }
     override fun toString() = "CatalogConnection(id=$id, name=$name, kind=$kind, credentials=<redacted>)"
+
+    /** Without a verified remote user id, any credential/endpoint change is a new sync scope. */
+    fun retainsAccountOf(previous: CatalogConnection): Boolean = kind == previous.kind &&
+        base() == previous.base() && username == previous.username && password == previous.password && token == previous.token
 }
 
 /** One authenticated, encrypted payload. Corrupt ciphertext is retained, never overwritten. */
@@ -41,6 +45,11 @@ class CatalogConnectionStore(context: Context) {
         } catch (e: Exception) { throw IllegalStateException("来源凭据无法解密，原数据已保留", e) }
     }
     @Synchronized fun save(connection: CatalogConnection) { connection.base(); write(load().filterNot { it.id == connection.id } + connection) }
+    @Synchronized fun replace(previous: CatalogConnection?, edited: CatalogConnection) {
+        edited.base()
+        val safe = if (previous != null && !edited.retainsAccountOf(previous)) edited.copy(id = UUID.randomUUID().toString()) else edited
+        write(load().filterNot { it.id == previous?.id || it.id == safe.id } + safe)
+    }
     @Synchronized fun remove(id: String) = write(load().filterNot { it.id == id })
     private fun write(connections: List<CatalogConnection>) {
         val array = JSONArray()

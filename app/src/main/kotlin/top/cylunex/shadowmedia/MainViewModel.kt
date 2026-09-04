@@ -185,6 +185,7 @@ class MainViewModel(
     private val integrationStore: IntegrationStore,
     private val networkStorageRepository: NetworkStorageRepository,
     private val networkStorageStore: NetworkStorageStore,
+    private val library: top.cylunex.shadowmedia.library.LibraryRepository? = null,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     private var playbackRequest: Job? = null
@@ -735,9 +736,26 @@ class MainViewModel(
         }
         val provider = providerRegistry.provider(item.key.providerId) ?: return
         if (provider is EmbyMediaProvider) {
+            if (item.type.equals("MusicAlbum", true) || item.type.equals("Series", true) || item.type.equals("BoxSet", true)) {
+                openUnifiedItem(item)
+                return
+            }
+            playbackRequest?.cancel()
+            deleteRequest?.cancel()
+            if (!sessionStore.select(provider.session)) {
+                showError(IllegalStateException("此 Emby 账号已移除，请重新连接"))
+                return
+            }
             val embyItem = provider.mediaItem(item.key) ?: item.toEmbyMediaItem()
             update {
                 copy(
+                    session = provider.session,
+                    serverUrl = provider.session.serverUrl,
+                    userName = provider.session.userName,
+                    allowInsecureHttp = provider.session.allowInsecureHttp,
+                    libraries = if (session == provider.session) libraries else emptyList(),
+                    homeSections = if (session == provider.session) homeSections else emptyList(),
+                    selectedLibrary = if (session == provider.session) selectedLibrary else null,
                     items = listOf(embyItem),
                     playerReturnScreen = screen,
                     feedMode = false,
@@ -1275,7 +1293,8 @@ class MainViewModel(
     private fun syncProviders() {
         val storedNetworkConnections = networkStorageStore.loadAll()
         val providers = buildList {
-            state.value.session?.let { add(EmbyMediaProvider(it, repository)) }
+            library?.let { add(top.cylunex.shadowmedia.library.LibraryMediaProvider(it)) }
+            sessionStore.loadAll().distinctBy { it.serverId to it.userId }.forEach { add(EmbyMediaProvider(it, repository)) }
             storedNetworkConnections.forEach { connection ->
                 add(networkStorageRepository.provider(connection))
             }
@@ -1497,13 +1516,18 @@ class MainViewModel(
             externalSources = externalSourceStore.loadAll(),
             isLoading = true,
         )
-        viewModelScope.launch { playbackOutbox.flush(session) }
+        viewModelScope.launch {
+            try { playbackOutbox.flush(session) }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { if (state.value.session == session) showError(e) }
+        }
         viewModelScope.launch { loadLibraries(session) }
     }
 
     private suspend fun loadLibraries(session: EmbySession) {
         runCatching { repository.libraries(session) }
             .onSuccess { libraries ->
+                if (state.value.session != session) return@onSuccess
                 val lastFeed = feedSessionStore.lastFor(session)
                 update {
                     copy(
@@ -1513,13 +1537,14 @@ class MainViewModel(
                     )
                 }
                 runCatching { repository.home(session, libraries.map(MediaLibrary::id)) }
-                    .onSuccess { sections -> update { copy(homeSections = sections.withRecommendations()) } }
-                    .onFailure { update { copy(errorMessage = "首页加载不完整：${it.message ?: "未知错误"}") } }
+                    .onSuccess { sections -> if (state.value.session == session) update { copy(homeSections = sections.withRecommendations()) } }
+                    .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it; if (state.value.session == session) update { copy(errorMessage = "首页加载不完整：${it.message ?: "未知错误"}") } }
             }
-            .onFailure(::showError)
+            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it; if (state.value.session == session) showError(it) }
     }
 
     private fun showError(error: Throwable) {
+        if (error is kotlinx.coroutines.CancellationException) throw error
         update { copy(isLoading = false, errorMessage = error.message ?: "发生未知错误") }
     }
 
@@ -1551,6 +1576,7 @@ class MainViewModel(
                         container.integrationStore,
                         container.networkStorageRepository,
                         container.networkStorageStore,
+                        container.library,
                     ) as T
             }
     }

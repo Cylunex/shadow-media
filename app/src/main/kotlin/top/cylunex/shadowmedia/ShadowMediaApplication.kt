@@ -101,7 +101,7 @@ class AppContainer(application: Application) {
                 }
                 asset.providerId.startsWith("emby:") -> {
                     val session = requireNotNull(sessionStore.loadAll().firstOrNull { "emby:${it.serverId}:${it.userId}" == asset.providerId }) { "Emby 账号已移除" }
-                    embyRepository.playbackPlan(session, asset.itemId).candidates
+                    embyRepository.audioPlan(session, asset.itemId).candidates
                 }
                 else -> requireNotNull(providerRegistry.provider(asset.providerId)) { "来源不可用，请重新连接" }.resolve(top.cylunex.shadowmedia.model.UnifiedPlaybackRequest(key))
             }

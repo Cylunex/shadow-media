@@ -448,29 +448,41 @@ internal fun MediaHomeScreen(state: MainUiState, viewModel: MainViewModel) {
     ) {
         item {
             ScreenHeader(
-                title = "媒体中心",
-                subtitle = "${state.session?.userName.orEmpty()} · Emby 与你的外部订阅",
+                title = "影视",
+                subtitle = state.session?.let { "${it.userName} · 私人片库" } ?: "你的故事，从这里开始",
                 actionLabel = "服务器",
                 onAction = viewModel::showServers,
             )
         }
         item {
-            MediaHubActions(
-                libraryCount = state.libraries.size,
-                sourceCount = state.externalSources.size,
-                providerCount = state.providerDescriptors.size,
-                storageCount = state.networkStorages.size,
-                onLibraries = viewModel::showLibraries,
-                onSources = viewModel::showSources,
-                onDiscover = viewModel::showDiscover,
-                onNetworkStorages = viewModel::showNetworkStorages,
-                onSettings = viewModel::showSettings,
-            )
+            LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item { FilterChip(false, viewModel::showDiscover, { Text("全局搜索") }, leadingIcon = { Icon(Icons.Rounded.Search, null) }) }
+                item { FilterChip(false, viewModel::showLibraries, { Text("媒体库") }, leadingIcon = { Icon(Icons.Rounded.VideoLibrary, null) }) }
+                item { FilterChip(false, viewModel::showNetworkStorages, { Text("网络存储") }, leadingIcon = { Icon(Icons.Rounded.Storage, null) }) }
+                item { FilterChip(false, viewModel::showSources, { Text("影视仓") }, leadingIcon = { Icon(Icons.Rounded.Subscriptions, null) }) }
+            }
+        }
+        state.homeSections.firstOrNull { it.items.isNotEmpty() }?.let { section ->
+            item {
+                val featured = section.items.first()
+                Card(onClick = { viewModel.playHomeSection(section, featured) }, modifier = Modifier.padding(horizontal = 20.dp).fillMaxWidth()) {
+                    Box(Modifier.fillMaxWidth().height(280.dp)) {
+                        EmbyArtwork(state.session, featured.id, featured.name, Modifier.fillMaxSize(), imageTag = featured.imageTag)
+                        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .12f), Color.Black.copy(alpha = .9f)))))
+                        Column(Modifier.align(Alignment.BottomStart).padding(22.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(section.title, style = MaterialTheme.typography.labelLarge, color = Color(0xFFB7D5FF))
+                            Text(featured.name, style = MaterialTheme.typography.headlineMedium, maxLines = 2, overflow = TextOverflow.Ellipsis, color = Color.White)
+                            Text(featured.overview.orEmpty().ifBlank { "打开你的私人影院" }, maxLines = 2, overflow = TextOverflow.Ellipsis, color = Color.White.copy(alpha = .8f))
+                            FilledTonalButton(onClick = { viewModel.playHomeSection(section, featured) }) { Icon(Icons.Rounded.PlayArrow, null); Text(if (featured.playbackPositionTicks > 0) "继续观看" else "开始观看") }
+                        }
+                    }
+                }
+            }
         }
         if (state.homeSections.isEmpty() && !state.isLoading) {
             item {
                 EmptyStatePanel(
-                    "媒体中心还没有可展示的内容",
+                    "添加 Emby、网络存储或影视订阅，建立你的私人影院",
                     Modifier.padding(horizontal = 20.dp),
                 )
             }

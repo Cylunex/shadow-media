@@ -118,4 +118,7 @@ interface LibraryDao {
             enqueue(operation)
         }
     }
+    @Transaction suspend fun seedProgress(record: ContentProgressEntity) {
+        if (progress(record.assetId) == null) putProgress(record)
+    }
 }

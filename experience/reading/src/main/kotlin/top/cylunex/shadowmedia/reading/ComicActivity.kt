@@ -45,6 +45,8 @@ class ComicActivity : ComponentActivity() {
     private var currentPage by mutableIntStateOf(0)
     private var currentOffset = 0f
     private var file: File? = null
+    private var lastSavedPage = -1
+    private var lastSaveTime = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,18 +67,23 @@ class ComicActivity : ComponentActivity() {
                 initialOffset = (savedInstanceState?.getFloat("offset") ?: progress?.optDouble("offset", 0.0)?.toFloat() ?: 0f).coerceIn(0f, 1f)
                 currentPage = initialPage; currentOffset = initialOffset
                 file = source; asset = item; pages = manifest
+                save()
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { error = e.message ?: "页面读取失败" }
         }
         setContent { ComicReader() }
     }
     override fun onSaveInstanceState(outState: Bundle) { outState.putInt("page", currentPage); outState.putFloat("offset", currentOffset); super.onSaveInstanceState(outState) }
-    private fun save() {
+    private fun save(force: Boolean = false) {
         val item = asset ?: return
         val page = currentPage; val offset = currentOffset
-        lifecycleScope.launch { library.saveProgress(item.id, "page", JSONObject().put("chapterId", item.id).put("pageIndex", page).put("offset", offset),
-            (page + offset.toDouble()) / pages.size.coerceAtLeast(1)) }
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (!force && page == lastSavedPage && now - lastSaveTime < 250) return
+        lastSavedPage = page; lastSaveTime = now
+        ProgressWriter.save(library, item.id, "page", JSONObject().put("chapterId", item.id).put("pageIndex", page).put("offset", offset),
+            (page + offset.toDouble()) / pages.size.coerceAtLeast(1))
     }
+    override fun onStop() { save(force = true); super.onStop() }
 
     @Composable private fun ComicReader() {
         MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF78ABED), background = Color(0xFF101114))) {

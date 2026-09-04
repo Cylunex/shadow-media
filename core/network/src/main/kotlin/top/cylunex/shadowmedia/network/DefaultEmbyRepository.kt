@@ -213,6 +213,30 @@ class DefaultEmbyRepository(
         executeEmpty(if (favorite) builder.post(EMPTY_BODY).build() else builder.delete().build())
     }
 
+    override suspend fun item(session: EmbySession, itemId: String): MediaItem {
+        val dto: BaseItemDto = executeJson(authenticatedRequest(session,
+            EmbyEndpoints.endpoint(session.serverUrl, "Users", session.userId, "Items", itemId)).get().build())
+        return dto.toModel()
+    }
+
+    override suspend fun audioPlan(session: EmbySession, itemId: String): PlaybackPlan {
+        val response: PlaybackInfoResponseDto = executeJson(authenticatedRequest(session,
+            EmbyEndpoints.endpoint(session.serverUrl, "Items", itemId, "PlaybackInfo"))
+            .post(json.encodeToString(PlaybackInfoRequestDto(userId = session.userId)).toRequestBody(JSON_MEDIA_TYPE)).build())
+        if (response.errorCode != null) throw EmbyApiException("音频 PlaybackInfo: ${response.errorCode}")
+        val source = response.mediaSources.firstOrNull() ?: throw EmbyApiException("音频没有可播放的媒体源")
+        val url = EmbyEndpoints.endpoint(session.serverUrl, "Audio", itemId, "stream").newBuilder()
+            .addQueryParameter("Static", "true").addQueryParameter("MediaSourceId", source.id)
+            .addQueryParameter("PlaySessionId", response.playSessionId).build().toString()
+        return PlaybackPlan(itemId, source.id, response.playSessionId,
+            candidates = listOf(PlaybackCandidate(url, PlayMethod.DIRECT_STREAM,
+                source.requiredHttpHeaders.filterKeys { !it.equals("Range", true) } + ("X-Emby-Token" to session.accessToken),
+                credentialOrigin = session.serverUrl, mediaSourceId = source.id)),
+            container = source.container, videoType = null, videoCodec = null,
+            audioCodec = source.mediaStreams.firstOrNull { it.type.equals("Audio", true) }?.codec,
+            runTimeTicks = source.runTimeTicks, supportsDirectStream = true)
+    }
+
     override suspend fun playbackPlan(session: EmbySession, itemId: String): PlaybackPlan {
         val url = EmbyEndpoints.endpoint(session.serverUrl, "Items", itemId, "PlaybackInfo")
         val requestBody = json.encodeToString(PlaybackInfoRequestDto(userId = session.userId))

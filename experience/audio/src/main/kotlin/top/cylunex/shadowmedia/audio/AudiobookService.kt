@@ -26,6 +26,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import top.cylunex.shadowmedia.library.LibraryRepository
 import top.cylunex.shadowmedia.library.LibraryResources
+import top.cylunex.shadowmedia.library.ProgressWriter
 import top.cylunex.shadowmedia.model.PlaybackCandidate
 import top.cylunex.shadowmedia.playback.RoutingDataSource
 
@@ -59,7 +60,7 @@ class AudiobookService : MediaSessionService() {
                         setPlaybackSpeed(speed.coerceIn(0.5f, 3f))
                     }
                 }
-                override fun onIsPlayingChanged(isPlaying: Boolean) { saveCurrent() }
+                override fun onIsPlayingChanged(isPlaying: Boolean) { saveCurrent(playbackState == Player.STATE_ENDED) }
                 override fun onPlaybackStateChanged(playbackState: Int) { if (playbackState == Player.STATE_ENDED) { saveCurrent(true); clearSleep() } }
                 override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
                     currentMediaItem?.mediaId?.let { getSharedPreferences("audio_preferences", MODE_PRIVATE).edit().putFloat("speed:$it", playbackParameters.speed).apply() }
@@ -86,7 +87,7 @@ class AudiobookService : MediaSessionService() {
     private fun save(id: String?, position: Long, duration: Long?, completed: Boolean) {
         if (id.isNullOrBlank()) return
         val locator = JSONObject().put("trackId", id).put("positionMs", position.coerceAtLeast(0)).put("durationMs", duration)
-        scope.launch { library.saveProgress(id, "time", locator, duration?.let { position.toDouble() / it }, completed) }
+        ProgressWriter.save(library, id, "time", locator, duration?.let { position.toDouble() / it }, completed)
     }
     private fun clearSleep() { sleepDeadline = 0; stopAfterTrack = false; AudioSleep.remaining.value = 0 }
     private suspend fun resolveItem(item: MediaItem): MediaItem {
@@ -103,11 +104,11 @@ class AudiobookService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
     override fun onTaskRemoved(rootIntent: android.content.Intent?) { if (!player.playWhenReady) stopSelf() }
     override fun onDestroy() {
-        // Flush a captured snapshot before disposing the coroutine owner.
+        // Queue a captured snapshot on the process-owned writer; never block service teardown.
         val id = player.currentMediaItem?.mediaId
         val position = player.currentPosition.coerceAtLeast(0)
         val duration = player.duration.takeIf { it > 0 }
-        if (id != null) runBlocking(Dispatchers.IO) { library.saveProgress(id, "time", JSONObject().put("trackId", id).put("positionMs", position).put("durationMs", duration), duration?.let { position.toDouble() / it }) }
+        if (id != null) ProgressWriter.save(library, id, "time", JSONObject().put("trackId", id).put("positionMs", position).put("durationMs", duration), duration?.let { position.toDouble() / it }, player.playbackState == Player.STATE_ENDED)
         scope.cancel(); clearSleep(); session?.release(); player.release(); super.onDestroy()
     }
 
