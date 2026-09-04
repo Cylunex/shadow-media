@@ -55,10 +55,11 @@ class LibraryRepository(context: Context) {
         val folder = folder(id)
         // Audio stays in the user-selected storage; large audiobooks need not be copied.
         if (kind == ContentKind.AUDIOBOOK) {
+            dao.asset(id)?.let { return@withContext it }
             return@withContext LibraryAssetEntity(id, "local", uri.toString(), name.substringBeforeLast('.'), kind = kind.name,
                 format = format, localUri = uri.toString(), addedAt = System.currentTimeMillis()).also { dao.putAsset(it) }
         }
-        val temp = File(folder, "incoming.part")
+        val temp = File.createTempFile("incoming-", ".part", folder)
         try {
             val input = context.contentResolver.openInputStream(uri) ?: throw IOException("文件权限已失效")
             input.use { stream -> temp.outputStream().use { output ->
@@ -125,14 +126,14 @@ class LibraryRepository(context: Context) {
     suspend fun importPrepared(id: String, providerId: String, itemId: String, name: String, format: String, input: File): LibraryAssetEntity = withContext(Dispatchers.IO) {
         val kind = contentKindForFile("item.$format")
         require(kind in setOf(ContentKind.BOOK, ContentKind.COMIC, ContentKind.AUDIOBOOK))
-        val target = File(folder(id), "content.$format")
         if (format in setOf("epub", "cbz", "zip")) SafeArchives.validate(input)
         val revision = input.inputStream().use { stream ->
             val hash = MessageDigest.getInstance("SHA-256")
             val buffer = ByteArray(64 * 1024)
-            while (true) { val n = stream.read(buffer); if (n < 0) break; hash.update(buffer, 0, n) }
+            while (true) { ensureActive(); val n = stream.read(buffer); if (n < 0) break; hash.update(buffer, 0, n) }
             hash.digest().joinToString("") { "%02x".format(it) }
         }
+        val target = File(folder(id), "content-$revision.$format")
         var title = name.substringBeforeLast('.')
         var author = ""
         var cover = ""
@@ -147,7 +148,7 @@ class LibraryRepository(context: Context) {
                 val item = items.item(i) as Element
                 if (item.getAttribute("properties").split(' ').contains("cover-image")) {
                     val coverEntry = java.net.URI(path).resolve(item.getAttribute("href")).path
-                    runCatching { saveCover(id, SafeArchives.read(input, coverEntry, 12L * 1024 * 1024)) }.getOrNull()?.let { cover = it }
+                    runCatching { saveCover(id, revision, SafeArchives.read(input, coverEntry, 12L * 1024 * 1024)) }.getOrNull()?.let { cover = it }
                     break
                 }
             }
@@ -159,32 +160,46 @@ class LibraryRepository(context: Context) {
                     author = xml.getElementsByTagName("Writer").item(0)?.textContent.orEmpty()
                 }
                 comicPages(input).firstOrNull()?.let { entry ->
-                    runCatching { saveCover(id, SafeArchives.read(input, entry, 12L * 1024 * 1024)) }.getOrNull()?.let { cover = it }
+                    runCatching { saveCover(id, revision, SafeArchives.read(input, entry, 12L * 1024 * 1024)) }.getOrNull()?.let { cover = it }
                 }
             }
         }
-        input.copyTo(target, overwrite = true)
+        if (!target.exists()) {
+            val staging = File.createTempFile("install-", ".part", folder(id))
+            try {
+                input.inputStream().use { stream -> staging.outputStream().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        ensureActive(); val count = stream.read(buffer); if (count < 0) break
+                        require(staging.parentFile!!.usableSpace > 32L * 1024 * 1024) { "存储空间不足" }
+                        output.write(buffer, 0, count)
+                    }
+                } }
+                ensureActive()
+                check(staging.renameTo(target)) { "无法安装图书副本，旧版本未修改" }
+            } finally { staging.delete() }
+        }
         val old = dao.asset(id)
         if (old != null && old.revision.isNotBlank() && old.revision != revision) dao.removeProgress(id)
         LibraryAssetEntity(id, providerId, itemId, title, author.ifBlank { old?.author.orEmpty() }, kind.name, format,
-            Uri.fromFile(target).toString(), cover, revision, System.currentTimeMillis(), old?.favorite ?: false).also { dao.putAsset(it) }
+            Uri.fromFile(target).toString(), cover.ifBlank { old?.coverPath.orEmpty() }, revision, old?.addedAt ?: System.currentTimeMillis(), old?.favorite ?: false).also { dao.putAsset(it) }
     }
 
     suspend fun publicationFile(asset: LibraryAssetEntity): File = withContext(Dispatchers.IO) {
         val source = localFile(asset)
         if (asset.format == "epub") {
-            val safe = File(folder(asset.id), "safe-v1.epub")
+            val safe = File(folder(asset.id), "safe-v2-${asset.revision}.epub")
             if (!safe.exists() || safe.lastModified() < source.lastModified()) {
-                val tmp = File(folder(asset.id), "safe.part")
+                val tmp = File.createTempFile("safe-", ".part", folder(asset.id))
                 try { PublicationSanitizer.sanitize(source, tmp); check(tmp.renameTo(safe)) } finally { tmp.delete() }
             }
             return@withContext safe
         }
         if (asset.format != "txt") return@withContext source
         val encoding = textEncoding(asset.id)
-        val epub = File(folder(asset.id), "text-v2-${encoding}.epub")
+        val epub = File(folder(asset.id), "text-v3-${encoding}-${asset.revision}.epub")
         if (!epub.exists() || epub.lastModified() < source.lastModified()) {
-            val tmp = File(folder(asset.id), "text.part")
+            val tmp = File.createTempFile("text-", ".part", folder(asset.id))
             try { TextPublication.convert(source, tmp, asset.title, encoding.takeUnless { it == "自动" }); check(tmp.renameTo(epub)) } finally { tmp.delete() }
         }
         epub
@@ -199,12 +214,16 @@ class LibraryRepository(context: Context) {
     }
 
     suspend fun saveProgress(id: String, type: String, locator: JSONObject, fraction: Double? = null, completed: Boolean = false) {
-        val record = ContentProgressEntity(id, locatorType = type, locatorJson = locator.toString(),
-            progression = fraction?.takeIf(Double::isFinite)?.coerceIn(0.0, 1.0), completed = completed, updatedAt = System.currentTimeMillis())
-        val asset = dao.asset(id)
-        val operation = asset?.takeIf { it.providerId.startsWith("catalog:KOMGA:") || it.providerId.startsWith("catalog:AUDIOBOOKSHELF:") ||
+        val asset = dao.asset(id) ?: return
+        val previous = dao.progress(id)?.takeIf { it.locatorType == type }?.let { runCatching { JSONObject(it.locatorJson) }.getOrNull() }
+        val position = if (type == "time") ProgressPolicy.timeSnapshot(locator, previous) else locator
+        val effectiveFraction = if (completed) 1.0 else fraction ?: if (type == "time" && position.optLong("durationMs") > 0) position.optLong("positionMs").toDouble() / position.optLong("durationMs") else null
+        val record = ContentProgressEntity(id, locatorType = type, locatorJson = position.toString(),
+            progression = effectiveFraction?.takeIf(Double::isFinite)?.coerceIn(0.0, 1.0), completed = completed, updatedAt = System.currentTimeMillis())
+        val operation = asset.takeIf { it.providerId.startsWith("catalog:KOMGA:") || it.providerId.startsWith("catalog:AUDIOBOOKSHELF:") ||
             (it.providerId.startsWith("emby:") && it.localUri.isNotBlank() && it.kind == "AUDIOBOOK") }?.let {
-            SyncOperationEntity(UUID.randomUUID().toString(), it.providerId, id, if (it.providerId.startsWith("emby:")) "offline-audio" else "progress", JSONObject(locator.toString()).put("completed", completed).toString(), System.currentTimeMillis())
+            val target = if (it.providerId.startsWith("catalog:AUDIOBOOKSHELF:")) "abs-book:${ProgressPolicy.absBookId(it.itemId)}" else id
+            SyncOperationEntity(UUID.randomUUID().toString(), it.providerId, target, if (it.providerId.startsWith("emby:")) "offline-audio" else "progress", JSONObject(position.toString()).put("assetId", id).put("completed", completed).toString(), System.currentTimeMillis())
         }
         dao.saveAndEnqueue(record, operation)
     }
@@ -224,7 +243,7 @@ class LibraryRepository(context: Context) {
         return File(root, id).apply { mkdirs() }
     }
 
-    private fun saveCover(id: String, data: ByteArray): String = File(folder(id), "cover.img").apply { writeBytes(data) }.path
+    private fun saveCover(id: String, revision: String, data: ByteArray): String = File(folder(id), "cover-$revision.img").apply { writeBytes(data) }.path
 
     companion object {
         fun digest(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }

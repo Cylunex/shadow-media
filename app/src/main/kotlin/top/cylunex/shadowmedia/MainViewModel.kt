@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -191,6 +192,9 @@ class MainViewModel(
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     private var playbackRequest: Job? = null
+    private var contentRequest: Job? = null
+    private val wallPagination = WallPagination()
+    private val playbackOwnership = PlaybackOwnership()
     private var deleteRequest: Job? = null
     private var liveGuideRequest: Job? = null
     private var providerSearchRequest: Job? = null
@@ -230,16 +234,21 @@ class MainViewModel(
                     update { copy(errorMessage = "接力链接对应的内容服务在这台设备上不可用") }
                     return@collect
                 }
+                cancelContentRequests()
+                contentRequest = viewModelScope.launch {
                 update {
                     copy(
                         screen = Screen.PROVIDER_DETAIL,
                         selectedUnifiedDetail = null,
+                        providerDetailBackStack = emptyList(),
+                        providerDetailReturnScreen = Screen.HOME,
                         isLoading = true,
                         errorMessage = null,
                     )
                 }
                 runCatching { provider.detail(handoff.key) }
                     .onSuccess { detail ->
+                        ensureActive()
                         update {
                             copy(
                                 selectedUnifiedDetail = detail.copy(
@@ -249,7 +258,8 @@ class MainViewModel(
                             )
                         }
                     }
-                    .onFailure(::showError)
+                    .onFailure { ensureActive(); showError(it) }
+                }
             }
         }
     }
@@ -260,6 +270,7 @@ class MainViewModel(
     fun updateAllowInsecure(value: Boolean) = update { copy(allowInsecureHttp = value, errorMessage = null) }
 
     fun showServers() {
+        cancelContentRequests()
         playbackRequest?.cancel()
         deleteRequest?.cancel()
         val saved = sessionStore.loadAll()
@@ -270,6 +281,7 @@ class MainViewModel(
     }
 
     fun addServer() {
+        cancelContentRequests()
         mutableState.value = MainUiState(screen = Screen.LOGIN, savedSessions = sessionStore.loadAll())
     }
 
@@ -288,12 +300,14 @@ class MainViewModel(
 
     fun confirmRemoveServer() {
         val session = state.value.pendingRemoveSession ?: return
+        cancelContentRequests()
         sessionStore.remove(session)
         val remaining = sessionStore.loadAll()
         mutableState.value = MainUiState(
             screen = if (remaining.isEmpty()) Screen.LOGIN else Screen.SERVERS,
             savedSessions = remaining,
         )
+        syncProviders()
         viewModelScope.launch {
             playbackOutbox.discard(session)
             runCatching { repository.logout(session) }
@@ -303,7 +317,8 @@ class MainViewModel(
     fun login() {
         val snapshot = state.value
         if (snapshot.isLoading) return
-        viewModelScope.launch {
+        contentRequest?.cancel()
+        contentRequest = viewModelScope.launch {
             update { copy(isLoading = true, errorMessage = null) }
             runCatching {
                 repository.login(
@@ -315,6 +330,7 @@ class MainViewModel(
                     )
                 )
             }.onSuccess { session ->
+                ensureActive()
                 sessionStore.save(session)
                 mutableState.value = MainUiState(
                     session = session,
@@ -326,13 +342,17 @@ class MainViewModel(
                     isLoading = true,
                 )
                 syncProviders()
-                viewModelScope.launch { playbackOutbox.flush(session) }
-                loadLibraries(session)
-            }.onFailure(::showError)
+                viewModelScope.launch {
+                    try { playbackOutbox.flush(session) }
+                    catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { if (state.value.session == session) showError(e) }
+                }
+                viewModelScope.launch { loadLibraries(session) }
+            }.onFailure { ensureActive(); showError(it) }
         }
     }
 
-    fun showHome() = update {
+    fun showHome() = navigate {
         copy(
             screen = Screen.HOME,
             selectedLibrary = null,
@@ -341,13 +361,16 @@ class MainViewModel(
             items = emptyList(),
             wallItems = emptyList(),
             feedMode = false,
+            playbackPlan = null,
+            selectedItem = null,
+            pendingPublication = null,
             errorMessage = null,
         )
     }
 
-    fun showLibraries() = update { copy(screen = Screen.LIBRARIES, errorMessage = null) }
+    fun showLibraries() = navigate { copy(screen = Screen.LIBRARIES, errorMessage = null) }
 
-    fun showSources() = update {
+    fun showSources() = navigate {
         copy(
             screen = Screen.SOURCES,
             externalSources = externalSourceStore.loadAll(),
@@ -356,9 +379,10 @@ class MainViewModel(
         )
     }
 
-    fun showSettings() = update { copy(screen = Screen.SETTINGS, errorMessage = null) }
+    fun showSettings() = navigate { copy(screen = Screen.SETTINGS, errorMessage = null) }
 
     fun showNetworkStorages() {
+        cancelContentRequests()
         val returnScreen = state.value.screen
         update {
             copy(
@@ -456,24 +480,26 @@ class MainViewModel(
     }
 
     fun openNetworkStorage(connection: NetworkStorageConnection) {
+        cancelContentRequests()
         syncProviders()
         val providerId = "storage:${connection.id}"
         val provider = providerRegistry.provider(providerId) ?: return
-        viewModelScope.launch {
+        contentRequest = viewModelScope.launch {
             update { copy(screen = Screen.PROVIDER_DETAIL, selectedUnifiedDetail = null, providerDetailBackStack = emptyList(), providerDetailReturnScreen = Screen.NETWORK_STORAGES, isLoading = true, errorMessage = null) }
             runCatching { provider.detail(MediaKey(providerId, connection.rootPath.normalizedStoragePath())) }
-                .onSuccess { detail -> update { copy(selectedUnifiedDetail = detail, isLoading = false) } }
-                .onFailure(::showError)
+                .onSuccess { detail -> ensureActive(); update { copy(selectedUnifiedDetail = detail, isLoading = false) } }
+                .onFailure { ensureActive(); showError(it) }
         }
     }
 
     fun showIntegrations() {
+        cancelContentRequests()
         val connections = integrationStore.loadAll()
         update { copy(screen = Screen.INTEGRATIONS, integrations = connections, integrationMessage = null, errorMessage = null) }
         refreshIntegrations()
     }
 
-    fun showInsights() = update { copy(screen = Screen.INSIGHTS, insightMessage = null, errorMessage = null) }
+    fun showInsights() = navigate { copy(screen = Screen.INSIGHTS, insightMessage = null, errorMessage = null) }
 
     fun clearInsightMessage() = update { copy(insightMessage = null) }
 
@@ -675,6 +701,7 @@ class MainViewModel(
     }
 
     fun showDiscover() {
+        cancelContentRequests()
         syncProviders()
         update { copy(screen = Screen.DISCOVER, errorMessage = null) }
     }
@@ -740,9 +767,10 @@ class MainViewModel(
 
     fun openUnifiedItem(item: UnifiedMediaItem) {
         val provider = providerRegistry.provider(item.key.providerId) ?: return
+        cancelContentRequests()
         val currentScreen = state.value.screen
         val currentDetail = state.value.selectedUnifiedDetail
-        viewModelScope.launch {
+        contentRequest = viewModelScope.launch {
             update {
                 copy(
                     screen = Screen.PROVIDER_DETAIL,
@@ -756,12 +784,13 @@ class MainViewModel(
                 )
             }
             runCatching { provider.detail(item.key) }
-                .onSuccess { detail -> update { copy(selectedUnifiedDetail = detail, isLoading = false) } }
-                .onFailure(::showError)
+                .onSuccess { detail -> ensureActive(); update { copy(selectedUnifiedDetail = detail, isLoading = false) } }
+                .onFailure { ensureActive(); showError(it) }
         }
     }
 
     fun playUnifiedItem(item: UnifiedMediaItem) {
+        cancelContentRequests()
         if (top.cylunex.shadowmedia.model.contentKind(item.type) in setOf(
                 top.cylunex.shadowmedia.model.ContentKind.BOOK, top.cylunex.shadowmedia.model.ContentKind.COMIC, top.cylunex.shadowmedia.model.ContentKind.AUDIOBOOK)) {
             update { copy(pendingPublication = item) }
@@ -797,10 +826,11 @@ class MainViewModel(
             playAt(0)
             return
         }
-        viewModelScope.launch {
+        contentRequest = viewModelScope.launch {
             update { copy(isLoading = true, errorMessage = null) }
             runCatching { provider.resolve(UnifiedPlaybackRequest(item.key, item.progressMs)) }
                 .onSuccess { candidates ->
+                    ensureActive()
                     val candidate = candidates.firstOrNull()
                     if (candidate == null) {
                         update { copy(isLoading = false, errorMessage = "这个 Provider 没有返回可播放线路") }
@@ -830,7 +860,7 @@ class MainViewModel(
                         }
                     }
                 }
-                .onFailure(::showError)
+                .onFailure { ensureActive(); showError(it) }
         }
     }
 
@@ -841,6 +871,7 @@ class MainViewModel(
     fun clearPendingPublication() = update { copy(pendingPublication = null) }
 
     fun selectLibrary(library: MediaLibrary) {
+        cancelContentRequests()
         update {
             copy(
                 selectedLibrary = library,
@@ -870,7 +901,8 @@ class MainViewModel(
 
     private fun loadFeed(library: MediaLibrary, autoPlay: Boolean) {
         val session = state.value.session ?: return
-        viewModelScope.launch {
+        cancelContentRequests()
+        contentRequest = viewModelScope.launch {
             update {
                 copy(
                     selectedLibrary = library,
@@ -883,6 +915,8 @@ class MainViewModel(
             }
             runCatching { repository.recentVideos(session, library.id) }
                 .onSuccess { loadedItems ->
+                    ensureActive()
+                    if (state.value.session != session) return@onSuccess
                     val feed = feedSessionStore.reconcile(session, library.id, loadedItems)
                     val byId = loadedItems.associateBy(MediaItem::id)
                     val orderedItems = feed.orderedItemIds.mapNotNull(byId::get)
@@ -896,7 +930,7 @@ class MainViewModel(
                     }
                     if (autoPlay && orderedItems.isNotEmpty()) playAt(feed.currentIndex)
                 }
-                .onFailure(::showError)
+                .onFailure { ensureActive(); showError(it) }
         }
     }
 
@@ -915,7 +949,7 @@ class MainViewModel(
     }
 
     fun loadMoreWall() {
-        if (!state.value.wallHasMore || state.value.isLoadingMore) return
+        if (!state.value.wallHasMore || state.value.isLoading || state.value.isLoadingMore) return
         loadWall(reset = false)
     }
 
@@ -923,37 +957,36 @@ class MainViewModel(
         val snapshot = state.value
         val session = snapshot.session ?: return
         val library = snapshot.selectedLibrary ?: return
-        viewModelScope.launch {
+        if (snapshot.screen != Screen.ITEMS) return
+        contentRequest?.cancel()
+        if (reset) wallPagination.reset(BrowseRequest(
+            parentId = library.id, includeItemTypes = library.wallItemTypes(), searchTerm = snapshot.wallSearch,
+            sort = snapshot.wallSort, descending = snapshot.wallSort != MediaSort.NAME,
+            filter = snapshot.wallFilter, limit = WALL_PAGE_SIZE,
+        ))
+        val request = wallPagination.request() ?: return
+        contentRequest = viewModelScope.launch {
             update {
-                if (reset) copy(isLoading = true, wallItems = emptyList(), errorMessage = null)
+                if (reset) copy(isLoading = true, isLoadingMore = false, wallHasMore = false, wallItems = emptyList(), errorMessage = null)
                 else copy(isLoadingMore = true, errorMessage = null)
             }
-            val startIndex = if (reset) 0 else state.value.wallItems.size
             runCatching {
-                repository.browse(
-                    session,
-                    BrowseRequest(
-                        parentId = library.id,
-                        includeItemTypes = library.wallItemTypes(),
-                        searchTerm = state.value.wallSearch,
-                        sort = state.value.wallSort,
-                        descending = state.value.wallSort != MediaSort.NAME,
-                        filter = state.value.wallFilter,
-                        startIndex = startIndex,
-                        limit = WALL_PAGE_SIZE,
-                    )
-                )
+                repository.browse(session, request)
             }.onSuccess { page ->
+                ensureActive()
+                if (state.value.session != session) return@onSuccess
+                wallPagination.advance(page)
                 update {
                     copy(
                         wallItems = if (reset) page.items else (wallItems + page.items).distinctBy(MediaItem::id),
                         wallTotalCount = page.totalRecordCount,
-                        wallHasMore = page.hasMore && wallSort != MediaSort.RANDOM,
+                        wallHasMore = page.items.isNotEmpty() && page.hasMore && request.sort != MediaSort.RANDOM,
                         isLoading = false,
                         isLoadingMore = false,
                     )
                 }
             }.onFailure {
+                ensureActive()
                 update { copy(isLoading = false, isLoadingMore = false) }
                 showError(it)
             }
@@ -988,7 +1021,8 @@ class MainViewModel(
 
     private fun loadDetail(item: MediaItem) {
         val session = state.value.session ?: return
-        viewModelScope.launch {
+        cancelContentRequests()
+        contentRequest = viewModelScope.launch {
             update {
                 copy(
                     screen = Screen.DETAIL,
@@ -999,8 +1033,8 @@ class MainViewModel(
                 )
             }
             runCatching { repository.children(session, item.id) }
-                .onSuccess { episodes -> update { copy(detailEpisodes = episodes, isLoading = false) } }
-                .onFailure(::showError)
+                .onSuccess { episodes -> ensureActive(); if (state.value.session == session) update { copy(detailEpisodes = episodes, isLoading = false) } }
+                .onFailure { ensureActive(); showError(it) }
         }
     }
 
@@ -1076,7 +1110,7 @@ class MainViewModel(
 
     fun externalPlaybackStopped(plan: PlaybackPlan, positionMs: Long) {
         val positionTicks = positionMs.coerceAtLeast(0L).millisecondsToEmbyTicks()
-        update {
+        if (state.value.playbackPlan == plan) update {
             copy(
                 playbackStartPositionMs = positionMs.coerceAtLeast(0L),
                 items = items.map { item ->
@@ -1088,8 +1122,10 @@ class MainViewModel(
     }
 
     private fun reportExternalPlayback(plan: PlaybackPlan, positionMs: Long, event: PlaybackEvent) {
-        val session = state.value.session ?: return
+        val session = playbackOwnership.session(plan, event) ?: return
+        if (sessionStore.loadAll().none { it == session }) return
         viewModelScope.launch {
+          try {
             playbackOutbox.submit(
                 session,
                 PlaybackReport(
@@ -1103,6 +1139,8 @@ class MainViewModel(
                     playMethod = plan.primary.method,
                 ),
             )
+          } catch (e: CancellationException) { throw e }
+          catch (e: Exception) { if (state.value.session == session) showError(e) }
         }
     }
 
@@ -1113,6 +1151,7 @@ class MainViewModel(
         startPositionMs: Long,
         refreshAttempts: Int,
     ) {
+        contentRequest?.cancel()
         playbackRequest?.cancel()
         update {
             copy(
@@ -1130,18 +1169,20 @@ class MainViewModel(
         viewModelScope.launch {
             val providerId = "emby:${session.serverId}:${session.userId}"
             val segments = localMediaState.segments(providerId, item.id).first()
-            if (state.value.selectedItem?.id == item.id) update { copy(mediaSegments = segments) }
+            if (state.value.session == session && state.value.screen == Screen.PLAYER && state.value.selectedItem?.id == item.id) update { copy(mediaSegments = segments) }
         }
         playbackRequest = viewModelScope.launch {
             try {
                 val plan = repository.playbackPlan(session, item.id)
-                if (state.value.selectedItem?.id == item.id) {
+                ensureActive()
+                if (state.value.session == session && state.value.screen == Screen.PLAYER && state.value.selectedItem?.id == item.id) {
+                    playbackOwnership.remember(plan, session)
                     update { copy(playbackPlan = plan, isLoading = false, errorMessage = null) }
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                if (state.value.selectedItem?.id == item.id) showError(error)
+                if (state.value.session == session && state.value.screen == Screen.PLAYER && state.value.selectedItem?.id == item.id) showError(error)
             }
         }
     }
@@ -1154,6 +1195,7 @@ class MainViewModel(
         viewModelScope.launch {
             runCatching { repository.setFavorite(session, item.id, target) }
                 .onSuccess {
+                    if (state.value.session != session) return@onSuccess
                     update {
                         copy(
                             items = items.map { if (it.id == item.id) it.copy(favorite = target) else it },
@@ -1180,7 +1222,7 @@ class MainViewModel(
                         )
                     }
                 }
-                .onFailure(::showError)
+                .onFailure { if (it is CancellationException) throw it; if (state.value.session == session) showError(it) }
         }
     }
 
@@ -1242,6 +1284,7 @@ class MainViewModel(
     }
 
     fun openExternalSource(source: ExternalSourceSummary) {
+        cancelContentRequests()
         val imported = externalSourceStore.load(source.id)
         if (imported == null || imported.payload.isBlank()) {
             update { copy(errorMessage = "这个订阅来自旧版本，请移除后重新导入") }
@@ -1308,7 +1351,7 @@ class MainViewModel(
         }
     }
 
-    fun playExternalEntry(entry: ExternalMediaEntry) = update {
+    fun playExternalEntry(entry: ExternalMediaEntry) = navigate {
         copy(
             screen = Screen.EXTERNAL_PLAYER,
             externalPlayerReturnScreen = Screen.EXTERNAL_ITEMS,
@@ -1363,6 +1406,7 @@ class MainViewModel(
                 now + 3L * 24 * 60 * 60 * 1_000,
             ).first()
             val favorites = localMediaState.favoriteKeys(providerId)
+            ensureActive()
             update {
                 copy(
                     livePrograms = cached.groupBy(LiveProgram::channelId),
@@ -1388,11 +1432,13 @@ class MainViewModel(
                     }
                 }.map { it.await() }
             }
+            ensureActive()
             val programs = results.flatMap { result -> result.getOrElse { emptyList() } }
                 .distinctBy { "${it.channelId}:${it.startEpochMs}" }
                 .map { it.copy(sourceId = source.id) }
             if (programs.isNotEmpty()) {
                 localMediaState.replaceEpg(source.id, programs)
+                ensureActive()
                 update {
                     copy(
                         livePrograms = programs.groupBy(LiveProgram::channelId),
@@ -1425,6 +1471,8 @@ class MainViewModel(
             update { copy(isDeleting = true, errorMessage = null) }
             try {
                 repository.deleteItem(session, item.id)
+                ensureActive()
+                if (state.value.session != session) return@launch
                 val snapshot = state.value
                 val removedActiveItem = snapshot.screen == Screen.PLAYER && snapshot.selectedItem?.id == item.id
                 val remaining = snapshot.items.filterNot { it.id == item.id }
@@ -1437,6 +1485,8 @@ class MainViewModel(
                         screen = if (removedActiveItem && remaining.isEmpty()) Screen.ITEMS else screen,
                         items = remaining,
                         wallItems = remainingWallItems,
+                        detailEpisodes = detailEpisodes.filterNot { it.id == item.id },
+                        homeSections = homeSections.map { it.copy(items = it.items.filterNot { entry -> entry.id == item.id }) }.filter { it.items.isNotEmpty() },
                         selectedItem = if (removedActiveItem) null else selectedItem,
                         playbackPlan = if (removedActiveItem) null else playbackPlan,
                         currentIndex = nextIndex,
@@ -1449,6 +1499,7 @@ class MainViewModel(
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
+                if (state.value.session != session) return@launch
                 update {
                     copy(
                         pendingDeleteItem = null,
@@ -1461,7 +1512,7 @@ class MainViewModel(
     }
 
     fun back() {
-        playbackRequest?.cancel()
+        cancelContentRequests()
         when (state.value.screen) {
             Screen.LOGIN -> if (state.value.savedSessions.isNotEmpty()) showServers()
             Screen.PLAYER -> update {
@@ -1522,6 +1573,7 @@ class MainViewModel(
     }
 
     fun logout() {
+        cancelContentRequests()
         playbackRequest?.cancel()
         deleteRequest?.cancel()
         val session = state.value.session ?: return
@@ -1539,6 +1591,7 @@ class MainViewModel(
     }
 
     private fun restoreSession(session: EmbySession, saved: List<EmbySession>) {
+        cancelContentRequests()
         mutableState.value = MainUiState(
             screen = Screen.HOME,
             serverUrl = session.serverUrl,
@@ -1566,7 +1619,7 @@ class MainViewModel(
                     copy(
                         libraries = libraries,
                         lastFeedLibraryId = lastFeed?.libraryId?.takeIf { id -> libraries.any { it.id == id } },
-                        isLoading = false,
+                        isLoading = if (screen in setOf(Screen.HOME, Screen.LIBRARIES)) false else isLoading,
                     )
                 }
                 runCatching { repository.home(session, libraries.map(MediaLibrary::id)) }
@@ -1582,6 +1635,18 @@ class MainViewModel(
     }
 
     private fun update(transform: MainUiState.() -> MainUiState) = mutableState.update(transform)
+
+    private fun cancelContentRequests() {
+        contentRequest?.cancel()
+        playbackRequest?.cancel()
+        liveGuideRequest?.cancel()
+        update { copy(isLoading = false, isLoadingMore = false, isLoadingGuide = false) }
+    }
+
+    private fun navigate(transform: MainUiState.() -> MainUiState) {
+        cancelContentRequests()
+        update(transform)
+    }
 
     companion object {
         private const val MAX_PLAYBACK_REFRESHES = 1

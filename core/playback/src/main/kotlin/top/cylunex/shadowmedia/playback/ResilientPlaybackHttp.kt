@@ -25,6 +25,7 @@ internal class ResilientPlaybackHttpInterceptor(
     private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
     private val onTrace: (PlaybackHttpTrace) -> Unit = {},
 ) : Interceptor {
+    init { require(maxAttempts > 0) }
     override fun intercept(chain: Interceptor.Chain): Response {
         val original = chain.request()
         if (original.method !in IDEMPOTENT_METHODS) return chain.proceed(original)
@@ -74,7 +75,7 @@ internal class ResilientPlaybackHttpInterceptor(
 
     private fun Response.retryDelayMs(attempt: Int): Long {
         val retryAfterSeconds = header("Retry-After")?.toLongOrNull()
-        return retryAfterSeconds?.let { TimeUnit.SECONDS.toMillis(it).coerceAtMost(MAX_RETRY_AFTER_MS) }
+        return retryAfterSeconds?.let { TimeUnit.SECONDS.toMillis(it).coerceIn(0, MAX_RETRY_AFTER_MS) }
             ?: backoffMs(attempt)
     }
 

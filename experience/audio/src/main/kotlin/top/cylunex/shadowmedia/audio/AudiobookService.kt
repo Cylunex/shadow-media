@@ -38,6 +38,7 @@ class AudiobookService : MediaSessionService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var sleepDeadline = 0L
     private var stopAfterTrack = false
+    private val preparedTracks = mutableSetOf<String>()
 
     override fun onCreate() {
         super.onCreate()
@@ -50,18 +51,30 @@ class AudiobookService : MediaSessionService() {
             addListener(object : Player.Listener {
                 override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
                     if (oldPosition.mediaItem?.mediaId != newPosition.mediaItem?.mediaId) {
-                        save(oldPosition.mediaItem?.mediaId, oldPosition.positionMs, null, reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION, stopped = true)
+                        val previous = oldPosition.mediaItem?.mediaId
+                        if (previous != null && preparedTracks.remove(previous)) {
+                            save(previous, oldPosition.positionMs, null, reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION, stopped = true)
+                        }
+                    } else if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                        saveCurrent(playbackState == Player.STATE_ENDED)
                     }
                 }
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    if (playbackState == Player.STATE_READY) mediaItem?.mediaId?.let(preparedTracks::add)
                     if (stopAfterTrack && reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) { pause(); clearSleep() }
                     mediaItem?.mediaId?.let { id ->
                         val speed = getSharedPreferences("audio_preferences", MODE_PRIVATE).getFloat("speed:$id", 1f)
                         setPlaybackSpeed(speed.coerceIn(0.5f, 3f))
                     }
                 }
-                override fun onIsPlayingChanged(isPlaying: Boolean) { saveCurrent(playbackState == Player.STATE_ENDED) }
-                override fun onPlaybackStateChanged(playbackState: Int) { if (playbackState == Player.STATE_ENDED) { saveCurrent(true); clearSleep() } }
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    if (playbackState == Player.STATE_READY) currentMediaItem?.mediaId?.let(preparedTracks::add)
+                    saveCurrent(playbackState == Player.STATE_ENDED)
+                }
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_READY) { currentMediaItem?.mediaId?.let(preparedTracks::add); saveCurrent() }
+                    if (playbackState == Player.STATE_ENDED) { saveCurrent(true); clearSleep() }
+                }
                 override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
                     currentMediaItem?.mediaId?.let { getSharedPreferences("audio_preferences", MODE_PRIVATE).edit().putFloat("speed:$it", playbackParameters.speed).apply() }
                 }
@@ -83,7 +96,10 @@ class AudiobookService : MediaSessionService() {
         }
     }
 
-    private fun saveCurrent(completed: Boolean = false) = save(player.currentMediaItem?.mediaId, player.currentPosition, player.duration.takeIf { it > 0 }, completed, stopped = completed)
+    private fun saveCurrent(completed: Boolean = false) {
+        if (player.playbackState != Player.STATE_READY && player.playbackState != Player.STATE_ENDED) return
+        save(player.currentMediaItem?.mediaId, player.currentPosition, player.duration.takeIf { it > 0 }, completed, stopped = completed)
+    }
     private fun save(id: String?, position: Long, duration: Long?, completed: Boolean, stopped: Boolean = false) {
         if (id.isNullOrBlank()) return
         val locator = JSONObject().put("trackId", id).put("positionMs", position.coerceAtLeast(0)).put("durationMs", duration)
@@ -110,7 +126,7 @@ class AudiobookService : MediaSessionService() {
         val id = player.currentMediaItem?.mediaId
         val position = player.currentPosition.coerceAtLeast(0)
         val duration = player.duration.takeIf { it > 0 }
-        if (id != null) ProgressWriter.save(library, id, "time", JSONObject().put("trackId", id).put("positionMs", position).put("durationMs", duration), duration?.let { position.toDouble() / it }, player.playbackState == Player.STATE_ENDED)
+        if (id != null && player.playbackState in setOf(Player.STATE_READY, Player.STATE_ENDED)) ProgressWriter.save(library, id, "time", JSONObject().put("trackId", id).put("positionMs", position).put("durationMs", duration), duration?.let { position.toDouble() / it }, player.playbackState == Player.STATE_ENDED)
         if (id != null) LibraryResources.audioEvent?.invoke(top.cylunex.shadowmedia.library.AudioProgressSnapshot(id, position, true, player.isCurrentMediaItemSeekable, false, true))
         scope.cancel(); clearSleep(); session?.release(); player.release(); super.onDestroy()
     }
@@ -153,10 +169,16 @@ object AudiobookController {
         SessionToken(context, ComponentName(context, AudiobookService::class.java))).buildAsync()
 
     suspend fun play(context: Context, controller: MediaController, ids: List<String>, selected: String) {
+        require(selected in ids && ids.size <= 2000)
+        val sameQueue = ids.size == 1 || (0 until controller.mediaItemCount).map { controller.getMediaItemAt(it).mediaId } == ids
+        if (sameQueue && controller.currentMediaItem?.mediaId == selected && controller.playbackState in setOf(Player.STATE_READY, Player.STATE_BUFFERING) && controller.playerError == null) {
+            controller.play()
+            return
+        }
+        ProgressWriter.flush()
         val library = LibraryRepository(context)
         val progress = library.dao.progress(selected)
         val position = progress?.takeUnless { it.completed }?.let { runCatching { JSONObject(it.locatorJson).optLong("positionMs", 0) }.getOrDefault(0) } ?: 0
-        require(selected in ids && ids.size <= 2000)
         context.getSharedPreferences("audio_queue", Context.MODE_PRIVATE).edit().putString("ids", JSONArray(ids).toString()).putString("selected", selected).apply()
         controller.setMediaItems(ids.map { MediaItem.Builder().setMediaId(it).build() }, ids.indexOf(selected), position)
         controller.prepare(); controller.play()

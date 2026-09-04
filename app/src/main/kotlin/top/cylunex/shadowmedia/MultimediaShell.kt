@@ -65,6 +65,14 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     var message by remember { mutableStateOf<String?>(null) }
     var importing by remember { mutableStateOf<String?>(null) }
     var importJob by remember { mutableStateOf<Job?>(null) }
+    fun startImport(block: suspend CoroutineScope.() -> Unit) {
+        val previous = importJob
+        previous?.cancel()
+        importJob = scope.launch {
+            previous?.join() // Old cleanup must finish before the next task owns the dialog/files.
+            block()
+        }
+    }
     var catalogScreen by rememberSaveable { mutableStateOf(false) }
     val playerScreen = state.screen in setOf(Screen.PLAYER, Screen.EXTERNAL_PLAYER)
     val television = LocalConfiguration.current.uiMode and Configuration.UI_MODE_TYPE_MASK == Configuration.UI_MODE_TYPE_TELEVISION
@@ -99,17 +107,18 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                 return
             }
             if (item.localUri.isBlank()) {
-                scope.launch {
+                startImport {
                     try {
                         importing = "准备保存到本机，完成后离线阅读"
                         val candidate = top.cylunex.shadowmedia.library.LibraryResources.resolve(item)
                         val saved = container.library.fetchRemote(item, candidate) { read, total -> importing = "已下载 ${read / 1024 / 1024} MiB" + (total?.let { " / ${it / 1024 / 1024} MiB" } ?: "") }
+                        ensureActive()
                         val target = if (saved.kind == "COMIC" || saved.format == "pdf") ComicActivity::class.java else ReaderActivity::class.java
                         context.startActivity(Intent(context, target).putExtra("assetId", saved.id))
                     } catch (e: CancellationException) { throw e }
                     catch (_: Exception) { message = "资源获取失败，请检查来源连接、权限和文件格式" }
                     finally { importing = null }
-                }.also { importJob = it }
+                }
                 return
             }
             val target = if (item.kind == "COMIC" || item.format == "pdf") ComicActivity::class.java else ReaderActivity::class.java
@@ -118,8 +127,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     }
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) {
-            importJob?.cancel()
-            importJob = scope.launch {
+            startImport {
                 var success = 0; val failed = mutableListOf<String>()
                 try {
                     uris.take(2000).forEachIndexed { index, uri ->
@@ -137,8 +145,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     }
     val directoryImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
-            importJob?.cancel()
-            importJob = scope.launch {
+            startImport {
                 importing = "正在保存漫画目录的离线副本"
                 try {
                     context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -173,16 +180,19 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                     catalogScreen -> CatalogSourcesScreen(container.catalogs, onBack = { catalogScreen = false }, onOpen = ::open, onQueue = { tracks ->
                         val control = controller
                         if (control != null && tracks.isNotEmpty()) scope.launch {
-                            val selected = tracks.firstOrNull { track -> progress.firstOrNull { it.assetId == track.id }?.completed != true } ?: tracks.first()
-                            AudiobookController.play(context, control, tracks.map { it.id }, selected.id)
-                            audioExpanded = true
-                        }
+                            try {
+                                top.cylunex.shadowmedia.library.ProgressWriter.flush()
+                                val selected = tracks.firstOrNull { track -> container.library.dao.progress(track.id)?.completed != true } ?: tracks.first()
+                                AudiobookController.play(context, control, tracks.map { it.id }, selected.id)
+                                audioExpanded = true
+                            } catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { message = "听书队列加载失败，请检查来源或重新添加" }
+                        } else if (control == null) message = "音频服务正在连接，请稍后重试"
                     })
-                    tab == 2 || tab == 3 -> PublicationShelf(assets, progress, audio = tab == 3, onImport = { importer.launch(arrayOf("*/*")) }, onOpen = ::open,
+                    (tab == 2 || tab == 3) && state.screen == Screen.HOME -> PublicationShelf(assets, progress, audio = tab == 3, onImport = { importer.launch(arrayOf("*/*")) }, onOpen = ::open,
                         onDirectory = { directoryImporter.launch(null) },
                         onOffline = { item ->
-                            importJob?.cancel()
-                            importJob = scope.launch {
+                            startImport {
                                 try {
                                     importing = "准备离线保存"
                                     val candidate = top.cylunex.shadowmedia.library.LibraryResources.resolve(item)
@@ -197,6 +207,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                         },
                         onFavorite = { item -> scope.launch { container.library.dao.favorite(item.id, !item.favorite) } },
                         onRemove = { item -> scope.launch {
+                            importJob?.cancelAndJoin()
                             controller?.let { control ->
                                 for (i in control.mediaItemCount - 1 downTo 0) if (control.getMediaItemAt(i).mediaId == item.id) control.removeMediaItem(i)
                             }
@@ -217,6 +228,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             confirmButton = { TextButton(onClick = {
                 viewModel.clearPendingPublication()
                 scope.launch {
+                  try {
                     if (item.key.providerId == "library") {
                         container.library.dao.asset(item.key.itemId)?.let(::open)
                         return@launch
@@ -225,6 +237,8 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                     val extension = if (format in setOf("epub", "txt", "pdf", "cbz", "zip", "m4b", "mp3", "m4a", "aac", "flac", "ogg", "opus", "wav")) format else if (top.cylunex.shadowmedia.model.contentKind(item.type) == top.cylunex.shadowmedia.model.ContentKind.AUDIOBOOK) "m4b" else "epub"
                     val asset = container.library.addRemote(item, extension)
                     open(asset)
+                  } catch (e: CancellationException) { throw e }
+                  catch (_: Exception) { message = "无法加入书库，请检查来源连接或重新导入" }
                 }
             }) { Text("加入并打开") } }, dismissButton = { TextButton(onClick = viewModel::clearPendingPublication) { Text("取消") } })
     }

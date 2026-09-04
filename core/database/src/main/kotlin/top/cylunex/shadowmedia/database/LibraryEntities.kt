@@ -63,6 +63,8 @@ interface LibraryDao {
     @Upsert suspend fun putAsset(asset: LibraryAssetEntity)
     @Query("UPDATE library_assets SET favorite = :favorite WHERE id = :id")
     suspend fun favorite(id: String, favorite: Boolean)
+    @Query("UPDATE library_assets SET coverPath = :path WHERE id = :id AND coverPath = ''")
+    suspend fun fillCover(id: String, path: String): Int
     @Query("DELETE FROM library_assets WHERE id = :id")
     suspend fun removeAsset(id: String)
     @Query("SELECT * FROM progress_records")
@@ -80,10 +82,13 @@ interface LibraryDao {
     @Query("DELETE FROM progress_records WHERE assetId = :id")
     suspend fun removeProgress(id: String)
     @Transaction suspend fun removeFromShelf(id: String) {
+        removeAssetOperations(id)
         removeAnnotations(id)
         removeProgress(id)
         removeAsset(id)
     }
+    @Query("DELETE FROM sync_operations WHERE target = :id")
+    suspend fun removeAssetOperations(id: String)
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun enqueue(operation: SyncOperationEntity)
     @Transaction suspend fun enqueueCoalesced(operation: SyncOperationEntity, coalesce: Boolean) {
@@ -112,6 +117,7 @@ interface LibraryDao {
         markImported(MigrationImportEntity(id))
     }
     @Transaction suspend fun saveAndEnqueue(progress: ContentProgressEntity, operation: SyncOperationEntity?) {
+        if (asset(progress.assetId) == null) return
         putProgress(progress)
         if (operation != null) {
             removeSuperseded(operation.scope, operation.target, operation.kind)
@@ -119,6 +125,6 @@ interface LibraryDao {
         }
     }
     @Transaction suspend fun seedProgress(record: ContentProgressEntity) {
-        if (progress(record.assetId) == null) putProgress(record)
+        if (asset(record.assetId) != null && progress(record.assetId) == null) putProgress(record)
     }
 }

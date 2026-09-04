@@ -4,6 +4,8 @@ import android.content.Context
 import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -15,6 +17,8 @@ import top.cylunex.shadowmedia.model.*
 
 class NativeCatalogRepository(context: Context, private val library: LibraryRepository) {
     val store = CatalogConnectionStore(context)
+    private val syncLock = Mutex()
+    private val artworkScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val client = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     fun providerId(connection: CatalogConnection) = "catalog:${connection.kind.name}:${connection.id}"
     fun connection(providerId: String) = requireNotNull(store.load().firstOrNull { providerId(it) == providerId }) { "来源已移除，请重新连接" }
@@ -119,12 +123,19 @@ class NativeCatalogRepository(context: Context, private val library: LibraryRepo
             catch (_: Exception) { /* Missing progress capability must not prevent consumption. */ }
         }
         if (artwork && entry.cover != null && asset.coverPath.isBlank()) {
-            val target = File(library.folder(asset.id), "cover.img")
-            try {
-                ResourceDownloader(client).download(candidate(c, entry.cover), target, 12L * 1024 * 1024)
-                return asset.copy(coverPath = target.path).also { library.dao.putAsset(it) }
-            } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { /* A cover must not block opening the work. */ }
+            artworkScope.launch {
+                var target: File? = null
+                try {
+                    if (library.dao.asset(asset.id) == null) return@launch
+                    target = File.createTempFile("artwork-", ".img", library.folder(asset.id))
+                    ResourceDownloader(client).download(candidate(c, entry.cover), target, 12L * 1024 * 1024)
+                    // Updating only this column cannot resurrect a removed asset or overwrite a
+                    // concurrently downloaded copy, favorite, or metadata with a stale snapshot.
+                    if (library.dao.fillCover(asset.id, target.path) > 0) target = null
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { /* Artwork is optional and never delays opening. */ }
+                finally { target?.delete() }
+            }
         }
         return asset
     }
@@ -191,14 +202,24 @@ class NativeCatalogRepository(context: Context, private val library: LibraryRepo
         ResourceDownloader(client).download(candidate(c, api(c, "api", "v1", "books", asset.itemId, "pages", number).toString()), target, SafeArchives.MAX_ENTRY_BYTES)
     }
 
-    suspend fun flush() {
+    suspend fun flush() = syncLock.withLock {
         for (c in store.load().filter { it.kind != CatalogKind.OPDS }) {
-            for (operation in library.dao.pending(providerId(c))) {
+            val pending = library.dao.pending(providerId(c))
+            // Normalize legacy per-track targets before retrying; ABS only stores one book position.
+            val targets = if (c.kind == CatalogKind.AUDIOBOOKSHELF) pending.mapNotNull { operation ->
+                val payload = runCatching { JSONObject(operation.payload) }.getOrNull()
+                library.dao.asset(payload?.optString("assetId", operation.target) ?: operation.target)?.let {
+                    operation.id to "abs-book:${ProgressPolicy.absBookId(it.itemId)}"
+                }
+            }.toMap() else emptyMap()
+            val latest = ProgressPolicy.latestOperations(pending, targets)
+            for (operation in pending) {
+                if (operation.id !in latest) { library.dao.acknowledge(operation.id); continue }
                 if (operation.nextAttemptAt > System.currentTimeMillis()) continue
                 try {
-                    val asset = library.dao.asset(operation.target)
-                    if (asset == null) { library.dao.acknowledge(operation.id); continue }
                     val progress = JSONObject(operation.payload)
+                    val asset = library.dao.asset(progress.optString("assetId", operation.target))
+                    if (asset == null) { library.dao.acknowledge(operation.id); continue }
                     when (c.kind) {
                         CatalogKind.KOMGA -> request(c, api(c, "api", "v1", "books", asset.itemId, "read-progress"), JSONObject().put("page", progress.optInt("pageIndex") + 1).put("completed", progress.optBoolean("completed")))
                         CatalogKind.AUDIOBOOKSHELF -> {
@@ -206,9 +227,9 @@ class NativeCatalogRepository(context: Context, private val library: LibraryRepo
                             val media = absItem(c, id).getJSONObject("media")
                             val track = media.optJSONArray("tracks").objects().firstOrNull { it.optString("ino") == ino } ?: error("远端轨道已更换，保留本地进度")
                             val duration = media.optDouble("duration")
-                            val seconds = track.optDouble("startOffset", 0.0) + progress.optLong("positionMs") / 1000.0
-                            require(duration.isFinite() && duration > 0)
-                            request(c, api(c, "api", "me", "progress", id), JSONObject().put("currentTime", seconds).put("duration", duration).put("progress", (seconds / duration).coerceIn(0.0, 1.0)))
+                            val seconds = ProgressPolicy.absPosition(track.optDouble("startOffset", 0.0), track.optDouble("duration"), duration, progress.optLong("positionMs"))
+                            request(c, api(c, "api", "me", "progress", id), JSONObject().put("currentTime", seconds).put("duration", duration).put("progress", (seconds / duration).coerceIn(0.0, 1.0))
+                                .put("isFinished", progress.optBoolean("completed") && seconds >= duration - 0.5))
                         }
                         else -> Unit
                     }

@@ -12,6 +12,19 @@ import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.network.ClientIdentity
 
 class ResilientPlaybackHttpTest {
+    @Test fun `negative retry-after does not crash network loader`() {
+        val attempts = AtomicInteger()
+        val server = TestHttpServer {
+            if (attempts.incrementAndGet() == 1) TestResponse(status = 503, reason = "Unavailable", headers = mapOf("Retry-After" to "-1"))
+            else TestResponse(status = 200, reason = "OK")
+        }
+        try {
+            playbackClient(testSession(server.port)).newCall(Request.Builder().url("http://127.0.0.1:${server.port}/video").build()).execute().use {
+                assertEquals(200, it.code)
+            }
+            assertEquals(2, attempts.get())
+        } finally { server.close() }
+    }
     @Test
     fun `cdn 403 reopens original emby url and resolves a fresh redirect`() {
         val embyRequests = AtomicInteger()

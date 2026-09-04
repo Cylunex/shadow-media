@@ -47,6 +47,7 @@ class ComicActivity : ComponentActivity() {
     private var file: File? = null
     private var lastSavedPage = -1
     private var lastSaveTime = 0L
+    private var restoreEpoch by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -92,12 +93,12 @@ class ComicActivity : ComponentActivity() {
             var marksVisible by remember { mutableStateOf(false) }
             val perSpread = if (mode == "双页") 2 else 1
             val pager = rememberPagerState(initialPage = initialPage / perSpread) { ((pages.size + perSpread - 1) / perSpread).coerceAtLeast(1) }
-            LaunchedEffect(pages, perSpread) { if (pages.isNotEmpty()) pager.scrollToPage((currentPage / perSpread).coerceAtMost(pager.pageCount - 1)) }
             LaunchedEffect(pager, pages, perSpread) {
                 if (pages.isEmpty()) return@LaunchedEffect
+                pager.scrollToPage((currentPage / perSpread).coerceAtMost(pager.pageCount - 1))
                 snapshotFlow { pager.settledPage }.distinctUntilChanged().collect { page ->
                     val index = page * perSpread
-                    if (currentPage != index) { currentPage = index; currentOffset = 0f; save() }
+                    if (currentPage / perSpread != page) { currentPage = index; currentOffset = 0f; save() }
                 }
             }
             Scaffold(topBar = { TopAppBar(title = { Text(asset?.title ?: "漫画", maxLines = 1) }, navigationIcon = {
@@ -129,7 +130,7 @@ class ComicActivity : ComponentActivity() {
             }
             if (settings) AlertDialog(onDismissRequest = { settings = false }, title = { Text("阅读模式") }, text = {
                 Column { listOf("LTR" to "从左向右", "RTL" to "从右向左", "长图" to "长图 · 宽度适配，可上下拖动", "双页" to "双页对开").forEach { (key, label) ->
-                    TextButton(onClick = { mode = key; getPreferences(MODE_PRIVATE).edit().putString("mode", key).apply(); settings = false }) { Text(label) }
+                    TextButton(onClick = { initialPage = currentPage; initialOffset = currentOffset; mode = key; getPreferences(MODE_PRIVATE).edit().putString("mode", key).apply(); settings = false }) { Text(label) }
                 } }
             }, confirmButton = { TextButton(onClick = { settings = false }) { Text("关闭") } })
             if (marksVisible) asset?.let { item ->
@@ -140,8 +141,11 @@ class ComicActivity : ComponentActivity() {
                         items(marks.size) { index -> val mark = marks[index]
                             Row {
                                 TextButton(onClick = { scope.launch {
-                                    val target = runCatching { JSONObject(mark.locatorJson).optInt("pageIndex") }.getOrDefault(0).coerceIn(pages.indices)
-                                    pager.scrollToPage(target / perSpread); marksVisible = false
+                                    val value = runCatching { JSONObject(mark.locatorJson) }.getOrNull()
+                                    val target = (value?.optInt("pageIndex") ?: 0).coerceIn(pages.indices)
+                                    initialPage = target; initialOffset = (value?.optDouble("offset", 0.0)?.toFloat() ?: 0f).coerceIn(0f, 1f)
+                                    currentPage = target; currentOffset = initialOffset; restoreEpoch++
+                                    pager.scrollToPage(target / perSpread); save(force = true); marksVisible = false
                                 } }, Modifier.weight(1f)) { Text(mark.note) }
                                 IconButton(onClick = { scope.launch { library.dao.removeAnnotation(mark.id) } }) { Icon(Icons.Rounded.DeleteOutline, "删除书签") }
                             }
@@ -164,7 +168,7 @@ class ComicActivity : ComponentActivity() {
         }
         Box(modifier) {
             val image = local
-            if (image != null) key(image.path, mode) {
+            if (image != null) key(image.path, mode, restoreEpoch) {
                 AndroidView(factory = { context -> SubsamplingScaleImageView(context).apply {
                     setMaxTileSize(1024)
                     setMinimumScaleType(if (mode == "长图") SubsamplingScaleImageView.SCALE_TYPE_START else SubsamplingScaleImageView.SCALE_TYPE_CENTER_INSIDE)
@@ -194,7 +198,7 @@ class ComicActivity : ComponentActivity() {
             if (failure != null) Text(failure!!, Modifier.padding(16.dp))
             else if (image == null) CircularProgressIndicator(Modifier.padding(16.dp))
         }
-        DisposableEffect(local) { onDispose { local?.delete() } }
+        DisposableEffect(local) { val ownedFile = local; onDispose { ownedFile?.delete() } }
     }
 
     private suspend fun preparePage(index: Int): File {

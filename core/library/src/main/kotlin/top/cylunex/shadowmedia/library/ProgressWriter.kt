@@ -25,4 +25,11 @@ object ProgressWriter {
         val snapshot = locator.toString()
         check(writes.trySend { library.saveProgress(id, type, JSONObject(snapshot), fraction, completed) }.isSuccess)
     }
+
+    /** A resume/reset must observe every earlier snapshot, not just the last periodic DB write. */
+    suspend fun flush() {
+        val barrier = CompletableDeferred<Unit>()
+        writes.send { barrier.complete(Unit) }
+        barrier.await()
+    }
 }

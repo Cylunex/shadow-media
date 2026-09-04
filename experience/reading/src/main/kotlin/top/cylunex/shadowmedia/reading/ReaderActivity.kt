@@ -54,6 +54,7 @@ class ReaderActivity : FragmentActivity() {
     private var aloud: ReadAloud? = null
     private var narrating by mutableStateOf(false)
     private var searchJob: Job? = null
+    private var progressJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // The factory requires an asynchronously opened publication. Restore our versioned Locator,
@@ -99,10 +100,11 @@ class ReaderActivity : FragmentActivity() {
         supportFragmentManager.beginTransaction().replace(R.id.epub_reader, fragment).commitNow()
         navigator = fragment
         fragment.addInputListener(DirectionalNavigationAdapter(fragment))
-        lifecycleScope.launch {
+        progressJob = lifecycleScope.launch {
             fragment.currentLocator.collectLatest { current ->
                 locator = current
-                asset?.let { ProgressWriter.save(library, it.id, "text", current.toJSON(), current.locations.totalProgression) }
+                asset?.let { ProgressWriter.save(library, it.id, "text", current.toJSON(), current.locations.totalProgression,
+                    completed = (current.locations.totalProgression ?: 0.0) >= 0.999) }
             }
         }
         asset?.let { item -> lifecycleScope.launch {
@@ -182,13 +184,17 @@ class ReaderActivity : FragmentActivity() {
                         "搜索" -> {
                             OutlinedTextField(searchQuery, { searchQuery = it }, Modifier.fillMaxWidth(), placeholder = { Text("输入书中内容") }, singleLine = true)
                             TextButton(enabled = searchQuery.isNotBlank(), onClick = {
-                                searchJob?.cancel()
+                                val previous = searchJob
+                                val query = searchQuery.trim()
+                                previous?.cancel()
                                 searchJob = scope.launch {
+                                    previous?.join()
                                     searching = true; matches = emptyList(); searchIterator = null; hasMore = false
                                     try {
-                                        val iterator = publication?.search(searchQuery.trim()) ?: error("本书不支持全文搜索")
+                                        val iterator = publication?.search(query) ?: error("本书不支持全文搜索")
                                         searchIterator = iterator
                                         val page = withContext(Dispatchers.IO) { iterator.next().getOrElse { error("搜索失败") } }
+                                        ensureActive()
                                         matches = page?.locators.orEmpty(); hasMore = page != null
                                     } catch (e: CancellationException) { throw e }
                                     catch (e: Exception) { message = e.message }
@@ -252,6 +258,9 @@ class ReaderActivity : FragmentActivity() {
             encodingChange?.let { encoding -> AlertDialog(onDismissRequest = { encodingChange = null }, title = { Text("切换为 $encoding？") },
                 text = { Text("重新解码可能改变章节位置，将从头打开。原 TXT 和已有书签不会删除，但旧书签位置可能失效。") },
                 confirmButton = { TextButton(onClick = { asset?.let { item -> lifecycleScope.launch {
+                    aloud?.stop()
+                    progressJob?.cancelAndJoin()
+                    ProgressWriter.flush()
                     library.setTextEncoding(item.id, encoding)
                     startActivity(android.content.Intent(this@ReaderActivity, ReaderActivity::class.java).putExtra("assetId", item.id))
                     finish()
