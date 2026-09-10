@@ -36,11 +36,11 @@ class NativeMusicProvider(val connection: CatalogConnection, client: OkHttpClien
         path.forEach(::addPathSegment)
     }.build()
     private fun HttpUrl.params(values: List<Pair<String, String>>) = newBuilder().apply { values.forEach { (key, value) -> addQueryParameter(key, value) } }.build()
-    private suspend fun json(url: HttpUrl, headers: Map<String, String> = emptyMap(), body: JSONObject? = null): JSONObject = withContext(Dispatchers.IO) {
+    private suspend fun json(url: HttpUrl, headers: Map<String, String> = emptyMap(), body: JSONObject? = null, form: FormBody? = null): JSONObject = withContext(Dispatchers.IO) {
         require(sameOrigin(c.base(), url))
         val call = http.newCall(Request.Builder().url(url).apply {
             headers.forEach { (key, value) -> header(key, value) }
-            if (body != null) post(body.toString().toRequestBody("application/json".toMediaType()))
+            if (form != null) post(form) else if (body != null) post(body.toString().toRequestBody("application/json".toMediaType()))
         }.build())
         val cancellation = launch { try { awaitCancellation() } finally { call.cancel() } }
         try { call.execute().use { response ->
@@ -191,6 +191,38 @@ class NativeMusicProvider(val connection: CatalogConnection, client: OkHttpClien
         }
         if (candidates.isEmpty()) add(endpoint(path, request.key.itemId, "stream").params(listOf("static" to "true")), PlayMethod.DIRECT_PLAY, "")
         return candidates.distinctBy { it.url }.take(16)
+    }
+    private var supportsFormPost = false
+    suspend fun preparePlaylistExport(title: String, ids: List<String>) {
+        require(title.isNotBlank() && ids.isNotEmpty() && ids.size <= 10000) { "歌单为空或超过一万首，请拆分歌单" }
+        if (c.kind == CatalogKind.JELLYFIN) { auth(); return }
+        val extensions = sub("getOpenSubsonicExtensions").optJSONArray("openSubsonicExtensions").objects()
+        supportsFormPost = extensions.any { it.optString("name") == "formPost" }
+        require(supportsFormPost || subsonicUrl("createPlaylist", listOf("name" to title) + ids.map { "songId" to it }).toString().length <= 8000) {
+            "服务端未支持表单写入，当前歌单超过其请求容量"
+        }
+    }
+    suspend fun createPlaylistCopy(title: String, ids: List<String>): String {
+        if (c.kind == CatalogKind.JELLYFIN) return jelly(arrayOf("Playlists"), body = JSONObject().put("Name", title).put("Ids", JSONArray(ids)).put("UserId", auth().second).put("MediaType", "Audio").put("IsPublic", false)).getString("Id")
+        val url = subsonicUrl("createPlaylist", listOf("name" to title) + ids.map { "songId" to it })
+        val result = if (supportsFormPost) {
+            val body = FormBody.Builder().apply { for (i in 0 until url.querySize) add(url.queryParameterName(i), url.queryParameterValue(i).orEmpty()) }.build()
+            json(url.newBuilder().query(null).build(), form = body)
+        } else json(url)
+        val data = result.getJSONObject("subsonic-response")
+        if (data.optString("status") != "ok") throw IOException("歌单写入失败：${data.optJSONObject("error")?.optInt("code") ?: 0}")
+        return data.getJSONObject("playlist").getString("id")
+    }
+    suspend fun playlistItemIds(id: String): List<String> {
+        if (c.kind == CatalogKind.OPENSUBSONIC) return sub("getPlaylist", "id" to id).getJSONObject("playlist").optJSONArray("entry").objects().map { it.getString("id") }
+        val result = mutableListOf<String>(); var total: Int
+        do {
+            val page = jelly(arrayOf("Playlists", id, "Items"), listOf("startIndex" to result.size.toString(), "limit" to "200"))
+            val items = page.optJSONArray("Items").objects(); total = page.optInt("TotalRecordCount")
+            check(items.isNotEmpty() || result.size >= total) { "歌单回读不完整" }
+            result += items.map { it.getString("Id") }; check(result.size <= 10000) { "歌单超出容量" }
+        } while (result.size < total)
+        return result
     }
     suspend fun lyrics(id: String): String? {
         if (c.kind == CatalogKind.JELLYFIN) {

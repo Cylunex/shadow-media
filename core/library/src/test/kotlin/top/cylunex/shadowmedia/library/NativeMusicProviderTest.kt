@@ -12,6 +12,26 @@ import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 class NativeMusicProviderTest {
+    @Test fun playlistFormExportPreservesRepeatedSongsAndReadbackOrder() = runBlocking {
+        val server = MockWebServer(); server.start()
+        try {
+            server.enqueue(MockResponse().setBody("""{"subsonic-response":{"status":"ok","openSubsonicExtensions":[{"name":"formPost","versions":[1]}]}}"""))
+            server.enqueue(MockResponse().setBody("""{"subsonic-response":{"status":"ok","playlist":{"id":"remote"}}}"""))
+            server.enqueue(MockResponse().setBody("""{"subsonic-response":{"status":"ok","playlist":{"entry":[{"id":"one"},{"id":"two"},{"id":"one"}]}}}"""))
+            val provider = NativeMusicProvider(CatalogConnection(name = "Music", kind = CatalogKind.OPENSUBSONIC, url = server.url("/").toString(), token = "example", allowHttp = true))
+            val ids = listOf("one", "two", "one")
+            provider.preparePlaylistExport("重复曲目", ids)
+            assertEquals("remote", provider.createPlaylistCopy("重复曲目", ids))
+            assertEquals(ids, provider.playlistItemIds("remote"))
+            server.takeRequest()
+            val write = server.takeRequest()
+            assertEquals("POST", write.method); assertNull(write.requestUrl!!.query)
+            val form = server.url("/").newBuilder().encodedQuery(write.body.readUtf8()).build()
+            assertEquals(ids, form.queryParameterValues("songId")); assertEquals("example", form.queryParameter("apiKey"))
+            assertNull(form.queryParameter("u")); assertEquals("重复曲目", form.queryParameter("name"))
+            assertEquals("remote", server.takeRequest().requestUrl!!.queryParameter("id"))
+        } finally { server.shutdown() }
+    }
     @Test fun jellyfinPlaybackInfoBuildsCandidateChainWithoutProbingMedia() = runBlocking {
         val server = MockWebServer(); server.start()
         try {

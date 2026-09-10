@@ -8,7 +8,7 @@ import org.w3c.dom.Element
 
 data class CatalogEntry(val id: String, val title: String, val author: String = "", val format: String = "", val navigation: String? = null,
     val acquisition: String? = null, val cover: String? = null, val locator: String = id)
-data class CatalogPage(val title: String, val entries: List<CatalogEntry>, val next: String? = null)
+data class CatalogPage(val title: String, val entries: List<CatalogEntry>, val next: String? = null, val cached: Boolean = false, val updatedAt: Long = 0)
 
 object OpdsCatalog {
     fun parse(bytes: ByteArray, url: String): CatalogPage {

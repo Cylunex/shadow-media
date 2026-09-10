@@ -43,11 +43,13 @@ import top.cylunex.shadowmedia.library.*
     LaunchedEffect(Unit) { refresh() }
     DisposableEffect(Unit) { onDispose { job?.cancel() } }
     fun load(c: CatalogConnection, node: String? = null, next: String? = null) {
+        val same = connection?.id == c.id && currentNode == node
         connection = c; currentNode = node
-        if (next == null) { page = null; query = "" }
+        if (next == null) { if (!same) page = null; query = "" }
         runOperation {
             loading = true; error = null
             try {
+                if (next == null) repository.cachedPage(c, node)?.let { page = it }
                 val result = repository.browse(c, node, next)
                 ensureActive()
                 page = if (next != null) result.copy(entries = (page?.entries.orEmpty() + result.entries).distinctBy { it.locator to it.format }) else result
@@ -67,8 +69,10 @@ import top.cylunex.shadowmedia.library.*
     BackHandler(onBack = ::back)
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         TopAppBar(title = { Text(connection?.name ?: "图书与音乐服务", maxLines = 1) }, navigationIcon = { IconButton(onClick = ::back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") } }, actions = {
+            if (connection != null) IconButton(enabled = !loading, onClick = { connection?.let { load(it, currentNode) } }) { Icon(Icons.Rounded.Refresh, "刷新目录") }
             if (connection == null) IconButton(onClick = { editing = null; editorVisible = true }) { Icon(Icons.Rounded.Add, "添加来源") }
         })
+        if (page?.cached == true) Text("正在显示本机目录，联网后可刷新更新", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodySmall)
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         error?.let { Text(it, Modifier.padding(20.dp), color = MaterialTheme.colorScheme.error) }
         LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

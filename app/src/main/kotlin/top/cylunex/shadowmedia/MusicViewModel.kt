@@ -102,7 +102,7 @@ class MusicViewModel(private val container: AppContainer) : ViewModel() {
                     val page = provider.browse(ProviderBrowseRequest(MediaKey(source.providerId, source.parentId), type = "Audio", pageToken = token, pageSize = 200))
                     check(page.items.isNotEmpty()) { "来源返回空页，未删除旧目录" }
                     expected = page.totalCount ?: expected
-                    val assets = page.items.map { container.music.importRemote(it).id }
+                    val assets = page.items.map { container.music.importRemote(it, collected = false).id }
                     snapshots.append(scopeId, generation, assets)
                     ids += assets
                     token = page.nextPageToken

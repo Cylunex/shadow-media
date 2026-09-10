@@ -27,15 +27,17 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProgressSessionEntity::class,
         AudioQueueEntity::class,
         AudioQueueEntryEntity::class,
+        UserCollectionEntity::class, WorkEntity::class, RenditionEntity::class, PlaylistExportEntity::class, CatalogPageEntity::class,
         ResourceTaskEntity::class, CatalogScopeEntity::class, CatalogEntryEntity::class,
         AudioChapterEntity::class, MusicTrackEntity::class, MusicListeningEntity::class, MusicPlaylistEntity::class, MusicPlaylistEntryEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = true,
 )
 abstract class ShadowMediaDatabase : RoomDatabase() {
     abstract fun dao(): ShadowMediaDao
     abstract fun libraryDao(): LibraryDao
+    abstract fun libraryStateDao(): LibraryStateDao
     abstract fun resourceTaskDao(): ResourceTaskDao
     abstract fun catalogSnapshotDao(): CatalogSnapshotDao
     abstract fun chapterDao(): ChapterDao
@@ -50,7 +52,21 @@ abstract class ShadowMediaDatabase : RoomDatabase() {
                 context.applicationContext,
                 ShadowMediaDatabase::class.java,
                 "shadow-media.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8).build().also { instance = it }
+        }
+
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS user_collection (profileId TEXT NOT NULL, assetId TEXT NOT NULL, collected INTEGER NOT NULL, favorite INTEGER NOT NULL, addedAt INTEGER NOT NULL, PRIMARY KEY(profileId, assetId), FOREIGN KEY(assetId) REFERENCES library_assets(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_user_collection_assetId ON user_collection(assetId)")
+                db.execSQL("INSERT OR IGNORE INTO user_collection SELECT 'default', a.id, NOT EXISTS(SELECT 1 FROM catalog_entries c WHERE c.assetId = a.id) OR a.favorite = 1 OR EXISTS(SELECT 1 FROM music_playlist_entries e WHERE e.assetId = a.id), a.favorite, a.addedAt FROM library_assets a")
+                db.execSQL("CREATE TABLE IF NOT EXISTS works (id TEXT NOT NULL PRIMARY KEY, title TEXT NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS renditions (assetId TEXT NOT NULL PRIMARY KEY, workId TEXT NOT NULL, FOREIGN KEY(workId) REFERENCES works(id) ON UPDATE NO ACTION ON DELETE CASCADE, FOREIGN KEY(assetId) REFERENCES library_assets(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_renditions_workId ON renditions(workId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS playlist_exports (providerId TEXT NOT NULL, playlistId TEXT NOT NULL, operationId TEXT NOT NULL, title TEXT NOT NULL, itemIdsJson TEXT NOT NULL, remoteId TEXT NOT NULL, phase TEXT NOT NULL, message TEXT NOT NULL, updatedAt INTEGER NOT NULL, PRIMARY KEY(providerId, playlistId), FOREIGN KEY(playlistId) REFERENCES music_playlists(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_playlist_exports_playlistId ON playlist_exports(playlistId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS catalog_pages (id TEXT NOT NULL PRIMARY KEY, payload TEXT NOT NULL, updatedAt INTEGER NOT NULL)")
+            }
         }
 
         val MIGRATION_6_7 = object : Migration(6, 7) {

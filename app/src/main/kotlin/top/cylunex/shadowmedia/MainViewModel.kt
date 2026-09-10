@@ -842,7 +842,7 @@ class MainViewModel(
                 showError(IllegalStateException("此 Emby 账号已移除，请重新连接"))
                 return
             }
-            val embyItem = provider.mediaItem(item.key) ?: item.toEmbyMediaItem()
+            val embyItem = (provider.mediaItem(item.key) ?: item.toEmbyMediaItem()).copy(playbackPositionTicks = item.progressMs.coerceIn(0, Long.MAX_VALUE / 10000) * 10000)
             update {
                 copy(
                     session = provider.session,
@@ -1408,6 +1408,26 @@ class MainViewModel(
         if (top.cylunex.shadowmedia.library.LibraryResources.hasOfflineMedia?.invoke(asset) != true) return false
         showOfflineVideo(asset, positionMs)
         return true
+    }
+    fun continueLegacy(row: top.cylunex.shadowmedia.database.ContinueRow) {
+        cancelContentRequests()
+        contentRequest = viewModelScope.launch {
+            val key = MediaKey(row.providerId, row.itemId)
+            try {
+                if (tryOfflineVideo(key, row.positionMs ?: 0)) return@launch
+                val provider = requireNotNull(providerRegistry.provider(key.providerId)) { "来源已断开，请重新连接" }
+                val item = provider.detail(key).item
+                ensureActive()
+                playUnifiedOnline(item.copy(progressMs = row.positionMs ?: 0))
+            } catch (e: CancellationException) { throw e } catch (e: Exception) { showError(e) }
+        }
+    }
+    fun continueLibraryVideo(asset: top.cylunex.shadowmedia.database.LibraryAssetEntity) {
+        viewModelScope.launch {
+            val history = localMediaState.history("${asset.providerId}:${asset.itemId}")
+            continueLegacy(top.cylunex.shadowmedia.database.ContinueRow("", null, asset.providerId, asset.itemId, asset.title, asset.kind,
+                history?.takeUnless { it.completed }?.positionMs ?: 0, history?.durationMs, null, 0))
+        }
     }
     fun playOfflineAsset(asset: top.cylunex.shadowmedia.database.LibraryAssetEntity) {
         cancelContentRequests()

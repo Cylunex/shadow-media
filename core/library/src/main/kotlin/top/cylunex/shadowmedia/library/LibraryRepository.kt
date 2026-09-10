@@ -24,15 +24,19 @@ class LibraryRepository(context: Context) {
     val progress = dao.progress()
     private val root = File(this.context.filesDir, "publications").apply { mkdirs() }
 
-    suspend fun addRemote(item: UnifiedMediaItem, format: String): LibraryAssetEntity {
+    suspend fun addRemote(item: UnifiedMediaItem, format: String, collected: Boolean = true): LibraryAssetEntity {
         val id = digest("${item.key.providerId.length}:${item.key.providerId}:${item.key.itemId}")
-        return dao.asset(id) ?: LibraryAssetEntity(id, item.key.providerId, item.key.itemId, item.title,
+        val asset = dao.assetForKey(item.key.providerId, item.key.itemId) ?: LibraryAssetEntity(id, item.key.providerId, item.key.itemId, item.title,
             author = item.subtitle.orEmpty(), kind = contentKind(item.type).name, format = format, addedAt = System.currentTimeMillis()).also {
             dao.putAsset(it)
             if (contentKind(item.type) == ContentKind.AUDIOBOOK && (item.progressMs > 0 || item.played)) dao.seedProgress(ContentProgressEntity(id,
                 locatorType = "time", locatorJson = JSONObject().put("trackId", id).put("positionMs", item.progressMs).put("durationMs", item.durationMs).toString(),
                 completed = item.played, updatedAt = System.currentTimeMillis()))
         }
+        val states = ShadowMediaDatabase.create(context).libraryStateDao()
+        states.seedCollection(UserCollectionEntity(assetId = asset.id, collected = collected, favorite = asset.favorite, addedAt = asset.addedAt))
+        if (collected) states.collect(asset.id)
+        return asset
     }
 
     suspend fun fetchRemote(asset: LibraryAssetEntity, candidate: PlaybackCandidate, onProgress: (Long, Long?) -> Unit = { _, _ -> }): LibraryAssetEntity {
@@ -239,6 +243,8 @@ class LibraryRepository(context: Context) {
     )
 
     suspend fun remove(id: String) = withContext(Dispatchers.IO) {
+        val tasks = ShadowMediaDatabase.create(context).resourceTaskDao()
+        tasks.task(id)?.let { OfflineRepository(context, this@LibraryRepository).remove(it) }
         dao.removeFromShelf(id)
         // Only application-owned files for this resolved asset; never the source document.
         folder(id).deleteRecursively()

@@ -47,6 +47,7 @@ class AppContainer(private val application: Application) {
     val offline = top.cylunex.shadowmedia.library.OfflineRepository(application, library)
     val music = top.cylunex.shadowmedia.library.MusicRepository(application, library)
     val catalogs = top.cylunex.shadowmedia.library.NativeCatalogRepository(application, library)
+    val playlistExports = top.cylunex.shadowmedia.library.PlaylistExportRepository(application, catalogs, library)
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val database = ShadowMediaDatabase.create(application)
     val localMediaState = LocalMediaStateRepository(database.dao())

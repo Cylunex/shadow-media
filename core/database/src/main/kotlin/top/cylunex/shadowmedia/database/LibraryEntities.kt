@@ -70,13 +70,13 @@ data class LibraryShelfRow(@Embedded val asset: LibraryAssetEntity, val progress
 
 @Dao
 interface LibraryDao {
-    @Query("SELECT a.*, p.progression, p.completed, p.updatedAt FROM library_assets a LEFT JOIN progress_records p ON p.assetId = a.id WHERE a.kind IN (:kinds) AND (:favorite = 0 OR a.favorite = 1) AND (:unfinished = 0 OR p.completed IS NULL OR p.completed = 0) AND (a.title LIKE :query ESCAPE '\\' OR a.author LIKE :query ESCAPE '\\') ORDER BY CASE WHEN :byName THEN a.title END COLLATE NOCASE, a.addedAt DESC, a.id")
+    @Query("SELECT a.*, p.progression, p.completed, p.updatedAt FROM library_assets a LEFT JOIN progress_records p ON p.assetId = a.id WHERE COALESCE((SELECT c.collected FROM user_collection c WHERE c.assetId = a.id AND c.profileId = 'default'), 1) = 1 AND a.kind IN (:kinds) AND (:favorite = 0 OR a.favorite = 1) AND (:unfinished = 0 OR p.completed IS NULL OR p.completed = 0) AND (a.title LIKE :query ESCAPE '\\' OR a.author LIKE :query ESCAPE '\\') ORDER BY CASE WHEN :byName THEN a.title END COLLATE NOCASE, a.addedAt DESC, a.id")
     fun shelf(kinds: List<String>, query: String, favorite: Boolean, unfinished: Boolean, byName: Boolean): androidx.paging.PagingSource<Int, LibraryShelfRow>
     @Query("SELECT a.*, p.progression, p.completed, p.updatedAt FROM library_assets a JOIN progress_records p ON p.assetId = a.id WHERE a.kind IN (:kinds) AND p.completed = 0 ORDER BY p.updatedAt DESC LIMIT 1")
     fun continuing(kinds: List<String>): Flow<LibraryShelfRow?>
-    @Query("SELECT * FROM library_assets WHERE (:kind = '' OR kind = :kind) AND (title LIKE :query ESCAPE '\\' OR author LIKE :query ESCAPE '\\') ORDER BY addedAt DESC, id LIMIT :limit OFFSET :offset")
+    @Query("SELECT * FROM library_assets WHERE COALESCE((SELECT c.collected FROM user_collection c WHERE c.assetId = library_assets.id AND c.profileId = 'default'), 1) = 1 AND (:kind = '' OR kind = :kind) AND (title LIKE :query ESCAPE '\\' OR author LIKE :query ESCAPE '\\') ORDER BY addedAt DESC, id LIMIT :limit OFFSET :offset")
     suspend fun searchPage(kind: String, query: String, offset: Int, limit: Int): List<LibraryAssetEntity>
-    @Query("SELECT COUNT(*) FROM library_assets WHERE (:kind = '' OR kind = :kind) AND (title LIKE :query ESCAPE '\\' OR author LIKE :query ESCAPE '\\')")
+    @Query("SELECT COUNT(*) FROM library_assets WHERE COALESCE((SELECT c.collected FROM user_collection c WHERE c.assetId = library_assets.id AND c.profileId = 'default'), 1) = 1 AND (:kind = '' OR kind = :kind) AND (title LIKE :query ESCAPE '\\' OR author LIKE :query ESCAPE '\\')")
     suspend fun searchCount(kind: String, query: String): Int
 
     @Query("SELECT * FROM library_assets ORDER BY addedAt DESC")
@@ -91,7 +91,12 @@ interface LibraryDao {
     @Query("UPDATE library_assets SET localUri = '' WHERE id = :id AND localUri = :expectedUri")
     suspend fun clearLocalCopy(id: String, expectedUri: String)
     @Query("UPDATE library_assets SET favorite = :favorite WHERE id = :id")
-    suspend fun favorite(id: String, favorite: Boolean)
+    suspend fun legacyFavorite(id: String, favorite: Boolean)
+    @Query("INSERT OR IGNORE INTO user_collection SELECT 'default', id, 1, favorite, addedAt FROM library_assets WHERE id = :id") suspend fun seedPersonalState(id: String)
+    @Query("UPDATE user_collection SET favorite = :favorite, collected = 1 WHERE assetId = :id AND profileId = 'default'") suspend fun userFavorite(id: String, favorite: Boolean)
+    @Transaction suspend fun favorite(id: String, favorite: Boolean) {
+        seedPersonalState(id); userFavorite(id, favorite); legacyFavorite(id, favorite)
+    }
     @Query("UPDATE library_assets SET coverPath = :path WHERE id = :id AND coverPath = ''")
     suspend fun fillCover(id: String, path: String): Int
     @Query("DELETE FROM library_assets WHERE id = :id")

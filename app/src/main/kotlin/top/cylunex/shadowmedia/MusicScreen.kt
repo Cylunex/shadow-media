@@ -53,6 +53,7 @@ import top.cylunex.shadowmedia.model.AudioMode
     var playlistName by remember { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<MusicRow?>(null) }
     var addPlaylist by remember { mutableStateOf(false) }
+    var exportPlaylist by remember { mutableStateOf<MusicPlaylistEntity?>(null) }
     var editingPlaylist by remember { mutableStateOf<MusicPlaylistEntity?>(null) }
     val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         uris.forEach { context.contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
@@ -138,12 +139,14 @@ import top.cylunex.shadowmedia.model.AudioMode
             }
         }
     } }
+    exportPlaylist?.let { PlaylistExportSheet(container, it, onDismiss = { exportPlaylist = null }) }
     editingPlaylist?.let { playlist ->
         var entries by remember(playlist.id) { mutableStateOf<List<Pair<MusicPlaylistEntryEntity, LibraryAssetEntity?>>>(emptyList()) }
         LaunchedEffect(playlist.id) { entries = model.playlistItems(playlist.id) }
         ModalBottomSheet(onDismissRequest = { editingPlaylist = null }) {
             Column(Modifier.padding(20.dp)) {
                 Text(playlist.title, style = MaterialTheme.typography.titleLarge)
+                TextButton(onClick = { exportPlaylist = playlist; editingPlaylist = null }) { Text("导出歌单副本到服务器") }
                 LazyColumn(Modifier.heightIn(max = 480.dp)) { items(entries, key = { it.first.entryId }) { (entry, asset) ->
                     val index = entries.indexOfFirst { it.first.entryId == entry.entryId }
                     ListItem(headlineContent = { Text(asset?.title ?: "来源条目已移除") }, trailingContent = { Row {

@@ -69,7 +69,27 @@ class NativeCatalogRepository(private val context: Context, private val library:
     private suspend fun json(c: CatalogConnection, url: HttpUrl) = JSONObject(request(c, url).toString(Charsets.UTF_8))
     private fun JSONArray?.objects() = this?.let { (0 until length()).mapNotNull { optJSONObject(it) } }.orEmpty()
 
-    suspend fun browse(c: CatalogConnection, node: String? = null, next: String? = null, query: String = ""): CatalogPage = when (c.kind) {
+    private val snapshotDao = top.cylunex.shadowmedia.database.ShadowMediaDatabase.create(context).libraryStateDao()
+    private fun pageKey(c: CatalogConnection, node: String?, next: String?, query: String): String = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(scopedContentId(providerId(c), node.orEmpty(), next.orEmpty(), query).toByteArray()).joinToString("") { "%02x".format(it) }
+    suspend fun cachedPage(c: CatalogConnection, node: String? = null, next: String? = null, query: String = ""): CatalogPage? =
+        snapshotDao.catalogPage(pageKey(c, node, next, query))?.let { runCatching { CatalogSnapshotCodec.decode(it.payload).copy(updatedAt = it.updatedAt) }.getOrNull() }
+    suspend fun browse(c: CatalogConnection, node: String? = null, next: String? = null, query: String = ""): CatalogPage {
+        if (LibraryResources.offlineOnly) return cachedPage(c, node, next, query) ?: error("此目录尚未缓存在本机")
+        return try {
+            val page = browseRemote(c, node, next, query)
+            if (page.entries.isEmpty()) cachedPage(c, node, next, query)?.takeIf { it.entries.isNotEmpty() }?.let { return it }
+            val now = System.currentTimeMillis()
+            val payload = CatalogSnapshotCodec.encode(page, c.kind)
+            if (payload.toByteArray().size <= 256 * 1024) {
+                snapshotDao.putCatalogPage(top.cylunex.shadowmedia.database.CatalogPageEntity(pageKey(c, node, next, query), payload, now))
+                snapshotDao.trimCatalogPages()
+            }
+            page.copy(updatedAt = now)
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { cachedPage(c, node, next, query) ?: throw e }
+    }
+    private suspend fun browseRemote(c: CatalogConnection, node: String? = null, next: String? = null, query: String = ""): CatalogPage = when (c.kind) {
         CatalogKind.JELLYFIN, CatalogKind.OPENSUBSONIC -> {
             val provider = musicProvider(c)
             val page = if (query.isNotBlank()) provider.search(top.cylunex.shadowmedia.provider.ProviderSearchRequest(query, pageToken = next))

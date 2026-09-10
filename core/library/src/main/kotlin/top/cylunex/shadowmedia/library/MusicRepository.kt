@@ -60,9 +60,9 @@ class MusicRepository(private val context: Context, private val library: Library
         count
     }
 
-    suspend fun importRemote(item: UnifiedMediaItem): LibraryAssetEntity {
+    suspend fun importRemote(item: UnifiedMediaItem, collected: Boolean = true): LibraryAssetEntity {
         val tags = item.music ?: MusicMetadata()
-        val asset = library.addRemote(item.copy(type = "MUSIC"), "audio")
+        val asset = library.addRemote(item.copy(type = "MUSIC"), "audio", collected)
         database.withTransaction {
             library.dao.asset(asset.id)?.let { library.dao.putAsset(it.copy(kind = "MUSIC", title = item.title, author = tags.artist)) }
             dao.putTrack(MusicTrackEntity(asset.id, album = tags.album, artist = tags.artist,

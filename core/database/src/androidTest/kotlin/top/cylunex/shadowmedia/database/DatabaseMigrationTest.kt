@@ -16,10 +16,10 @@ class DatabaseMigrationTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     @get:Rule val helper = MigrationTestHelper(instrumentation, ShadowMediaDatabase::class.java)
     private val migrations = arrayOf(ShadowMediaDatabase.MIGRATION_1_2, ShadowMediaDatabase.MIGRATION_2_3,
-        ShadowMediaDatabase.MIGRATION_3_4, ShadowMediaDatabase.MIGRATION_4_5, ShadowMediaDatabase.MIGRATION_5_6, ShadowMediaDatabase.MIGRATION_6_7)
+        ShadowMediaDatabase.MIGRATION_3_4, ShadowMediaDatabase.MIGRATION_4_5, ShadowMediaDatabase.MIGRATION_5_6, ShadowMediaDatabase.MIGRATION_6_7, ShadowMediaDatabase.MIGRATION_7_8)
 
     @Test fun everyHistoricalSchemaPreservesAllLegacyColumnsAndReopens() {
-        val latest = 7
+        val latest = 8
         for (version in 1 until latest) {
             val name = "migration-from-$version"
             val schema = instrumentation.context.assets.open("${ShadowMediaDatabase::class.java.name}/$version.json").bufferedReader().use { JSONObject(it.readText()) }

@@ -86,6 +86,8 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             block()
         }
     }
+    var continueScreen by rememberSaveable { mutableStateOf(false) }
+    var workAsset by remember { mutableStateOf<LibraryAssetEntity?>(null) }
     var offlineScreen by rememberSaveable { mutableStateOf(false) }
     var catalogScreen by rememberSaveable { mutableStateOf(false) }
     val playerScreen = state.screen in setOf(Screen.PLAYER, Screen.EXTERNAL_PLAYER)
@@ -100,6 +102,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     }
     LaunchedEffect(queueError, queueMessage) { (queueError ?: queueMessage)?.let { message = it } }
     fun open(item: LibraryAssetEntity) {
+        if (item.kind in setOf("MOVIE", "EPISODE")) { viewModel.continueLibraryVideo(item); return }
         if (item.kind in setOf("AUDIOBOOK", "MUSIC", "PODCAST")) {
             val control = controller
             if (control == null) { message = "音频服务正在连接，请稍后重试"; return }
@@ -166,7 +169,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             }
         }
     }
-    fun select(index: Int) { tab = index; audioExpanded = false; catalogScreen = false; offlineScreen = false; viewModel.showHome() }
+    fun select(index: Int) { tab = index; audioExpanded = false; catalogScreen = false; offlineScreen = false; continueScreen = false; viewModel.showHome() }
     if (playerScreen) { LegacyMediaRoot(viewModel, container); return }
     BackHandler(enabled = audioExpanded) { audioExpanded = false }
     Scaffold(bottomBar = {
@@ -192,6 +195,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                 }
                 when {
                     audioExpanded -> AudioNowPlaying(controller, container.library, onBack = { audioExpanded = false })
+                    continueScreen -> ContinueScreen(container, onBack = { continueScreen = false }, onOpen = ::open, onLegacy = viewModel::continueLegacy)
                     offlineScreen -> OfflineScreen(container, onBack = { offlineScreen = false }, onOpen = { asset ->
                         if (asset.kind in setOf("MOVIE", "EPISODE")) viewModel.playOfflineAsset(asset) else open(asset)
                     })
@@ -209,7 +213,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                         } else if (control == null) message = "音频服务正在连接，请稍后重试"
                     })
                     (tab == 2 || tab == 3) && state.screen == Screen.HOME -> PublicationShelf(container.library, audio = tab == 3, onImport = { importer.launch(arrayOf("*/*")) }, onOpen = ::open,
-                        onDirectory = { directoryImporter.launch(null) },
+                        onDirectory = { directoryImporter.launch(null) }, onAssociate = { workAsset = it },
                         onOffline = { item -> scope.launch {
                             try { container.offline.enqueue(item); message = "已加入离线任务" }
                             catch (e: CancellationException) { throw e }
@@ -223,7 +227,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                             }
                             container.library.remove(item.id)
                         } })
-                    tab == 4 && state.screen == Screen.HOME -> SourcesHub(state, viewModel, pendingSync, onImport = { importer.launch(arrayOf("*/*")) }, onCatalogs = { catalogScreen = true }, onOffline = { offlineScreen = true })
+                    tab == 4 && state.screen == Screen.HOME -> SourcesHub(state, viewModel, pendingSync, onImport = { importer.launch(arrayOf("*/*")) }, onCatalogs = { catalogScreen = true }, onOffline = { offlineScreen = true }, onContinue = { continueScreen = true })
                     tab == 1 && state.screen == Screen.HOME -> LiveLanding(state, container, viewModel)
                     else -> LegacyMediaRoot(viewModel, container)
                 }
@@ -233,6 +237,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     importing?.let { label -> AlertDialog(onDismissRequest = {}, title = { Text(label) }, text = { LinearProgressIndicator(Modifier.fillMaxWidth()) }, confirmButton = { TextButton(onClick = { importJob?.cancel() }) { Text("取消") } }) }
     message?.let { text -> AlertDialog(onDismissRequest = { message = null }, text = { Text(text) }, confirmButton = { TextButton(onClick = { message = null }) { Text("知道了") } }) }
     if (progressError != null) Text(progressError!!, Modifier.statusBarsPadding().padding(16.dp), color = MaterialTheme.colorScheme.error)
+    workAsset?.let { asset -> WorkAssociationSheet(container, asset, onDismiss = { workAsset = null }, onOpen = { workAsset = null; open(it) }) }
     state.pendingPublication?.let { item ->
         AlertDialog(onDismissRequest = viewModel::clearPendingPublication, title = { Text(item.title) }, text = { Text(if (item.key.providerId == "library") "打开书架中的内容并恢复本机进度。" else if (top.cylunex.shadowmedia.model.contentKind(item.type).isAudio()) "加入听书库并在线播放，不需要下载整本。" else "将下载一份本机副本后打开阅读，最大 1 GiB。会使用网络和本机空间，可随时取消；不修改来源文件。") },
             confirmButton = { TextButton(onClick = {
@@ -256,7 +261,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
 
 @Composable private fun PublicationShelf(
     library: LibraryRepository, audio: Boolean,
-    onImport: () -> Unit, onDirectory: () -> Unit, onOffline: (LibraryAssetEntity) -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onFavorite: (LibraryAssetEntity) -> Unit, onRemove: (LibraryAssetEntity) -> Unit,
+    onImport: () -> Unit, onDirectory: () -> Unit, onAssociate: (LibraryAssetEntity) -> Unit, onOffline: (LibraryAssetEntity) -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onFavorite: (LibraryAssetEntity) -> Unit, onRemove: (LibraryAssetEntity) -> Unit,
 ) {
     var filter by rememberSaveable(audio) { mutableStateOf("全部") }
     var query by rememberSaveable(audio) { mutableStateOf("") }
@@ -333,6 +338,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             TextButton(onClick = { selected = null; onOpen(item) }) { Text(if (audio) "开始收听" else "打开阅读") }
             if (item.providerId != "local" && item.localUri.isBlank()) TextButton(onClick = { selected = null; onOffline(item) }) { Text("保存离线副本（最多 1 GiB）") }
             if (item.localUri.isNotBlank()) Text("此内容可从本机打开", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TextButton(onClick = { selected = null; onAssociate(item) }) { Text("作品与其他版本") }
             TextButton(onClick = { selected = null; onFavorite(item) }) { Text(if (item.favorite) "取消收藏" else "收藏") }
             TextButton(onClick = { selected = null; removing = item }) { Text("从书架移除", color = MaterialTheme.colorScheme.error) }
         }
@@ -352,11 +358,12 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     }
 }
 
-@Composable private fun SourcesHub(state: MainUiState, viewModel: MainViewModel, pendingSync: Int, onImport: () -> Unit, onCatalogs: () -> Unit, onOffline: () -> Unit) {
+@Composable private fun SourcesHub(state: MainUiState, viewModel: MainViewModel, pendingSync: Int, onImport: () -> Unit, onCatalogs: () -> Unit, onOffline: () -> Unit, onContinue: () -> Unit) {
     val context = LocalContext.current
     val appearance = remember { context.getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE) }
     var theme by remember { mutableStateOf(appearance.getString("theme", "深色")) }
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item { FilledTonalButton(onClick = onContinue, modifier = Modifier.fillMaxWidth()) { Text("继续播放与阅读") } }
         item { OutlinedButton(onClick = onOffline, modifier = Modifier.fillMaxWidth()) { Text("离线任务与存储") } }
         item { Text("来源", style = MaterialTheme.typography.headlineLarge); Text("你的内容，按自己的方式连接", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item { SourceTile("Emby 媒体服务", "${state.savedSessions.size} 个已保存账号", Icons.Rounded.Dns, viewModel::showServers) }
