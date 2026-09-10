@@ -12,6 +12,35 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class LibraryStateTest {
+    @Test fun lateFavoriteAcknowledgementCannotClearNewerLocalChoice() = runBlocking {
+        Room.inMemoryDatabaseBuilder(InstrumentationRegistry.getInstrumentation().targetContext, ShadowMediaDatabase::class.java).build().useDatabase { db ->
+            val dao = db.libraryStateDao()
+            val old = RemoteUserStateEntity("account", "item", true, "first", true, 1)
+            dao.favorite(old); dao.favorite(old.copy(favorite = false, operationId = "second", updatedAt = 2))
+            dao.acknowledgeUserState("account", "item", "first")
+            assertTrue(dao.userState("account", "item")!!.pending)
+            assertFalse(dao.userState("account", "item")!!.favorite)
+            dao.acknowledgeUserState("account", "item", "second")
+            assertFalse(dao.userState("account", "item")!!.pending)
+        }
+    }
+    @Test fun accountScopeMigrationKeepsEditionIdsAndNeverGuessesAmbiguousHistory() = runBlocking {
+        Room.inMemoryDatabaseBuilder(InstrumentationRegistry.getInstrumentation().targetContext, ShadowMediaDatabase::class.java).build().useDatabase { db ->
+            val a = top.cylunex.shadowmedia.model.EmbySession("https://example.com/a", "server", "user", "A", "secret", false)
+            val asset = LibraryAssetEntity("asset", a.legacyProviderId, "item", "书籍", kind = "AUDIOBOOK", format = "m4b", addedAt = 1)
+            db.libraryDao().putAsset(asset)
+            val progress = ContentProgressEntity("asset", locatorType = "time", locatorJson = "{\"positionMs\":1234}", updatedAt = 2)
+            db.libraryDao().putProgress(progress)
+            db.migrateAccountScopes(listOf(a)); db.migrateAccountScopes(listOf(a))
+            assertEquals(a.providerId, db.libraryDao().asset("asset")!!.providerId)
+            assertEquals(progress, db.libraryDao().progress("asset"))
+            val ambiguous = a.copy(serverId = "clone")
+            db.libraryDao().putAsset(asset.copy(id = "ambiguous", providerId = ambiguous.legacyProviderId))
+            db.migrateAccountScopes(listOf(ambiguous, ambiguous.copy(serverUrl = "https://example.com/b")))
+            db.migrateAccountScopes(listOf(ambiguous))
+            assertEquals(ambiguous.legacyProviderId, db.libraryDao().asset("ambiguous")!!.providerId)
+        }
+    }
     @Test fun associationDoesNotTranslateOrOverwriteEitherRenditionProgress() = runBlocking {
         Room.inMemoryDatabaseBuilder(InstrumentationRegistry.getInstrumentation().targetContext, ShadowMediaDatabase::class.java).build().useDatabase { db ->
             val book = LibraryAssetEntity("book", "local", "book", "同一作品", kind = "BOOK", format = "epub", addedAt = 1)

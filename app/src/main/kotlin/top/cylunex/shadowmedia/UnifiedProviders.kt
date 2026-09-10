@@ -30,7 +30,7 @@ internal class EmbyMediaProvider(
     private val repository: EmbyRepository,
 ) : MediaProvider {
     override val descriptor = ProviderDescriptor(
-        id = "emby:${session.serverId}:${session.userId}",
+        id = session.providerId,
         name = "Emby · ${session.userName}",
         kind = ProviderKind.EMBY,
         capabilities = setOf(
@@ -72,6 +72,7 @@ internal class EmbyMediaProvider(
             items = page.items.map(::toUnified),
             nextPageToken = if (page.hasMore) (offset + page.items.size).toString() else null,
             totalCount = page.totalRecordCount,
+            cached = page.cached,
         )
     }
 
@@ -95,6 +96,7 @@ internal class EmbyMediaProvider(
             page.items.map(::toUnified),
             nextPageToken = if (page.hasMore) (offset + page.items.size).toString() else null,
             totalCount = page.totalRecordCount,
+            cached = page.cached,
         )
     }
 

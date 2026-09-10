@@ -15,7 +15,7 @@ import top.cylunex.shadowmedia.library.LibraryResources
 
 @Composable internal fun PlaylistExportSheet(container: AppContainer, playlist: MusicPlaylistEntity, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
-    val providers = remember { container.catalogs.musicProviders() }
+    val providers = remember { container.catalogs.musicProviders().filter { it.descriptor.facets.userState.playlistWrite == top.cylunex.shadowmedia.model.PlaylistWrite.CREATE_COPY_AND_VERIFY } }
     val exports by remember(playlist.id) { container.playlistExports.dao.exports(playlist.id) }.collectAsStateWithLifecycle(emptyList())
     var working by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }

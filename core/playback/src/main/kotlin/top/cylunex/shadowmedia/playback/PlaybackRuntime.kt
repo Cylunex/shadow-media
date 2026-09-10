@@ -384,7 +384,7 @@ class PlaybackRuntime(
         val candidate = currentCandidate()
         return PlaybackTelemetrySnapshot(
             id = telemetryId,
-            providerId = "emby:${session.serverId}:${session.userId}",
+            providerId = session.providerId,
             itemId = plan.itemId,
             playSessionId = plan.playSessionId,
             method = candidate.method.name,

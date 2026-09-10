@@ -41,7 +41,7 @@ class AggregateSearchEngine(private val timeoutMs: Long = 12_000, private val co
         val normalizedQuery = request.query.trim()
         require(normalizedQuery.isNotEmpty()) { "搜索内容不能为空" }
         val searchable = providers.distinctBy { it.descriptor.id }.filter {
-            it.descriptor.enabled && ProviderCapability.SEARCH in it.descriptor.capabilities
+            it.descriptor.enabled && it.descriptor.facets.catalog.searchable
         }
         val pending = searchable.map { it.descriptor.id }.toMutableSet()
         val pages = linkedMapOf<String, top.cylunex.shadowmedia.model.UnifiedMediaPage>()

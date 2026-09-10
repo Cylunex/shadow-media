@@ -28,6 +28,8 @@ import top.cylunex.shadowmedia.network.DefaultNetworkStorageRepository
 import top.cylunex.shadowmedia.network.KeystoreNetworkStorageStore
 import top.cylunex.shadowmedia.database.LocalMediaStateRepository
 import top.cylunex.shadowmedia.database.ShadowMediaDatabase
+import top.cylunex.shadowmedia.database.migrateAccountScopes
+import kotlinx.coroutines.async
 import top.cylunex.shadowmedia.provider.InMemoryProviderRegistry
 import top.cylunex.shadowmedia.provider.AggregateSearchEngine
 import top.cylunex.shadowmedia.database.MediaHistoryEntity
@@ -61,13 +63,14 @@ class AppContainer(private val application: Application) {
         version = BuildConfig.VERSION_NAME,
     )
     val sessionStore: SessionStore = KeystoreSessionStore(application)
-    val embyRepository: EmbyRepository = DefaultEmbyRepository(
+    val accountScopesReady = applicationScope.async { database.migrateAccountScopes(sessionStore.loadAll()) }
+    val embyRepository: EmbyRepository = top.cylunex.shadowmedia.network.CachedEmbyRepository(DefaultEmbyRepository(
         client = OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor())
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .build(),
         clientIdentity = clientIdentity,
-    )
+    ), top.cylunex.shadowmedia.network.EmbyCatalogCache(database.libraryStateDao()))
     val playbackOutbox: PlaybackOutbox = PersistentPlaybackOutbox(application, embyRepository)
     private val audioReporter = EmbyAudioReporter(applicationScope, playbackOutbox)
     val feedSessionStore = FeedSessionStore(application)
@@ -112,7 +115,8 @@ class AppContainer(private val application: Application) {
             while (true) {
                 try { catalogs.flush() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { /* Keep persisted operations for reconnect. */ }
                 sessionStore.loadAll().forEach { account ->
-                    for (operation in library.dao.pending("emby:${account.serverId}:${account.userId}").filter { it.kind == "offline-audio" }) {
+                    embyRepository.flushUserStates(account)
+                    for (operation in library.dao.pending(account.providerId).filter { it.kind == "offline-audio" }) {
                         if (operation.nextAttemptAt > System.currentTimeMillis()) continue
                         try {
                             val asset = library.dao.asset(operation.target)
@@ -128,7 +132,9 @@ class AppContainer(private val application: Application) {
                 kotlinx.coroutines.delay(30_000)
             }
         }
-        top.cylunex.shadowmedia.library.LibraryResources.resolver = { asset ->
+        top.cylunex.shadowmedia.library.LibraryResources.resolver = { requestedAsset ->
+            accountScopesReady.await()
+            val asset = library.dao.asset(requestedAsset.id) ?: requestedAsset
             val key = top.cylunex.shadowmedia.model.MediaKey(asset.providerId, asset.itemId)
             val candidates = when {
                 asset.providerId.startsWith("catalog:") -> listOf(catalogs.resolve(asset))
@@ -137,18 +143,20 @@ class AppContainer(private val application: Application) {
                     networkStorageRepository.provider(connection).resolve(top.cylunex.shadowmedia.model.UnifiedPlaybackRequest(key))
                 }
                 asset.providerId.startsWith("emby:") -> {
-                    val session = requireNotNull(sessionStore.loadAll().firstOrNull { "emby:${it.serverId}:${it.userId}" == asset.providerId }) { "Emby 账号已移除" }
+                    val session = requireNotNull(sessionStore.loadAll().firstOrNull { it.providerId == asset.providerId }) { "Emby 账号已移除" }
                     if (asset.kind in setOf("MUSIC", "AUDIOBOOK", "PODCAST")) embyRepository.audioPlan(session, asset.itemId).candidates else embyRepository.playbackPlan(session, asset.itemId).candidates
                 }
                 else -> requireNotNull(providerRegistry.provider(asset.providerId)) { "来源不可用，请重新连接" }.resolve(top.cylunex.shadowmedia.model.UnifiedPlaybackRequest(key))
             }
             requireNotNull(candidates.firstOrNull()) { "来源没有返回资源" }
         }
-        top.cylunex.shadowmedia.library.LibraryResources.audioResolver = { asset, entryId ->
+        top.cylunex.shadowmedia.library.LibraryResources.audioResolver = { requestedAsset, entryId ->
+            accountScopesReady.await()
+            val asset = library.dao.asset(requestedAsset.id) ?: requestedAsset
             if (asset.providerId.startsWith("catalog:JELLYFIN:") || asset.providerId.startsWith("catalog:OPENSUBSONIC:")) {
                 catalogs.musicProvider(catalogs.connection(asset.providerId)).resolve(top.cylunex.shadowmedia.model.UnifiedPlaybackRequest(top.cylunex.shadowmedia.model.MediaKey(asset.providerId, asset.itemId)))
             } else if (asset.providerId.startsWith("emby:")) {
-                val session = requireNotNull(sessionStore.loadAll().firstOrNull { "emby:${it.serverId}:${it.userId}" == asset.providerId }) { "Emby 账号已移除" }
+                val session = requireNotNull(sessionStore.loadAll().firstOrNull { it.providerId == asset.providerId }) { "Emby 账号已移除" }
                 val plan = embyRepository.audioPlan(session, asset.itemId)
                 require(plan.candidates.isNotEmpty()) { "来源没有返回资源" }
                 audioReporter.resolved(entryId, session, plan)
@@ -166,8 +174,8 @@ class AppContainer(private val application: Application) {
         applicationScope.launch {
             localMediaState.recordHistory(
                 MediaHistoryEntity(
-                    stableKey = "emby:${session.serverId}:${session.userId}:${item.id}",
-                    providerId = "emby:${session.serverId}:${session.userId}",
+                    stableKey = "${session.providerId}:${item.id}",
+                    providerId = session.providerId,
                     itemId = item.id,
                     title = item.name,
                     subtitle = item.seriesName,

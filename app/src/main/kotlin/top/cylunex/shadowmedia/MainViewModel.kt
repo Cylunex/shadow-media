@@ -191,10 +191,12 @@ class MainViewModel(
     private val library: top.cylunex.shadowmedia.library.LibraryRepository? = null,
     private val offline: top.cylunex.shadowmedia.library.OfflineRepository? = null,
     private val nativeProviders: () -> List<top.cylunex.shadowmedia.provider.MediaProvider> = { emptyList() },
+    private val prepareAccounts: suspend () -> Unit = {},
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     private var playbackRequest: Job? = null
     private var contentRequest: Job? = null
+    private var favoriteObservation: Job? = null
     private val wallPagination = WallPagination()
     private val playbackOwnership = PlaybackOwnership()
     private var deleteRequest: Job? = null
@@ -220,6 +222,8 @@ class MainViewModel(
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     init {
+        viewModelScope.launch {
+        prepareAccounts()
         val saved = sessionStore.loadAll()
         val active = sessionStore.load()
         if (active != null) restoreSession(active, saved) else {
@@ -229,6 +233,7 @@ class MainViewModel(
             )
         }
         syncProviders()
+        }
         viewModelScope.launch {
             handoffInbox.intents.collect { uri ->
                 val handoff = uri.toMediaHandoffOrNull() ?: return@collect
@@ -351,7 +356,17 @@ class MainViewModel(
                     catch (e: CancellationException) { throw e }
                     catch (e: Exception) { if (state.value.session == session) showError(e) }
                 }
-                viewModelScope.launch { loadLibraries(session) }
+                favoriteObservation?.cancel()
+        favoriteObservation = viewModelScope.launch {
+            repository.favoriteStates(session).collect { favorites ->
+                if (state.value.session != session) return@collect
+                fun MediaItem.localFavorite() = favorites[id]?.let { copy(favorite = it) } ?: this
+                update { copy(items = items.map { it.localFavorite() }, wallItems = wallItems.map { it.localFavorite() },
+                    detailEpisodes = detailEpisodes.map { it.localFavorite() }, selectedSeries = selectedSeries?.localFavorite(),
+                    homeSections = homeSections.map { section -> section.copy(items = section.items.map { it.localFavorite() }.let { values -> if (section.kind == MediaSectionKind.FAVORITES) values.filter { it.favorite } else values }) }) }
+            }
+        }
+        viewModelScope.launch { loadLibraries(session) }
             }.onFailure { ensureActive(); showError(it) }
         }
     }
@@ -521,7 +536,7 @@ class MainViewModel(
 
     fun saveMoment(item: MediaItem, positionMs: Long) {
         val session = state.value.session ?: return
-        val providerId = "emby:${session.serverId}:${session.userId}"
+        val providerId = session.providerId
         viewModelScope.launch {
             localMediaState.addMoment(
                 MediaMomentEntity(
@@ -543,7 +558,7 @@ class MainViewModel(
         if (endMs <= startMs) return
         val segment = MediaSegment(
             id = UUID.randomUUID().toString(),
-            providerId = "emby:${session.serverId}:${session.userId}",
+            providerId = session.providerId,
             itemId = item.id,
             type = type,
             startMs = startMs.coerceAtLeast(0),
@@ -575,7 +590,7 @@ class MainViewModel(
 
     fun playMoment(moment: MediaMomentEntity) {
         val session = state.value.session ?: return
-        val expectedProvider = "emby:${session.serverId}:${session.userId}"
+        val expectedProvider = session.providerId
         if (moment.providerId != expectedProvider) {
             update { copy(insightMessage = "这个时刻属于另一台 Emby 服务器，请先切换登录") }
             return
@@ -947,6 +962,9 @@ class MainViewModel(
                     errorMessage = null,
                 )
             }
+            repository.cachedRecentVideos(session, library.id)?.let { cached ->
+                if (state.value.session == session) update { copy(items = cached, isLoading = false) }
+            }
             runCatching { repository.recentVideos(session, library.id) }
                 .onSuccess { loadedItems ->
                     ensureActive()
@@ -1004,6 +1022,10 @@ class MainViewModel(
                 if (reset) copy(isLoading = true, isLoadingMore = false, wallHasMore = false, wallItems = emptyList(), errorMessage = null)
                 else copy(isLoadingMore = true, errorMessage = null)
             }
+            repository.cachedBrowse(session, request)?.let { page ->
+                ensureActive()
+                if (state.value.session == session) update { copy(wallItems = if (reset) page.items else (wallItems + page.items).distinctBy(MediaItem::id), wallTotalCount = page.totalRecordCount, isLoading = false, errorMessage = "正在显示本机目录，联网后可刷新") }
+            }
             runCatching {
                 repository.browse(session, request)
             }.onSuccess { page ->
@@ -1014,6 +1036,7 @@ class MainViewModel(
                     copy(
                         wallItems = if (reset) page.items else (wallItems + page.items).distinctBy(MediaItem::id),
                         wallTotalCount = page.totalRecordCount,
+                        errorMessage = if (page.cached) "正在显示本机目录，联网后可刷新" else null,
                         wallHasMore = page.items.isNotEmpty() && page.hasMore && request.sort != MediaSort.RANDOM,
                         isLoading = false,
                         isLoadingMore = false,
@@ -1065,6 +1088,9 @@ class MainViewModel(
                     isLoading = true,
                     errorMessage = null,
                 )
+            }
+            repository.cachedChildren(session, item.id)?.let { episodes ->
+                if (state.value.session == session) update { copy(detailEpisodes = episodes, isLoading = false) }
             }
             runCatching { repository.children(session, item.id) }
                 .onSuccess { episodes -> ensureActive(); if (state.value.session == session) update { copy(detailEpisodes = episodes, isLoading = false) } }
@@ -1201,13 +1227,13 @@ class MainViewModel(
             )
         }
         viewModelScope.launch {
-            val providerId = "emby:${session.serverId}:${session.userId}"
+            val providerId = session.providerId
             val segments = localMediaState.segments(providerId, item.id).first()
             if (state.value.session == session && state.value.screen == Screen.PLAYER && state.value.selectedItem?.id == item.id) update { copy(mediaSegments = segments) }
         }
         playbackRequest = viewModelScope.launch {
             try {
-                if (tryOfflineVideo(MediaKey("emby:${session.serverId}:${session.userId}", item.id), startPositionMs)) return@launch
+                if (tryOfflineVideo(MediaKey(session.providerId, item.id), startPositionMs)) return@launch
                 val plan = repository.playbackPlan(session, item.id)
                 ensureActive()
                 if (state.value.session == session && state.value.screen == Screen.PLAYER && state.value.selectedItem?.id == item.id) {
@@ -1388,7 +1414,7 @@ class MainViewModel(
 
     fun downloadEmby(item: MediaItem) {
         val session = state.value.session ?: return
-        downloadUnified(UnifiedMediaItem(MediaKey("emby:${session.serverId}:${session.userId}", item.id), item.name, item.type, subtitle = item.seriesName))
+        downloadUnified(UnifiedMediaItem(MediaKey(session.providerId, item.id), item.name, item.type, subtitle = item.seriesName))
     }
     fun downloadUnified(item: UnifiedMediaItem) {
         viewModelScope.launch {
@@ -1702,10 +1728,24 @@ class MainViewModel(
             catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { if (state.value.session == session) showError(e) }
         }
+        favoriteObservation?.cancel()
+        favoriteObservation = viewModelScope.launch {
+            repository.favoriteStates(session).collect { favorites ->
+                if (state.value.session != session) return@collect
+                fun MediaItem.localFavorite() = favorites[id]?.let { copy(favorite = it) } ?: this
+                update { copy(items = items.map { it.localFavorite() }, wallItems = wallItems.map { it.localFavorite() },
+                    detailEpisodes = detailEpisodes.map { it.localFavorite() }, selectedSeries = selectedSeries?.localFavorite(),
+                    homeSections = homeSections.map { section -> section.copy(items = section.items.map { it.localFavorite() }.let { values -> if (section.kind == MediaSectionKind.FAVORITES) values.filter { it.favorite } else values }) }) }
+            }
+        }
         viewModelScope.launch { loadLibraries(session) }
     }
 
     private suspend fun loadLibraries(session: EmbySession) {
+        repository.cachedLibraries(session)?.let { libraries ->
+            val sections = repository.cachedHome(session, libraries.map(MediaLibrary::id)).orEmpty()
+            if (state.value.session == session) update { copy(libraries = libraries, homeSections = sections.withRecommendations(), isLoading = false) }
+        }
         runCatching { repository.libraries(session) }
             .onSuccess { libraries ->
                 if (state.value.session != session) return@onSuccess
@@ -1772,6 +1812,7 @@ class MainViewModel(
                         library = container.library,
                         offline = container.offline,
                         nativeProviders = container.catalogs::musicProviders,
+                        prepareAccounts = { container.accountScopesReady.await() },
                     ) as T
             }
     }

@@ -452,28 +452,6 @@ class DefaultEmbyRepository(
         PlayMethod.TRANSCODE -> "Transcode"
     }
 
-    private fun BaseItemDto.toModel(): MediaItem = MediaItem(
-        id = id,
-        name = name,
-        type = type,
-        seriesName = seriesName,
-        seasonNumber = parentIndexNumber,
-        episodeNumber = indexNumber,
-        runTimeTicks = runTimeTicks,
-        playbackPositionTicks = userData?.playbackPositionTicks ?: 0,
-        played = userData?.played ?: false,
-        favorite = userData?.favorite ?: false,
-        overview = overview,
-        productionYear = productionYear,
-        communityRating = communityRating,
-        seriesId = seriesId,
-        imageTag = imageTags["Primary"],
-        backdropImageTag = backdropImageTags.firstOrNull(),
-        externalIds = providerIds,
-        music = if (type.equals("Audio", true) || type.equals("MusicAlbum", true)) top.cylunex.shadowmedia.model.MusicMetadata(
-            album, albumId, artists.joinToString(" / "), albumArtist, parentIndexNumber ?: 0, indexNumber ?: 0) else null,
-    )
-
     companion object {
         private const val ITEMS_PAGE_SIZE = 200
         private const val MAX_BROWSE_PAGE_SIZE = 200
@@ -507,3 +485,25 @@ data class ClientIdentity(
 
     private fun String.sanitize(): String = replace("\"", "").replace("\\", "")
 }
+
+internal fun BaseItemDto.toModel(): MediaItem = MediaItem(
+        id = id,
+        name = name,
+        type = type,
+        seriesName = seriesName,
+        seasonNumber = parentIndexNumber,
+        episodeNumber = indexNumber,
+        runTimeTicks = runTimeTicks,
+        playbackPositionTicks = userData?.playbackPositionTicks ?: 0,
+        played = userData?.played ?: false,
+        favorite = userData?.favorite ?: false,
+        overview = overview,
+        productionYear = productionYear,
+        communityRating = communityRating,
+        seriesId = seriesId,
+        imageTag = imageTags["Primary"],
+        backdropImageTag = backdropImageTags.firstOrNull(),
+        externalIds = providerIds,
+        music = if (type.equals("Audio", true) || type.equals("MusicAlbum", true)) top.cylunex.shadowmedia.model.MusicMetadata(
+            album, albumId, artists.joinToString(" / "), albumArtist, parentIndexNumber ?: 0, indexNumber ?: 0) else null,
+    )

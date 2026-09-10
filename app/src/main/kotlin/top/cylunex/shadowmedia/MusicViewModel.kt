@@ -69,12 +69,13 @@ class MusicViewModel(private val container: AppContainer) : ViewModel() {
         message.value = "目录导入完成，共 $count 首歌曲"
     }
     fun loadSources() = work {
+        container.accountScopesReady.await()
         val result = mutableListOf<MusicSource>()
         var failed = 0
         for (session in container.sessionStore.loadAll()) {
             try {
                 for (library in container.embyRepository.libraries(session).filter { it.collectionType.equals("music", true) }) {
-                    result += MusicSource("emby:${session.serverId}:${session.userId}", library.id, "${session.userName} · ${library.name}")
+                    result += MusicSource(session.providerId, library.id, "${session.userName} · ${library.name}")
                 }
             } catch (e: CancellationException) { throw e } catch (_: Exception) { failed++ }
         }
@@ -100,6 +101,7 @@ class MusicViewModel(private val container: AppContainer) : ViewModel() {
                     check(container.backgroundResourcesAllowed()) { "后台索引已暂停，请检查网络和设备状态" }
                     check(visited.add(token)) { "来源重复返回相同分页，旧目录已保留" }
                     val page = provider.browse(ProviderBrowseRequest(MediaKey(source.providerId, source.parentId), type = "Audio", pageToken = token, pageSize = 200))
+                    check(!page.cached) { "当前显示离线目录，本次刷新未完成，已保留旧记录" }
                     check(page.items.isNotEmpty()) { "来源返回空页，未删除旧目录" }
                     expected = page.totalCount ?: expected
                     val assets = page.items.map { container.music.importRemote(it, collected = false).id }
@@ -118,7 +120,13 @@ class MusicViewModel(private val container: AppContainer) : ViewModel() {
             throw e
         }
     }
-    fun favorite(row: MusicRow) { viewModelScope.launch { container.library.dao.favorite(row.asset.id, !row.asset.favorite) } }
+    fun favorite(row: MusicRow) = work {
+        val favorite = !row.asset.favorite
+        container.library.dao.favorite(row.asset.id, favorite)
+        container.sessionStore.loadAll().firstOrNull { it.providerId == row.asset.providerId }?.let {
+            container.embyRepository.setFavorite(it, row.asset.itemId, favorite)
+        }
+    }
     fun playlist(title: String) = work {
         require(title.isNotBlank())
         dao.putPlaylist(MusicPlaylistEntity(UUID.randomUUID().toString(), title.trim().take(120), System.currentTimeMillis()))

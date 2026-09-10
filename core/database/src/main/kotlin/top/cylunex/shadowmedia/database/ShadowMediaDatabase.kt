@@ -27,11 +27,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProgressSessionEntity::class,
         AudioQueueEntity::class,
         AudioQueueEntryEntity::class,
-        UserCollectionEntity::class, WorkEntity::class, RenditionEntity::class, PlaylistExportEntity::class, CatalogPageEntity::class,
+        UserCollectionEntity::class, WorkEntity::class, RenditionEntity::class, PlaylistExportEntity::class, CatalogPageEntity::class, RemoteUserStateEntity::class,
         ResourceTaskEntity::class, CatalogScopeEntity::class, CatalogEntryEntity::class,
         AudioChapterEntity::class, MusicTrackEntity::class, MusicListeningEntity::class, MusicPlaylistEntity::class, MusicPlaylistEntryEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true,
 )
 abstract class ShadowMediaDatabase : RoomDatabase() {
@@ -52,7 +52,14 @@ abstract class ShadowMediaDatabase : RoomDatabase() {
                 context.applicationContext,
                 ShadowMediaDatabase::class.java,
                 "shadow-media.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).build().also { instance = it }
+        }
+
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS remote_user_states (providerId TEXT NOT NULL, itemId TEXT NOT NULL, favorite INTEGER NOT NULL, operationId TEXT NOT NULL, pending INTEGER NOT NULL, updatedAt INTEGER NOT NULL, PRIMARY KEY(providerId, itemId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_remote_user_states_pending ON remote_user_states(pending)")
+            }
         }
 
         val MIGRATION_7_8 = object : Migration(7, 8) {

@@ -16,11 +16,23 @@ data class PlaylistExportEntity(val providerId: String, val playlistId: String, 
     val remoteId: String = "", val phase: String = "READY", val message: String = "", val updatedAt: Long)
 @Entity(tableName = "catalog_pages")
 data class CatalogPageEntity(@PrimaryKey val id: String, val payload: String, val updatedAt: Long)
+@Entity(tableName = "remote_user_states", primaryKeys = ["providerId", "itemId"], indices = [Index("pending")])
+data class RemoteUserStateEntity(val providerId: String, val itemId: String, val favorite: Boolean, val operationId: String, val pending: Boolean, val updatedAt: Long)
 
 data class ContinueRow(val rowId: String, val assetId: String?, val providerId: String, val itemId: String, val title: String,
     val kind: String, val positionMs: Long?, val durationMs: Long?, val progression: Double?, val updatedAt: Long)
 
 @Dao interface LibraryStateDao {
+    @Query("SELECT * FROM remote_user_states WHERE providerId = :provider") fun userStates(provider: String): Flow<List<RemoteUserStateEntity>>
+    @Query("SELECT * FROM remote_user_states WHERE providerId = :provider") suspend fun readUserStates(provider: String): List<RemoteUserStateEntity>
+    @Query("SELECT * FROM remote_user_states WHERE providerId = :provider AND itemId = :item") suspend fun userState(provider: String, item: String): RemoteUserStateEntity?
+    @Query("UPDATE remote_user_states SET pending = 0 WHERE providerId = :provider AND itemId = :item AND operationId = :operation") suspend fun acknowledgeUserState(provider: String, item: String, operation: String)
+    @Upsert suspend fun putUserState(value: RemoteUserStateEntity)
+    @Query("UPDATE library_assets SET favorite = :favorite WHERE providerId = :provider AND itemId = :item") suspend fun mirrorFavorite(provider: String, item: String, favorite: Boolean)
+    @Query("UPDATE user_collection SET favorite = :favorite WHERE profileId = 'default' AND assetId IN (SELECT id FROM library_assets WHERE providerId = :provider AND itemId = :item)") suspend fun mirrorCollectionFavorite(provider: String, item: String, favorite: Boolean)
+    @Transaction suspend fun favorite(value: RemoteUserStateEntity) {
+        putUserState(value); mirrorFavorite(value.providerId, value.itemId, value.favorite); mirrorCollectionFavorite(value.providerId, value.itemId, value.favorite)
+    }
     @Query("SELECT * FROM user_collection WHERE assetId = :id AND profileId = :profile") suspend fun collection(id: String, profile: String = "default"): UserCollectionEntity?
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun seedCollection(state: UserCollectionEntity)
     @Query("UPDATE user_collection SET collected = 1 WHERE assetId = :id AND profileId = :profile") suspend fun collect(id: String, profile: String = "default")
@@ -50,4 +62,10 @@ data class ContinueRow(val rowId: String, val assetId: String?, val providerId: 
     @Query("SELECT * FROM catalog_pages WHERE id = :id") suspend fun catalogPage(id: String): CatalogPageEntity?
     @Query("DELETE FROM catalog_pages WHERE id IN (SELECT id FROM catalog_pages ORDER BY updatedAt DESC LIMIT -1 OFFSET 256)") suspend fun trimCatalogPages()
     @Upsert suspend fun putCatalogPage(page: CatalogPageEntity)
+    @Query("SELECT COALESCE(SUM(length(CAST(payload AS BLOB))), 0) FROM catalog_pages") suspend fun catalogBytes(): Long
+    @Query("DELETE FROM catalog_pages WHERE id = (SELECT id FROM catalog_pages ORDER BY updatedAt, id LIMIT 1)") suspend fun removeOldestCatalogPage()
+    @Transaction suspend fun cacheCatalogPage(page: CatalogPageEntity) {
+        putCatalogPage(page); trimCatalogPages()
+        while (catalogBytes() > 32L * 1024 * 1024) removeOldestCatalogPage()
+    }
 }

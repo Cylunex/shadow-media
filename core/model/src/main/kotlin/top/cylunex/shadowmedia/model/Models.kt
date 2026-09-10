@@ -8,6 +8,8 @@ data class EmbySession(
     val accessToken: String,
     val allowInsecureHttp: Boolean,
 ) {
+    val providerId: String get() = accountScope("emby", serverUrl, serverId, userId)
+    val legacyProviderId: String get() = "emby:$serverId:$userId"
     override fun toString(): String =
         "EmbySession(serverUrl=$serverUrl, serverId=$serverId, userId=$userId, " +
             "userName=$userName, accessToken=<redacted>, allowInsecureHttp=$allowInsecureHttp)"
@@ -71,6 +73,7 @@ data class MediaPage(
     val items: List<MediaItem>,
     val startIndex: Int,
     val totalRecordCount: Int,
+    val cached: Boolean = false,
 ) {
     val hasMore: Boolean get() = startIndex + items.size < totalRecordCount
 }
@@ -263,6 +266,7 @@ data class ProviderDescriptor(
     val kind: ProviderKind,
     val capabilities: Set<ProviderCapability>,
     val enabled: Boolean = true,
+    val facets: ProviderFacets = ProviderFacets.from(kind, capabilities),
 )
 
 data class MediaKey(
@@ -294,6 +298,7 @@ data class UnifiedMediaPage(
     val items: List<UnifiedMediaItem>,
     val nextPageToken: String? = null,
     val totalCount: Int? = null,
+    val cached: Boolean = false,
 )
 
 data class MediaDetail(

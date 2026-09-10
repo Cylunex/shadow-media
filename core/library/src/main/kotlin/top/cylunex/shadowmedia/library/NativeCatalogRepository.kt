@@ -82,8 +82,7 @@ class NativeCatalogRepository(private val context: Context, private val library:
             val now = System.currentTimeMillis()
             val payload = CatalogSnapshotCodec.encode(page, c.kind)
             if (payload.toByteArray().size <= 256 * 1024) {
-                snapshotDao.putCatalogPage(top.cylunex.shadowmedia.database.CatalogPageEntity(pageKey(c, node, next, query), payload, now))
-                snapshotDao.trimCatalogPages()
+                snapshotDao.cacheCatalogPage(top.cylunex.shadowmedia.database.CatalogPageEntity(pageKey(c, node, next, query), payload, now))
             }
             page.copy(updatedAt = now)
         } catch (e: CancellationException) { throw e }

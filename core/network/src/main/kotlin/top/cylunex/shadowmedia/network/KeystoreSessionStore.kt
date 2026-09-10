@@ -19,6 +19,7 @@ class KeystoreSessionStore(
     private val json: Json = Json { ignoreUnknownKeys = true; explicitNulls = false },
 ) : SessionStore {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+    private var readFailed = false
 
     @Synchronized
     override fun load(): EmbySession? {
@@ -33,6 +34,7 @@ class KeystoreSessionStore(
     @Synchronized
     override fun save(session: EmbySession) {
         val current = readStored()
+        check(!readFailed) { "系统暂时无法解锁已有账号，请解锁设备后重试；已保留原登录信息" }
         val next = current.sessions.filterNot { it.sessionKey == session.sessionKey } + session.toStored()
         writeStored(StoredSessionsDto(activeSessionKey = session.sessionKey, sessions = next))
     }
@@ -64,6 +66,7 @@ class KeystoreSessionStore(
     }
 
     private fun readStored(): StoredSessionsDto = runCatching {
+        readFailed = false
         val encoded = preferences.getString(KEY_PAYLOAD, null) ?: return StoredSessionsDto()
         val bytes = Base64.decode(encoded, Base64.NO_WRAP)
         require(bytes.size > IV_SIZE) { "Invalid encrypted session" }
@@ -82,7 +85,7 @@ class KeystoreSessionStore(
             StoredSessionsDto(legacy.sessionKey, listOf(legacy)).also(::writeStored)
         }
     }.getOrElse {
-        preferences.edit().remove(KEY_PAYLOAD).commit()
+        readFailed = true
         StoredSessionsDto()
     }
 

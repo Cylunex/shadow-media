@@ -82,6 +82,13 @@ interface IntegrationRepository {
 }
 
 interface EmbyRepository {
+    fun favoriteStates(session: EmbySession): kotlinx.coroutines.flow.Flow<Map<String, Boolean>> = kotlinx.coroutines.flow.flowOf(emptyMap())
+    suspend fun flushUserStates(session: EmbySession) {}
+    suspend fun cachedLibraries(session: EmbySession): List<MediaLibrary>? = null
+    suspend fun cachedHome(session: EmbySession, libraryIds: List<String>): List<MediaSection>? = null
+    suspend fun cachedBrowse(session: EmbySession, request: BrowseRequest): MediaPage? = null
+    suspend fun cachedChildren(session: EmbySession, parentId: String): List<MediaItem>? = null
+    suspend fun cachedRecentVideos(session: EmbySession, libraryId: String): List<MediaItem>? = null
     suspend fun login(request: LoginRequest): EmbySession
     suspend fun libraries(session: EmbySession): List<MediaLibrary>
     suspend fun recentVideos(
