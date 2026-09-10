@@ -17,6 +17,15 @@ import top.cylunex.shadowmedia.model.MediaSort
 import top.cylunex.shadowmedia.model.PlayMethod
 
 class DefaultEmbyRepositoryTest {
+    @Test fun `audio preserves advertised route canonical fallback and transcode across sources`() = runBlocking {
+        val plan = repositoryReturning("""{"PlaySessionId":"p","MediaSources":[{"Id":"one","DirectStreamUrl":"/emby/Audio/one/original","TranscodingUrl":"/emby/Audio/one/transcode.mp3"},{"Id":"two"}]}""").audioPlan(SESSION, "song")
+        assertEquals(4, plan.candidates.size)
+        assertTrue(plan.candidates[0].url.endsWith("/emby/Audio/one/original"))
+        assertEquals(PlayMethod.TRANSCODE, plan.candidates[2].method)
+        assertEquals("two", plan.candidates.last().mediaSourceId)
+        assertTrue(plan.candidates.all { it.credentialOrigin == SESSION.serverUrl && it.requiredHeaders["X-Emby-Token"] == SESSION.accessToken })
+    }
+
     @Test fun `audio uses authenticated audio route through proxy without token in url`() = runBlocking {
         val plan = repositoryReturning("""{"PlaySessionId":"p1","MediaSources":[{"Id":"audio1","Container":"m4b"}]}""")
             .audioPlan(SESSION, "book1")

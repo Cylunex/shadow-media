@@ -18,6 +18,7 @@ import org.readium.r2.shared.publication.services.content.content
 
 /** Basic in-reader narration. Only a locally installed, offline voice is allowed. */
 internal class ReadAloud(private val context: Context) : AutoCloseable {
+    private val audible = top.cylunex.shadowmedia.model.PlaybackCoordinator.process.participant { stop() }
     private val initialized = CompletableDeferred<Unit>()
     private val engine = TextToSpeech(context) { status ->
         if (status == TextToSpeech.SUCCESS) initialized.complete(Unit)
@@ -39,6 +40,7 @@ internal class ReadAloud(private val context: Context) : AutoCloseable {
                 ?: throw IllegalStateException("请先在系统文字转语音设置中安装当前语言的离线语音")
             engine.voice = voice
             check(audio.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) { "其他应用正在占用音频" }
+            audible.claim()
             val iterator = requireNotNull(publication.content(locator)) { "这本书不支持正文提取" }.iterator()
             while (currentCoroutineContext().isActive && iterator.hasNext()) {
                 val element = iterator.next() as? Content.TextElement ?: continue
@@ -47,7 +49,7 @@ internal class ReadAloud(private val context: Context) : AutoCloseable {
                 // TTS binder calls have a bounded text size; do not load the entire publication.
                 for (chunk in element.text.chunked(2500)) speak(chunk)
             }
-        } finally { engine.stop(); audio.abandonAudioFocusRequest(focus); speaking = null }
+        } finally { audible.abandon(); engine.stop(); audio.abandonAudioFocusRequest(focus); speaking = null }
     }
 
     private suspend fun speak(text: String) = suspendCancellableCoroutine<Unit> { continuation ->
@@ -61,6 +63,6 @@ internal class ReadAloud(private val context: Context) : AutoCloseable {
         continuation.invokeOnCancellation { engine.stop() }
         if (engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, requestId) == TextToSpeech.ERROR && continuation.isActive) continuation.resumeWithException(IllegalStateException("系统朗读失败"))
     }
-    fun stop() { speaking?.cancel(); engine.stop(); audio.abandonAudioFocusRequest(focus) }
-    override fun close() { stop(); engine.shutdown() }
+    fun stop() { audible.abandon(); speaking?.cancel(); engine.stop(); audio.abandonAudioFocusRequest(focus) }
+    override fun close() { audible.close(); stop(); engine.shutdown() }
 }

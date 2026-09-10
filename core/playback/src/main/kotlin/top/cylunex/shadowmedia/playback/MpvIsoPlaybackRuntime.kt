@@ -184,11 +184,15 @@ class MpvIsoPlaybackRuntime private constructor(
         if (view.holder.surface?.isValid == true) attachNativeSurface(view.holder.surface)
     }
 
+    private val audible = top.cylunex.shadowmedia.model.PlaybackCoordinator.process.participant { pause() }
+
     fun play() {
+        audible.claim()
         if (initialized && !closed.get()) MPVLib.setPropertyBoolean("pause", false)
     }
 
     fun pause() {
+        audible.abandon()
         if (initialized && !closed.get()) MPVLib.setPropertyBoolean("pause", true)
     }
 
@@ -217,6 +221,7 @@ class MpvIsoPlaybackRuntime private constructor(
     }
 
     override fun close() {
+        audible.close()
         if (!closed.compareAndSet(false, true)) return
         progressJob?.cancel()
         val finalPosition = stateFlow.value.positionMs
@@ -360,6 +365,7 @@ class MpvIsoPlaybackRuntime private constructor(
         initialized = true
         MPVLib.addObserver(this)
         MPVLib.setPropertyString("idle", "yes")
+        audible.claim()
         MPVLib.setPropertyBoolean("pause", false)
         observe("time-pos", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE)
         observe("duration", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE)

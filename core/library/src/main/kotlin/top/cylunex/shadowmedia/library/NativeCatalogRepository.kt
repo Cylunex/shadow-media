@@ -15,7 +15,7 @@ import org.json.JSONObject
 import top.cylunex.shadowmedia.database.LibraryAssetEntity
 import top.cylunex.shadowmedia.model.*
 
-class NativeCatalogRepository(context: Context, private val library: LibraryRepository) {
+class NativeCatalogRepository(private val context: Context, private val library: LibraryRepository) {
     val store = CatalogConnectionStore(context)
     private val syncLock = Mutex()
     private val artworkScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -117,6 +117,25 @@ class NativeCatalogRepository(context: Context, private val library: LibraryRepo
         val kind = if (entry.format == "komga") ContentKind.COMIC else contentKindForFile("file.${entry.format}")
         require(kind in setOf(ContentKind.BOOK, ContentKind.COMIC, ContentKind.AUDIOBOOK)) { "尚不支持这个文件格式" }
         val asset = library.addRemote(UnifiedMediaItem(MediaKey(providerId(c), entry.locator), entry.title, kind.name, subtitle = entry.author), entry.format)
+        if (c.kind == CatalogKind.AUDIOBOOKSHELF) {
+            val book = metadata ?: absItem(c, asset.itemId.substringBefore("::"))
+            val media = book.getJSONObject("media")
+            val track = media.optJSONArray("tracks").objects().firstOrNull { it.optString("ino") == asset.itemId.substringAfter("::") }
+            if (track != null) {
+                val offset = track.optDouble("startOffset", 0.0)
+                val duration = track.optDouble("duration")
+                if (offset.isFinite() && offset >= 0 && duration.isFinite() && duration > 0) {
+                    val chapters = media.optJSONArray("chapters").objects().mapNotNull { chapter ->
+                        val start = chapter.optDouble("start"); val end = chapter.optDouble("end")
+                        if (!start.isFinite() || !end.isFinite() || start < 0 || end <= start) null
+                        else BookChapter(chapter.optString("id"), chapter.optString("title"), (start * 1000).toLong(), (end * 1000).toLong())
+                    }
+                    val mapped = trackChapters(chapters, asset.itemId, asset.revision, (offset * 1000).toLong(), (duration * 1000).toLong())
+                    top.cylunex.shadowmedia.database.ShadowMediaDatabase.create(context).chapterDao().replace(asset.id,
+                        mapped.map { top.cylunex.shadowmedia.database.AudioChapterEntity(asset.id, it.chapterId, it.resourceRevision, it.trackId, it.title, it.startMs, it.endMs) }.distinctBy { it.chapterId })
+                }
+            }
+        }
         if (library.dao.progress(asset.id) == null) {
             try { pullInitialProgress(c, asset, metadata) }
             catch (e: CancellationException) { throw e }

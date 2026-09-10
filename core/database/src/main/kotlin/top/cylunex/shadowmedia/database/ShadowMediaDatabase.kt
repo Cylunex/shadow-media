@@ -27,13 +27,16 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProgressSessionEntity::class,
         AudioQueueEntity::class,
         AudioQueueEntryEntity::class,
+        AudioChapterEntity::class, MusicTrackEntity::class, MusicListeningEntity::class, MusicPlaylistEntity::class, MusicPlaylistEntryEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class ShadowMediaDatabase : RoomDatabase() {
     abstract fun dao(): ShadowMediaDao
     abstract fun libraryDao(): LibraryDao
+    abstract fun chapterDao(): ChapterDao
+    abstract fun musicDao(): MusicDao
     abstract fun audioQueueDao(): AudioQueueDao
 
     companion object {
@@ -44,7 +47,20 @@ abstract class ShadowMediaDatabase : RoomDatabase() {
                 context.applicationContext,
                 ShadowMediaDatabase::class.java,
                 "shadow-media.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build().also { instance = it }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS audio_chapters (assetId TEXT NOT NULL, chapterId TEXT NOT NULL, resourceRevision TEXT NOT NULL, trackId TEXT NOT NULL, title TEXT NOT NULL, startMs INTEGER NOT NULL, endMs INTEGER, PRIMARY KEY(assetId, chapterId))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS music_tracks (assetId TEXT NOT NULL PRIMARY KEY, album TEXT NOT NULL, albumKey TEXT NOT NULL, artist TEXT NOT NULL, artistKey TEXT NOT NULL, albumArtist TEXT NOT NULL, disc INTEGER NOT NULL, track INTEGER NOT NULL, durationMs INTEGER NOT NULL, folder TEXT NOT NULL, lyrics TEXT NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_music_tracks_albumKey ON music_tracks(albumKey)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_music_tracks_artistKey ON music_tracks(artistKey)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS music_listening (assetId TEXT NOT NULL PRIMARY KEY, heardMs INTEGER NOT NULL, playCount INTEGER NOT NULL, lastPlayedAt INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS music_playlists (id TEXT NOT NULL PRIMARY KEY, title TEXT NOT NULL, createdAt INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS music_playlist_entries (entryId TEXT NOT NULL PRIMARY KEY, playlistId TEXT NOT NULL, assetId TEXT NOT NULL, ordinal INTEGER NOT NULL, FOREIGN KEY(playlistId) REFERENCES music_playlists(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_music_playlist_entries_playlistId ON music_playlist_entries(playlistId)")
+            }
         }
 
         val MIGRATION_4_5 = object : Migration(4, 5) {

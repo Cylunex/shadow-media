@@ -35,6 +35,7 @@ class ExternalPlaybackRuntime(
     entry: ExternalMediaEntry,
     networkStorageRepository: NetworkStorageRepository? = null,
 ) : Closeable {
+    private val audible: top.cylunex.shadowmedia.model.PlaybackCoordinator.Participant = top.cylunex.shadowmedia.model.PlaybackCoordinator.process.participant { exoPlayer.pause() }
     private val errorState = MutableStateFlow<String?>(null)
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -54,6 +55,7 @@ class ExternalPlaybackRuntime(
         setWakeMode(C.WAKE_MODE_LOCAL)
         repeatMode = Player.REPEAT_MODE_OFF
         addListener(object : Player.Listener {
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) { if (playWhenReady) audible.claim() else audible.abandon() }
             override fun onPlayerError(error: PlaybackException) {
                 errorState.value = error.cause?.message ?: error.message
             }
@@ -77,6 +79,7 @@ class ExternalPlaybackRuntime(
     val error: StateFlow<String?> = errorState.asStateFlow()
 
     override fun close() {
+        audible.close()
         exoPlayer.release()
         client.dispatcher.executorService.shutdown()
         client.connectionPool.evictAll()

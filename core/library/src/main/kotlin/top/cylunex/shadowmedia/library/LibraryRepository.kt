@@ -43,19 +43,24 @@ class LibraryRepository(context: Context) {
         } finally { temp.delete() }
     }
 
-    suspend fun importDocument(uri: Uri): LibraryAssetEntity = withContext(Dispatchers.IO) {
+    suspend fun importDocument(uri: Uri, audioMode: AudioMode? = null): LibraryAssetEntity = withContext(Dispatchers.IO) {
         require(uri.scheme == "content") { "请使用系统文件选择器" }
         val name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
             if (it.moveToFirst()) it.getString(0) else null
         } ?: uri.lastPathSegment ?: "未命名"
         val format = name.substringAfterLast('.', "").lowercase()
-        val kind = contentKindForFile(name)
-        require(kind in setOf(ContentKind.BOOK, ContentKind.COMIC, ContentKind.AUDIOBOOK)) { "支持 EPUB、TXT、PDF、CBZ 和常见音频文件" }
+        val inferred = contentKindForFile(name)
+        val kind = if (inferred == ContentKind.AUDIOBOOK && audioMode != null) ContentKind.valueOf(audioMode.name) else inferred
+        require(kind in setOf(ContentKind.BOOK, ContentKind.COMIC, ContentKind.AUDIOBOOK, ContentKind.MUSIC, ContentKind.PODCAST)) { "支持 EPUB、TXT、PDF、CBZ 和常见音频文件" }
         val id = digest("local:${uri}")
         val folder = folder(id)
         // Audio stays in the user-selected storage; large audiobooks need not be copied.
-        if (kind == ContentKind.AUDIOBOOK) {
-            dao.asset(id)?.let { return@withContext it }
+        if (kind.isAudio()) {
+            dao.asset(id)?.let { old ->
+                if (audioMode == null || old.kind == kind.name) return@withContext old
+                dao.resetProgress(id)
+                return@withContext old.copy(kind = kind.name).also { dao.putAsset(it) }
+            }
             return@withContext LibraryAssetEntity(id, "local", uri.toString(), name.substringBeforeLast('.'), kind = kind.name,
                 format = format, localUri = uri.toString(), addedAt = System.currentTimeMillis()).also { dao.putAsset(it) }
         }
@@ -125,7 +130,7 @@ class LibraryRepository(context: Context) {
     /** Only the caller's scoped downloader may supply this file. No URL/headers are persisted. */
     suspend fun importPrepared(id: String, providerId: String, itemId: String, name: String, format: String, input: File): LibraryAssetEntity = withContext(Dispatchers.IO) {
         val kind = contentKindForFile("item.$format")
-        require(kind in setOf(ContentKind.BOOK, ContentKind.COMIC, ContentKind.AUDIOBOOK))
+        require(kind in setOf(ContentKind.BOOK, ContentKind.COMIC, ContentKind.AUDIOBOOK, ContentKind.MUSIC, ContentKind.PODCAST))
         if (format in setOf("epub", "cbz", "zip")) SafeArchives.validate(input)
         val revision = input.inputStream().use { stream ->
             val hash = MessageDigest.getInstance("SHA-256")
@@ -180,7 +185,8 @@ class LibraryRepository(context: Context) {
             } finally { staging.delete() }
         }
         val old = dao.asset(id)
-        LibraryAssetEntity(id, providerId, itemId, title, author.ifBlank { old?.author.orEmpty() }, kind.name, format,
+        val storedKind = old?.kind?.takeIf { contentKind(it).isAudio() && kind.isAudio() } ?: kind.name
+        LibraryAssetEntity(id, providerId, itemId, title, author.ifBlank { old?.author.orEmpty() }, storedKind, format,
             Uri.fromFile(target).toString(), cover.ifBlank { old?.coverPath.orEmpty() }, revision, old?.addedAt ?: System.currentTimeMillis(), old?.favorite ?: false).also { dao.installAsset(it) }
     }
 

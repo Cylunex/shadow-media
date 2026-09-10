@@ -10,9 +10,10 @@ import top.cylunex.shadowmedia.network.*
 internal class EmbyAudioReporter(scope: CoroutineScope, private val outbox: PlaybackOutbox) {
     private sealed interface Event {
         data class Resolved(val entryId: String, val session: EmbySession, val plan: PlaybackPlan) : Event
+        data class Selected(val entryId: String, val candidate: PlaybackCandidate) : Event
         data class Progress(val snapshot: AudioProgressSnapshot) : Event
     }
-    private data class Binding(val session: EmbySession, val plan: PlaybackPlan, var started: Boolean = false, var position: Long = 0, var stopped: Boolean = false)
+    private data class Binding(val session: EmbySession, var plan: PlaybackPlan, var started: Boolean = false, var position: Long = 0, var stopped: Boolean = false)
     private val queue = Channel<Event>(Channel.UNLIMITED)
     private val bindings = linkedMapOf<String, Binding>()
     init { scope.launch {
@@ -24,6 +25,15 @@ internal class EmbyAudioReporter(scope: CoroutineScope, private val outbox: Play
                         bindings[event.entryId] = Binding(event.session, event.plan)
                         // Only currently opened loader resources have sessions; no whole-book prefetch.
                         if (bindings.size > 16) bindings.entries.firstOrNull { !it.value.started }?.key?.let(bindings::remove)
+                    }
+                    is Event.Selected -> {
+                        val binding = bindings[event.entryId] ?: continue
+                        val candidate = event.candidate
+                        if (binding.started && (binding.plan.primary.method != candidate.method || binding.plan.mediaSourceId != (candidate.mediaSourceId ?: binding.plan.mediaSourceId))) {
+                            report(binding, binding.position, true, true, PlaybackEvent.STOPPED)
+                            binding.started = false; binding.stopped = false
+                        }
+                        binding.plan = binding.plan.copy(mediaSourceId = candidate.mediaSourceId ?: binding.plan.mediaSourceId, candidates = listOf(candidate))
                     }
                     is Event.Progress -> {
                         val s = event.snapshot; val binding = bindings[s.entryId] ?: continue
@@ -45,6 +55,7 @@ internal class EmbyAudioReporter(scope: CoroutineScope, private val outbox: Play
         }
     } }
     fun resolved(entryId: String, session: EmbySession, plan: PlaybackPlan) { queue.trySend(Event.Resolved(entryId, session, plan)) }
+    fun selected(entryId: String, candidate: PlaybackCandidate) { queue.trySend(Event.Selected(entryId, candidate)) }
     fun progress(snapshot: AudioProgressSnapshot) { queue.trySend(Event.Progress(snapshot)) }
     private suspend fun report(binding: Binding, position: Long, paused: Boolean, canSeek: Boolean, event: PlaybackEvent) {
         val plan = binding.plan

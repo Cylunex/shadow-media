@@ -130,6 +130,7 @@ class PlaybackRuntime(
         repeatMode = Player.REPEAT_MODE_ONE
     }
     val player: Player = exoPlayer
+    private val audible = top.cylunex.shadowmedia.model.PlaybackCoordinator.process.participant { exoPlayer.pause() }
     private val mediaSession = MediaSession.Builder(context, exoPlayer).build()
     val currentPositionMs: Long
         get() = (positionOffsetMs + player.currentPosition).coerceAtLeast(0L)
@@ -178,6 +179,7 @@ class PlaybackRuntime(
         val candidate = currentCandidate()
         finishBuffering()
         telemetrySink.record(telemetrySnapshot(completed = !terminalFailure, terminal = true))
+        audible.close()
         mediaSession.release()
         exoPlayer.release()
         if (started) {
@@ -415,6 +417,7 @@ class PlaybackRuntime(
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (playWhenReady) audible.claim() else audible.abandon()
             if (!started || released) return
             reportCurrent(if (playWhenReady) PlaybackEvent.UNPAUSE else PlaybackEvent.PAUSE)
         }

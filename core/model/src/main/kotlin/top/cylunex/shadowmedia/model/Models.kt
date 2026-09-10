@@ -37,6 +37,7 @@ data class MediaItem(
     val imageTag: String? = null,
     val backdropImageTag: String? = null,
     val externalIds: Map<String, String> = emptyMap(),
+    val music: MusicMetadata? = null,
 )
 
 enum class MediaSort(val wireName: String) {
@@ -285,6 +286,7 @@ data class UnifiedMediaItem(
     val played: Boolean = false,
     val favorite: Boolean = false,
     val externalIds: Map<String, String> = emptyMap(),
+    val music: MusicMetadata? = null,
 )
 
 data class UnifiedMediaPage(

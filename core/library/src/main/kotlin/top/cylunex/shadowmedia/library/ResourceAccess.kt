@@ -18,10 +18,11 @@ object LibraryResources {
     var pageManifest: (suspend (LibraryAssetEntity) -> List<String>)? = null
     var pageReader: (suspend (LibraryAssetEntity, String, File) -> Unit)? = null
     var audioEvent: ((AudioProgressSnapshot) -> Unit)? = null
-    var audioResolver: (suspend (LibraryAssetEntity, String) -> PlaybackCandidate)? = null
+    var audioResolver: (suspend (LibraryAssetEntity, String) -> List<PlaybackCandidate>)? = null
+    var audioCandidateSelected: ((String, PlaybackCandidate) -> Unit)? = null
     suspend fun resolve(asset: LibraryAssetEntity): PlaybackCandidate = requireNotNull(resolver) { "来源服务尚未初始化" }(asset)
-    suspend fun resolveAudio(asset: LibraryAssetEntity, entryId: String): PlaybackCandidate =
-        audioResolver?.invoke(asset, entryId) ?: resolve(asset)
+    suspend fun resolveAudio(asset: LibraryAssetEntity, entryId: String): List<PlaybackCandidate> =
+        audioResolver?.invoke(asset, entryId) ?: listOf(resolve(asset))
 }
 
 data class AudioProgressSnapshot(val assetId: String, val positionMs: Long, val paused: Boolean, val canSeek: Boolean, val ready: Boolean, val stopped: Boolean, val entryId: String = assetId)

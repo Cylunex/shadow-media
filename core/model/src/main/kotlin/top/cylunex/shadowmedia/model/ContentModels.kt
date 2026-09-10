@@ -1,9 +1,11 @@
 package top.cylunex.shadowmedia.model
 
 /** Catalog type, independent from transport, file format and consumption engine. */
-enum class ContentKind { MOVIE, SERIES, EPISODE, LIVE_CHANNEL, BOOK, COMIC, AUDIOBOOK, FOLDER, UNKNOWN }
+enum class ContentKind { MOVIE, SERIES, EPISODE, LIVE_CHANNEL, BOOK, COMIC, AUDIOBOOK, MUSIC, PODCAST, FOLDER, UNKNOWN }
 enum class ExperienceKind { VIDEO, LIVE, TEXT, COMIC, AUDIO, EXTERNAL }
-enum class NodeKind { SEASON, EPISODE, VOLUME, CHAPTER, TRACK, PAGE }
+enum class NodeKind { SEASON, EPISODE, VOLUME, CHAPTER, TRACK, PAGE, DISC }
+enum class AudioMode { AUDIOBOOK, MUSIC, PODCAST }
+fun ContentKind.isAudio() = this in setOf(ContentKind.AUDIOBOOK, ContentKind.MUSIC, ContentKind.PODCAST)
 
 fun contentKind(type: String): ContentKind = when (type.lowercase()) {
     "movie", "video", "strm" -> ContentKind.MOVIE
@@ -13,7 +15,9 @@ fun contentKind(type: String): ContentKind = when (type.lowercase()) {
     "book", "ebook", "novel", "epub", "txt", "pdf" -> ContentKind.BOOK
     "comic", "cbz", "imagedirectory" -> ContentKind.COMIC
     "audiobook", "audio", "m4b", "mp3" -> ContentKind.AUDIOBOOK
-    "folder", "collectionfolder", "musicalbum" -> ContentKind.FOLDER
+    "music", "song" -> ContentKind.MUSIC
+    "podcast", "podcastepisode" -> ContentKind.PODCAST
+    "folder", "collectionfolder", "musicalbum", "musicartist", "playlist" -> ContentKind.FOLDER
     else -> ContentKind.UNKNOWN
 }
 
@@ -86,3 +90,7 @@ data class ProgressEnvelope(
 ) {
     val stableId: String get() = scopedContentId(profileId, key.providerId, key.itemId, renditionId)
 }
+
+
+data class MusicMetadata(val album: String = "", val albumId: String = "", val artist: String = "",
+    val albumArtist: String = "", val disc: Int = 0, val track: Int = 0)

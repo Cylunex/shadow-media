@@ -8,6 +8,10 @@ data class AudioChapter(val title: String, val startMs: Long, val endMs: Long? =
 
 /** Static MP4/ID3 chapters arrive with the selected track formats, without a second file read. */
 fun Player.audioChapters(): List<AudioChapter> {
+    @Suppress("DEPRECATION")
+    val stored = currentMediaItem?.mediaMetadata?.extras?.getParcelableArrayList<android.os.Bundle>("shadow.audio.chapters").orEmpty()
+        .map { AudioChapter(it.getString("title").orEmpty(), it.getLong("start"), it.getLong("end", -1).takeIf { end -> end > 0 }) }
+    if (stored.isNotEmpty()) return normalizeChapters(stored, duration.takeIf { it > 0 })
     val chapters = currentTracks.groups.filter { it.isSelected }.flatMap { group ->
         (0 until group.length).flatMap { track ->
             val metadata = group.getTrackFormat(track).metadata

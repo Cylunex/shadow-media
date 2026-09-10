@@ -76,15 +76,10 @@ class ReaderActivity : FragmentActivity() {
                 progressSession = ProgressWriter.begin(library, item)
                 val file = library.publicationFile(item)
                 initial = (saved.takeIf { savedRevision == item.revision } ?: library.dao.progress(item.id)?.locatorJson)?.let { runCatching { Locator.fromJSON(JSONObject(it)) }.getOrNull() }
-                val pub = withContext(Dispatchers.IO) {
-                    val http = DefaultHttpClient()
-                    val retriever = AssetRetriever(contentResolver, http)
-                    val resource = retriever.retrieve(file.toUrl()).getOrElse { throw IllegalArgumentException("无法读取本地图书") }
-                    PublicationOpener(DefaultPublicationParser(this@ReaderActivity, http, retriever, pdfFactory = null)).open(resource, allowUserInteraction = false)
-                        .getOrElse { throw IllegalArgumentException("图书格式损坏或受 DRM 保护") }
-                }
+                val engine: ReadingEngineAdapter = ReadiumEngineAdapter(this@ReaderActivity)
+                val pub = engine.open(file)
                 publication = pub
-                supportFragmentManager.fragmentFactory = EpubNavigatorFactory(pub).createFragmentFactory(initialLocator = initial, initialPreferences = prefs)
+                supportFragmentManager.fragmentFactory = engine.navigator(pub, initial, prefs)
                 ready = true
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { error = e.message ?: "图书打开失败" }

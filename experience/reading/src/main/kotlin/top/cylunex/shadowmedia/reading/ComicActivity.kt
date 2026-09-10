@@ -44,7 +44,8 @@ class ComicActivity : ComponentActivity() {
     private var mode by mutableStateOf("LTR")
     private var currentPage by mutableIntStateOf(0)
     private var currentOffset = 0f
-    private var file: File? = null
+    private var sourceAdapter: ComicSourceAdapter? = null
+    private val renderAdapter: ComicRenderAdapter = PlatformComicRenderer()
     private var progressSession: ProgressSession? = null
     private var lastSavedPage = -1
     private var lastSaveTime = 0L
@@ -57,12 +58,8 @@ class ComicActivity : ComponentActivity() {
         lifecycleScope.launch {
             try {
                 val item = requireNotNull(intent.getStringExtra("assetId")?.let { library.dao.asset(it) }) { "文件已移除" }
-                val source = if (item.format == "komga") null else library.localFile(item)
-                val manifest = withContext(Dispatchers.IO) {
-                    if (item.format == "komga") requireNotNull(LibraryResources.pageManifest)(item)
-                    else if (item.format == "pdf") PdfRenderer(ParcelFileDescriptor.open(requireNotNull(source), ParcelFileDescriptor.MODE_READ_ONLY)).use { renderer -> List(renderer.pageCount) { it.toString() } }
-                    else { SafeArchives.validate(requireNotNull(source)); LibraryRepository.comicPages(source) }
-                }
+                val source = LibraryComicSource(item, library)
+                val manifest = withContext(Dispatchers.IO) { source.pages() }
                 require(manifest.isNotEmpty()) { "未找到可显示的页面" }
                 progressSession = ProgressWriter.begin(library, item)
                 val saved = savedInstanceState?.takeIf { it.getString("revision") == item.revision }
@@ -70,7 +67,7 @@ class ComicActivity : ComponentActivity() {
                 initialPage = (saved?.getInt("page") ?: progress?.optInt("pageIndex") ?: 0).coerceIn(manifest.indices)
                 initialOffset = (saved?.getFloat("offset") ?: progress?.optDouble("offset", 0.0)?.toFloat() ?: 0f).coerceIn(0f, 1f)
                 currentPage = initialPage; currentOffset = initialOffset
-                file = source; asset = item; pages = manifest
+                sourceAdapter = source; asset = item; pages = manifest
                 save()
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { error = e.message ?: "页面读取失败" }
@@ -209,26 +206,8 @@ class ComicActivity : ComponentActivity() {
         val directory = File(cacheDir, "comic-pages").apply { mkdirs() }
         val result = File.createTempFile("page-", ".img", directory)
         try {
-            if (asset?.format == "komga") {
-                requireNotNull(LibraryResources.pageReader)(requireNotNull(asset), pages[index], result)
-                return result
-            }
-            val source = requireNotNull(file)
-            if (asset?.format == "pdf") {
-                PdfRenderer(ParcelFileDescriptor.open(source, ParcelFileDescriptor.MODE_READ_ONLY)).use { renderer -> renderer.openPage(index).use { page ->
-                    val ratio = minOf(2048f / page.width, 2048f / page.height, 2f)
-                    val bitmap = Bitmap.createBitmap((page.width * ratio).toInt().coerceAtLeast(1), (page.height * ratio).toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888)
-                    try { bitmap.eraseColor(android.graphics.Color.WHITE); page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY); result.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) } } finally { bitmap.recycle() }
-                } }
-            } else ZipFile(source).use { zip ->
-                val entry = requireNotNull(zip.getEntry(pages[index]))
-                require(entry.size in 1..SafeArchives.MAX_ENTRY_BYTES)
-                zip.getInputStream(entry).use { input -> result.outputStream().use { output ->
-                    val buffer = ByteArray(32 * 1024); var total = 0L
-                    while (true) { val n = input.read(buffer); if (n < 0) break; total += n; require(total <= SafeArchives.MAX_ENTRY_BYTES); output.write(buffer, 0, n) }
-                } }
-            }
-            return result
+            val resource = requireNotNull(sourceAdapter).page(pages[index], result)
+            return renderAdapter.render(resource, result)
         } catch (e: Exception) { result.delete(); throw e }
     }
 }

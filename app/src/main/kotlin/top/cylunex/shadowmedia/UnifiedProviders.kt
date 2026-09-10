@@ -102,24 +102,34 @@ internal class EmbyMediaProvider(
         require(key.providerId == descriptor.id) { "媒体不属于这个 Emby Provider" }
         val item = cache[key.itemId] ?: repository.item(session, key.itemId).also { cache[it.id] = it }
         val children = if (item.type.equals("MusicAlbum", true)) {
-            repository.browse(session, BrowseRequest(parentId = item.id, includeItemTypes = setOf("Audio"), limit = 200))
-                .items.also { values -> values.forEach { cache[it.id] = it } }
+            val values = mutableListOf<MediaItem>()
+            var offset = 0
+            do {
+                val page = repository.browse(session, BrowseRequest(parentId = item.id, includeItemTypes = setOf("Audio"), startIndex = offset, limit = 200))
+                require(page.items.isNotEmpty() || !page.hasMore) { "专辑分页异常，请重试" }
+                values += page.items; offset += page.items.size
+            } while (page.hasMore)
+            values.onEach { cache[it.id] = it }.sortedWith(compareBy({ it.music?.disc ?: 0 }, { it.music?.track ?: 0 }, { it.name }))
         } else if (item.type.equals("Series", true) || item.type.equals("BoxSet", true)) {
             repository.children(session, item.id).also { values -> values.forEach { cache[it.id] = it } }
         } else emptyList()
         return MediaDetail(item = toUnified(item), children = children.map(::toUnified))
     }
 
-    override suspend fun resolve(request: UnifiedPlaybackRequest): List<PlaybackCandidate> =
-        repository.playbackPlan(session, request.key.itemId).candidates
+    override suspend fun resolve(request: UnifiedPlaybackRequest): List<PlaybackCandidate> {
+        require(request.key.providerId == descriptor.id)
+        val item = cache[request.key.itemId] ?: repository.item(session, request.key.itemId)
+        return if (item.type.equals("Audio", true)) repository.audioPlan(session, item.id).candidates
+        else repository.playbackPlan(session, item.id).candidates
+    }
 
     fun mediaItem(key: MediaKey): MediaItem? = cache[key.itemId]
 
     private fun toUnified(item: MediaItem) = UnifiedMediaItem(
         key = MediaKey(descriptor.id, item.id),
         title = item.name,
-        type = item.type,
-        subtitle = item.seriesName,
+        type = if (item.type.equals("Audio", true) && (item.music?.albumId?.isNotBlank() == true || item.music?.album?.isNotBlank() == true)) "MUSIC" else item.type,
+        subtitle = item.music?.artist?.takeIf(String::isNotBlank) ?: item.seriesName,
         overview = item.overview,
         year = item.productionYear,
         rating = item.communityRating,
@@ -128,6 +138,7 @@ internal class EmbyMediaProvider(
         played = item.played,
         favorite = item.favorite,
         externalIds = item.externalIds,
+        music = item.music,
     )
 }
 

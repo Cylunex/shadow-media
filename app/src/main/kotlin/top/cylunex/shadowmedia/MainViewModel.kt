@@ -815,7 +815,7 @@ class MainViewModel(
     fun playUnifiedItem(item: UnifiedMediaItem) {
         cancelContentRequests()
         if (top.cylunex.shadowmedia.model.contentKind(item.type) in setOf(
-                top.cylunex.shadowmedia.model.ContentKind.BOOK, top.cylunex.shadowmedia.model.ContentKind.COMIC, top.cylunex.shadowmedia.model.ContentKind.AUDIOBOOK)) {
+                top.cylunex.shadowmedia.model.ContentKind.BOOK, top.cylunex.shadowmedia.model.ContentKind.COMIC, top.cylunex.shadowmedia.model.ContentKind.AUDIOBOOK, top.cylunex.shadowmedia.model.ContentKind.MUSIC, top.cylunex.shadowmedia.model.ContentKind.PODCAST)) {
             update { copy(pendingPublication = item) }
             return
         }

@@ -28,7 +28,7 @@ class LegacyOpenProvider(private val provider: MediaProvider) : OpenProvider {
         require(candidates.isNotEmpty()) { "此来源没有提供可用资源" }
         return when (request.kind) {
             ContentKind.LIVE_CHANNEL -> OpenPlan.Live(request.key, candidates, request.locator as? ProgressLocator.Live)
-            ContentKind.AUDIOBOOK -> OpenPlan.Audio(request.key, candidates, request.locator as? ProgressLocator.Time)
+            ContentKind.AUDIOBOOK, ContentKind.MUSIC, ContentKind.PODCAST -> OpenPlan.Audio(request.key, candidates, request.locator as? ProgressLocator.Time)
             else -> OpenPlan.Video(request.key, candidates, request.locator as? ProgressLocator.Time)
         }
     }

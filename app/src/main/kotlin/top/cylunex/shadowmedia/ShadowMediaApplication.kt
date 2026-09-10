@@ -42,6 +42,7 @@ class ShadowMediaApplication : Application() {
 
 class AppContainer(application: Application) {
     val library = top.cylunex.shadowmedia.library.LibraryRepository(application)
+    val music = top.cylunex.shadowmedia.library.MusicRepository(application, library)
     val catalogs = top.cylunex.shadowmedia.library.NativeCatalogRepository(application, library)
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val database = ShadowMediaDatabase.create(application)
@@ -85,6 +86,7 @@ class AppContainer(application: Application) {
     fun initializeLibraryResources() {
         top.cylunex.shadowmedia.library.LibraryResources.networkStorage = networkStorageRepository
         top.cylunex.shadowmedia.library.LibraryResources.audioEvent = audioReporter::progress
+        top.cylunex.shadowmedia.library.LibraryResources.audioCandidateSelected = audioReporter::selected
         top.cylunex.shadowmedia.library.LibraryResources.pageManifest = catalogs::pages
         top.cylunex.shadowmedia.library.LibraryResources.pageReader = catalogs::page
         applicationScope.launch {
@@ -127,10 +129,14 @@ class AppContainer(application: Application) {
             if (asset.providerId.startsWith("emby:")) {
                 val session = requireNotNull(sessionStore.loadAll().firstOrNull { "emby:${it.serverId}:${it.userId}" == asset.providerId }) { "Emby 账号已移除" }
                 val plan = embyRepository.audioPlan(session, asset.itemId)
-                val candidate = requireNotNull(plan.candidates.firstOrNull()) { "来源没有返回资源" }
+                require(plan.candidates.isNotEmpty()) { "来源没有返回资源" }
                 audioReporter.resolved(entryId, session, plan)
-                candidate
-            } else top.cylunex.shadowmedia.library.LibraryResources.resolve(asset)
+                plan.candidates
+            } else {
+                val provider = providerRegistry.provider(asset.providerId)
+                if (provider != null) provider.resolve(top.cylunex.shadowmedia.model.UnifiedPlaybackRequest(top.cylunex.shadowmedia.model.MediaKey(asset.providerId, asset.itemId)))
+                else listOf(top.cylunex.shadowmedia.library.LibraryResources.resolve(asset))
+            }
         }
 
     }

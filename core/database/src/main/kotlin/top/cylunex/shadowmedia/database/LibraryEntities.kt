@@ -66,8 +66,19 @@ data class ProgressSessionEntity(
             sessionId == incoming.sessionId && incoming.sequence > sequence
 }
 
+data class LibraryShelfRow(@Embedded val asset: LibraryAssetEntity, val progression: Double?, val completed: Boolean?, val updatedAt: Long?)
+
 @Dao
 interface LibraryDao {
+    @Query("SELECT a.*, p.progression, p.completed, p.updatedAt FROM library_assets a LEFT JOIN progress_records p ON p.assetId = a.id WHERE a.kind IN (:kinds) AND (:favorite = 0 OR a.favorite = 1) AND (:unfinished = 0 OR p.completed IS NULL OR p.completed = 0) AND (a.title LIKE :query ESCAPE '\\' OR a.author LIKE :query ESCAPE '\\') ORDER BY CASE WHEN :byName THEN a.title END COLLATE NOCASE, a.addedAt DESC, a.id")
+    fun shelf(kinds: List<String>, query: String, favorite: Boolean, unfinished: Boolean, byName: Boolean): androidx.paging.PagingSource<Int, LibraryShelfRow>
+    @Query("SELECT a.*, p.progression, p.completed, p.updatedAt FROM library_assets a JOIN progress_records p ON p.assetId = a.id WHERE a.kind IN (:kinds) AND p.completed = 0 ORDER BY p.updatedAt DESC LIMIT 1")
+    fun continuing(kinds: List<String>): Flow<LibraryShelfRow?>
+    @Query("SELECT * FROM library_assets WHERE (:kind = '' OR kind = :kind) AND (title LIKE :query ESCAPE '\\' OR author LIKE :query ESCAPE '\\') ORDER BY addedAt DESC, id LIMIT :limit OFFSET :offset")
+    suspend fun searchPage(kind: String, query: String, offset: Int, limit: Int): List<LibraryAssetEntity>
+    @Query("SELECT COUNT(*) FROM library_assets WHERE (:kind = '' OR kind = :kind) AND (title LIKE :query ESCAPE '\\' OR author LIKE :query ESCAPE '\\')")
+    suspend fun searchCount(kind: String, query: String): Int
+
     @Query("SELECT * FROM library_assets ORDER BY addedAt DESC")
     fun assets(): Flow<List<LibraryAssetEntity>>
     @Query("SELECT * FROM library_assets WHERE id = :id")

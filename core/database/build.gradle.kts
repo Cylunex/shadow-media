@@ -29,7 +29,7 @@ dependencies {
     api(libs.room.runtime)
     implementation(libs.room.ktx)
     implementation(libs.room.paging)
-    implementation(libs.paging.runtime)
+    api(libs.paging.runtime)
     kapt(libs.room.compiler)
     testImplementation(libs.junit)
     testImplementation(libs.room.testing)

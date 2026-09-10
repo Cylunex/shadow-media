@@ -13,7 +13,7 @@ import top.cylunex.shadowmedia.library.*
 import top.cylunex.shadowmedia.playback.RoutingDataSource
 import java.io.IOException
 
-internal class LibraryAudioDataSource(private val context: Context, private val library: LibraryRepository) : DataSource {
+internal class LibraryAudioDataSource(private val context: Context, private val library: LibraryRepository, private val candidates: AudioCandidateSessions) : DataSource {
     private var delegate: DataSource? = null
     private val listeners = mutableListOf<TransferListener>()
     override fun addTransferListener(transferListener: TransferListener) { listeners += transferListener }
@@ -25,8 +25,9 @@ internal class LibraryAudioDataSource(private val context: Context, private val 
         val asset = runBlocking(Dispatchers.IO) { library.dao.asset(requireNotNull(dataSpec.uri.host)) } ?: throw IOException("书库条目已移除")
         if (dataSpec.uri.getQueryParameter("revision") != asset.revision) throw IOException("音频版本已变化，请重新打开")
         val entryId = dataSpec.uri.getQueryParameter("entry") ?: throw IOException("音频队列条目标识缺失")
-        for (attempt in 0..1) {
-            val candidate = runBlocking(Dispatchers.IO) { LibraryResources.resolveAudio(asset, entryId) }
+        var lastError: IOException? = null
+        for (attempt in 0 until 18) {
+            val candidate = runBlocking(Dispatchers.IO) { candidates.current(asset, entryId) }
             val origin = (candidate.credentialOrigin ?: candidate.url).toHttpUrlOrNull()
             val client = baseClient.newBuilder().addNetworkInterceptor { chain ->
                 val request = chain.request(); val url = request.url; val builder = request.newBuilder()
@@ -38,13 +39,18 @@ internal class LibraryAudioDataSource(private val context: Context, private val 
             }.build()
             val source = RoutingDataSource(OkHttpDataSource.Factory(client).setDefaultRequestProperties(candidate.requiredHeaders).createDataSource(), LibraryResources.networkStorage)
             delegate = source; listeners.forEach(source::addTransferListener)
-            try { return source.open(dataSpec.buildUpon().setUri(candidate.url).build()) }
-            catch (e: HttpDataSource.InvalidResponseCodeException) {
-                source.close()
-                if (attempt != 0 || e.responseCode !in setOf(401, 403, 404, 410)) throw e
-            } catch (e: Exception) { source.close(); throw e }
+            try {
+                val length = source.open(dataSpec.buildUpon().setUri(candidate.url).build())
+                candidates.selected(entryId, candidate)
+                return length
+            } catch (e: IOException) {
+                runCatching { source.close() }; delegate = null; lastError = e
+                val refresh = e is HttpDataSource.InvalidResponseCodeException && e.responseCode in setOf(401, 403, 404, 410) &&
+                    runBlocking(Dispatchers.IO) { candidates.refresh(asset, entryId) }
+                if (!refresh && (dataSpec.position > 0 || !candidates.advance(entryId))) throw e
+            }
         }
-        throw IOException("资源重试失败")
+        throw IOException("音频线路均无法打开", lastError)
     }
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int = delegate?.read(buffer, offset, length) ?: -1
     override fun getUri(): Uri? = delegate?.uri

@@ -17,9 +17,9 @@ android {
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 dependencies {
     api(project(":core:library"))
-    implementation("org.readium.kotlin-toolkit:readium-shared:3.1.2")
-    implementation("org.readium.kotlin-toolkit:readium-streamer:3.1.2")
-    implementation("org.readium.kotlin-toolkit:readium-navigator:3.1.2")
+    implementation("org.readium.kotlin-toolkit:readium-shared:3.3.0")
+    implementation("org.readium.kotlin-toolkit:readium-streamer:3.3.0")
+    implementation("org.readium.kotlin-toolkit:readium-navigator:3.3.0")
     implementation("androidx.fragment:fragment-ktx:1.8.9")
     implementation("com.davemorrissey.labs:subsampling-scale-image-view-androidx:3.10.0")
     implementation(libs.androidx.activity.compose)

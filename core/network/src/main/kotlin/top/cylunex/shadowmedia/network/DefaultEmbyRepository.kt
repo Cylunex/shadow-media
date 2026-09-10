@@ -220,18 +220,25 @@ class DefaultEmbyRepository(
     }
 
     override suspend fun audioPlan(session: EmbySession, itemId: String): PlaybackPlan {
+        val profile = DeviceProfileDto(
+            directPlayProfiles = listOf(DirectPlayProfileDto(container = "mp3,m4a,m4b,aac,flac,ogg,opus,wav,webm", type = "Audio", videoCodec = "", audioCodec = "aac,mp3,opus,vorbis,flac,pcm_s16le,pcm_s24le")),
+            transcodingProfiles = listOf(TranscodingProfileDto(container = "mp3", type = "Audio", protocol = "http", videoCodec = "", audioCodec = "mp3")))
         val response: PlaybackInfoResponseDto = executeJson(authenticatedRequest(session,
             EmbyEndpoints.endpoint(session.serverUrl, "Items", itemId, "PlaybackInfo"))
-            .post(json.encodeToString(PlaybackInfoRequestDto(userId = session.userId)).toRequestBody(JSON_MEDIA_TYPE)).build())
+            .post(json.encodeToString(PlaybackInfoRequestDto(userId = session.userId, deviceProfile = profile)).toRequestBody(JSON_MEDIA_TYPE)).build())
         if (response.errorCode != null) throw EmbyApiException("音频 PlaybackInfo: ${response.errorCode}")
         val source = response.mediaSources.firstOrNull() ?: throw EmbyApiException("音频没有可播放的媒体源")
-        val url = EmbyEndpoints.endpoint(session.serverUrl, "Audio", itemId, "stream").newBuilder()
-            .addQueryParameter("Static", "true").addQueryParameter("MediaSourceId", source.id)
-            .addQueryParameter("PlaySessionId", response.playSessionId).build().toString()
-        return PlaybackPlan(itemId, source.id, response.playSessionId,
-            candidates = listOf(PlaybackCandidate(url, PlayMethod.DIRECT_STREAM,
-                source.requiredHttpHeaders.filterKeys { !it.equals("Range", true) } + ("X-Emby-Token" to session.accessToken),
-                credentialOrigin = session.serverUrl, mediaSourceId = source.id)),
+        val candidates = response.mediaSources.flatMap { media ->
+            val headers = media.requiredHttpHeaders.filterKeys { !it.equals("Range", true) } + ("X-Emby-Token" to session.accessToken)
+            val canonical = EmbyEndpoints.endpoint(session.serverUrl, "Audio", itemId, "stream").newBuilder()
+                .addQueryParameter("Static", "true").addQueryParameter("MediaSourceId", media.id)
+                .addQueryParameter("PlaySessionId", response.playSessionId).build().toString()
+            listOfNotNull(
+                media.directStreamUrl?.takeIf(String::isNotBlank)?.let { PlaybackCandidate(EmbyEndpoints.resolvePlaybackUrl(session.serverUrl, it), PlayMethod.DIRECT_STREAM, headers, credentialOrigin = session.serverUrl, mediaSourceId = media.id) },
+                PlaybackCandidate(canonical, PlayMethod.DIRECT_STREAM, headers, credentialOrigin = session.serverUrl, mediaSourceId = media.id),
+                media.transcodingUrl?.takeIf(String::isNotBlank)?.let { PlaybackCandidate(EmbyEndpoints.resolvePlaybackUrl(session.serverUrl, it), PlayMethod.TRANSCODE, headers, credentialOrigin = session.serverUrl, mediaSourceId = media.id) })
+        }.distinctBy { it.url }
+        return PlaybackPlan(itemId, source.id, response.playSessionId, candidates,
             container = source.container, videoType = null, videoCodec = null,
             audioCodec = source.mediaStreams.firstOrNull { it.type.equals("Audio", true) }?.codec,
             runTimeTicks = source.runTimeTicks, supportsDirectStream = true)
@@ -463,6 +470,8 @@ class DefaultEmbyRepository(
         imageTag = imageTags["Primary"],
         backdropImageTag = backdropImageTags.firstOrNull(),
         externalIds = providerIds,
+        music = if (type.equals("Audio", true) || type.equals("MusicAlbum", true)) top.cylunex.shadowmedia.model.MusicMetadata(
+            album, albumId, artists.joinToString(" / "), albumArtist, parentIndexNumber ?: 0, indexNumber ?: 0) else null,
     )
 
     companion object {
@@ -471,7 +480,7 @@ class DefaultEmbyRepository(
         private const val HOME_SECTION_LIMIT = 24
         private const val HOME_ITEMS_PER_LIBRARY = 10
         private const val CATALOG_FIELDS =
-            "Overview,ProductionYear,CommunityRating,SeriesId,ImageTags,BackdropImageTags,ProviderIds"
+            "Overview,ProductionYear,CommunityRating,SeriesId,ImageTags,BackdropImageTags,ProviderIds,Album,AlbumId,Artists,AlbumArtist"
         private val PLAYABLE_ITEM_TYPES = setOf("Movie", "Episode", "Video")
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val EMPTY_BODY = ByteArray(0).toRequestBody(null)
