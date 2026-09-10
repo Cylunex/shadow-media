@@ -46,4 +46,20 @@ class EmbyAudioReporterTest {
         assertEquals("old", outbox.records[2].second.playSessionId)
         assertEquals("new", outbox.records[3].second.playSessionId)
     }
+    @Test fun `preparing a duplicate queue entry does not steal current playback reporting`() = runTest {
+        val outbox = Outbox(); val reporter = EmbyAudioReporter(backgroundScope, outbox)
+        reporter.resolved("entry-1", account, plan("p1"))
+        reporter.progress(AudioProgressSnapshot("same-asset", 1000, false, true, true, false, "entry-1"))
+        reporter.resolved("entry-2", account, plan("p2"))
+        reporter.progress(AudioProgressSnapshot("same-asset", 2000, false, true, true, false, "entry-1"))
+        runCurrent()
+        assertTrue(outbox.records.all { it.second.playSessionId == "p1" })
+        assertFalse(outbox.records.any { it.second.event == PlaybackEvent.STOPPED })
+        reporter.progress(AudioProgressSnapshot("same-asset", 3000, true, true, true, true, "entry-1"))
+        reporter.progress(AudioProgressSnapshot("same-asset", 0, false, true, true, false, "entry-2"))
+        runCurrent()
+        assertEquals(listOf("p1", "p1", "p1", "p1", "p2", "p2"), outbox.records.map { it.second.playSessionId })
+        assertEquals(PlaybackEvent.STOPPED, outbox.records[3].second.event)
+        assertEquals(PlaybackEvent.STARTED, outbox.records[4].second.event)
+    }
 }

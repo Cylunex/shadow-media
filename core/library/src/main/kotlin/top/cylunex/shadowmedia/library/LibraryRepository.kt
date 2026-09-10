@@ -119,7 +119,7 @@ class LibraryRepository(context: Context) {
         require(encoding in setOf("自动", "UTF-8", "GB18030", "Big5", "UTF-16LE", "UTF-16BE"))
         context.getSharedPreferences("text_encoding", Context.MODE_PRIVATE).edit().putString(id, encoding).apply()
         // Different decoding can change chapter boundaries; don't reuse incompatible coordinates.
-        dao.removeProgress(id)
+        dao.resetProgress(id)
     }
 
     /** Only the caller's scoped downloader may supply this file. No URL/headers are persisted. */
@@ -180,9 +180,8 @@ class LibraryRepository(context: Context) {
             } finally { staging.delete() }
         }
         val old = dao.asset(id)
-        if (old != null && old.revision.isNotBlank() && old.revision != revision) dao.removeProgress(id)
         LibraryAssetEntity(id, providerId, itemId, title, author.ifBlank { old?.author.orEmpty() }, kind.name, format,
-            Uri.fromFile(target).toString(), cover.ifBlank { old?.coverPath.orEmpty() }, revision, old?.addedAt ?: System.currentTimeMillis(), old?.favorite ?: false).also { dao.putAsset(it) }
+            Uri.fromFile(target).toString(), cover.ifBlank { old?.coverPath.orEmpty() }, revision, old?.addedAt ?: System.currentTimeMillis(), old?.favorite ?: false).also { dao.installAsset(it) }
     }
 
     suspend fun publicationFile(asset: LibraryAssetEntity): File = withContext(Dispatchers.IO) {
@@ -213,8 +212,9 @@ class LibraryRepository(context: Context) {
         }
     }
 
-    suspend fun saveProgress(id: String, type: String, locator: JSONObject, fraction: Double? = null, completed: Boolean = false) {
-        val asset = dao.asset(id) ?: return
+    suspend fun saveProgress(session: ProgressSessionEntity, type: String, locator: JSONObject, fraction: Double? = null, completed: Boolean = false) {
+        val id = session.assetId
+        val asset = dao.asset(id)?.takeIf { it.revision == session.resourceRevision } ?: return
         val previous = dao.progress(id)?.takeIf { it.locatorType == type }?.let { runCatching { JSONObject(it.locatorJson) }.getOrNull() }
         val position = if (type == "time") ProgressPolicy.timeSnapshot(locator, previous) else locator
         val effectiveFraction = if (completed) 1.0 else fraction ?: if (type == "time" && position.optLong("durationMs") > 0) position.optLong("positionMs").toDouble() / position.optLong("durationMs") else null
@@ -225,7 +225,7 @@ class LibraryRepository(context: Context) {
             val target = if (it.providerId.startsWith("catalog:AUDIOBOOKSHELF:")) "abs-book:${ProgressPolicy.absBookId(it.itemId)}" else id
             SyncOperationEntity(UUID.randomUUID().toString(), it.providerId, target, if (it.providerId.startsWith("emby:")) "offline-audio" else "progress", JSONObject(position.toString()).put("assetId", id).put("completed", completed).toString(), System.currentTimeMillis())
         }
-        dao.saveAndEnqueue(record, operation)
+        dao.saveAndEnqueue(record, operation, session)
     }
 
     suspend fun bookmark(id: String, locator: String, note: String) = dao.putAnnotation(

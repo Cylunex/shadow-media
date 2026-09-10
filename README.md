@@ -12,6 +12,7 @@ Audiobookshelf，多 Emby 与已导入书库可渐进搜索和继续翻页。界
 提供浅色与跟随系统选项。新增体验尚待真机验收，不等同于已经发布的新版本。
 
 接入方法、支持范围及未完成项见 [全媒介实施说明](docs/MULTIMEDIA_IMPLEMENTATION.md)。
+后续设计与本轮队列恢复、进度隔离改动见 [vNext 补充研究](docs/VNEXT_RESEARCH_2026_09_10.md)。
 
 ```text
 选择或添加多个 Emby 登录

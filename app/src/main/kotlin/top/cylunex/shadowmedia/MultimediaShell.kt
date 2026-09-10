@@ -35,6 +35,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import coil3.compose.AsyncImage
@@ -61,7 +64,9 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var audioExpanded by rememberSaveable { mutableStateOf(false) }
     var controller by remember { mutableStateOf<MediaController?>(null) }
-    var audioState by remember { mutableStateOf(AudioUi()) }
+    val audioState = rememberAudioUi(controller, visible = !playerScreenForAudio(state.screen))
+    val queueError by AudioQueueStatus.persistenceError.collectAsStateWithLifecycle()
+    val queueMessage by AudioQueueStatus.recoveryMessage.collectAsStateWithLifecycle()
     var message by remember { mutableStateOf<String?>(null) }
     var importing by remember { mutableStateOf<String?>(null) }
     var importJob by remember { mutableStateOf<Job?>(null) }
@@ -81,22 +86,17 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
         future.addListener({ runCatching { future.get() }.onSuccess { controller = it } }, ContextCompat.getMainExecutor(context))
         onDispose { MediaController.releaseFuture(future) }
     }
-    LaunchedEffect(controller) {
-        while (isActive) {
-            controller?.let { audioState = AudioUi(it.currentMediaItem?.mediaId, it.mediaMetadata.title?.toString().orEmpty(), it.isPlaying,
-                it.currentPosition.coerceAtLeast(0), it.duration.takeIf { n -> n > 0 } ?: 0, it.playbackParameters.speed, it.playbackState == Player.STATE_BUFFERING,
-                it.playerError?.let { "播放失败，请检查文件权限或重新导入。" }) }
-            delay(500)
-        }
+    LaunchedEffect(controller, playerScreen, audioState.playing) {
+        if (playerScreen) { controller?.pause(); audioExpanded = false }
     }
-    LaunchedEffect(playerScreen) { if (playerScreen) { controller?.pause(); audioExpanded = false } }
+    LaunchedEffect(queueError, queueMessage) { (queueError ?: queueMessage)?.let { message = it } }
     fun open(item: LibraryAssetEntity) {
         if (item.kind == "AUDIOBOOK") {
             val control = controller
             if (control == null) { message = "音频服务正在连接，请稍后重试"; return }
             scope.launch {
                 try {
-                    AudiobookController.play(context, control, listOf(item.id), item.id)
+                    AudiobookController.play(control, listOf(item.id), item.id)
                     audioExpanded = true
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { message = "无法打开音频，请检查文件授权或重新导入" }
@@ -162,7 +162,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     BackHandler(enabled = audioExpanded) { audioExpanded = false }
     Scaffold(bottomBar = {
         if (!television && !audioExpanded) Column {
-            if (audioState.id != null) AudioMiniBar(audioState, onOpen = { audioExpanded = true }, onToggle = { controller?.let { if (it.isPlaying) it.pause() else it.play() } })
+            if (audioState.id != null) AudioMiniBar(audioState, onOpen = { audioExpanded = true }, onToggle = { controller?.let { toggleAudio(it) } })
             NavigationBar(containerColor = MaterialTheme.colorScheme.background) {
                 destinations.forEachIndexed { index, (title, icon) -> NavigationBarItem(selected = tab == index, onClick = { select(index) }, icon = { Icon(icon, title) }, label = { Text(title) }) }
             }
@@ -183,7 +183,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                             try {
                                 top.cylunex.shadowmedia.library.ProgressWriter.flush()
                                 val selected = tracks.firstOrNull { track -> container.library.dao.progress(track.id)?.completed != true } ?: tracks.first()
-                                AudiobookController.play(context, control, tracks.map { it.id }, selected.id)
+                                AudiobookController.play(control, tracks.map { it.id }, selected.id)
                                 audioExpanded = true
                             } catch (e: CancellationException) { throw e }
                             catch (_: Exception) { message = "听书队列加载失败，请检查来源或重新添加" }
@@ -379,7 +379,49 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     }
 }
 
-private data class AudioUi(val id: String? = null, val title: String = "", val playing: Boolean = false, val position: Long = 0, val duration: Long = 0, val speed: Float = 1f, val buffering: Boolean = false, val error: String? = null)
+private fun toggleAudio(player: Player) {
+    if (player.playWhenReady && player.playbackState != Player.STATE_ENDED) player.pause()
+    else {
+        if (player.playbackState == Player.STATE_ENDED) player.seekToDefaultPosition()
+        if (player.playbackState == Player.STATE_IDLE) player.prepare()
+        player.play()
+    }
+}
+
+private fun playerScreenForAudio(screen: Screen) = screen in setOf(Screen.PLAYER, Screen.EXTERNAL_PLAYER)
+
+@Composable private fun rememberAudioUi(controller: MediaController?, visible: Boolean): AudioUi {
+    var state by remember(controller) { mutableStateOf(AudioUi()) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    fun snapshot(player: Player): AudioUi = AudioUi(player.currentMediaItem?.mediaId,
+        player.mediaMetadata.title?.toString().orEmpty(), player.playWhenReady && player.playbackState != Player.STATE_ENDED,
+        player.currentPosition.coerceAtLeast(0), player.duration.takeIf { it > 0 } ?: 0,
+        player.playbackParameters.speed, player.playbackState == Player.STATE_BUFFERING,
+        player.playerError?.let { "播放失败，请检查来源连接或文件权限。" },
+        (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }, player.currentMediaItemIndex, player.isPlaying)
+    DisposableEffect(controller) {
+        val listener = object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) { state = snapshot(player) }
+        }
+        controller?.let { it.addListener(listener); state = snapshot(it) }
+        onDispose { controller?.removeListener(listener) }
+    }
+    LaunchedEffect(controller, visible, state.advancing, lifecycle) {
+        val player = controller ?: return@LaunchedEffect
+        if (!visible) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            state = snapshot(player)
+            if (player.isPlaying) while (isActive) {
+                delay(500)
+                // Metadata and the queue are event-driven; ticks only update the visible position.
+                state = state.copy(position = player.currentPosition.coerceAtLeast(0))
+            }
+        }
+    }
+    return state
+}
+
+private data class AudioUi(val id: String? = null, val title: String = "", val playing: Boolean = false, val position: Long = 0, val duration: Long = 0, val speed: Float = 1f, val buffering: Boolean = false, val error: String? = null, val queue: List<androidx.media3.common.MediaItem> = emptyList(), val currentIndex: Int = 0, val advancing: Boolean = false)
 private fun audioTime(value: Long): String { val seconds = value.coerceAtLeast(0) / 1000; return if (seconds >= 3600) "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60) else "%d:%02d".format(seconds / 60, seconds % 60) }
 
 @Composable private fun AudioMiniBar(state: AudioUi, onOpen: () -> Unit, onToggle: () -> Unit) {
@@ -409,7 +451,7 @@ private fun audioTime(value: Long): String { val seconds = value.coerceAtLeast(0
         item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { controller?.seekToPreviousMediaItem() }, enabled = controller?.hasPreviousMediaItem() == true) { Icon(Icons.Rounded.SkipPrevious, "上一轨") }
             IconButton(onClick = { controller?.seekTo((state.position - 10000).coerceAtLeast(0)) }) { Icon(Icons.Rounded.Replay10, "后退 10 秒") }
-            FilledIconButton(onClick = { controller?.let { if (it.isPlaying) it.pause() else it.play() } }, Modifier.size(76.dp)) { if (state.buffering) CircularProgressIndicator(Modifier.size(30.dp)) else Icon(if (state.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (state.playing) "暂停" else "播放", Modifier.size(42.dp)) }
+            FilledIconButton(onClick = { controller?.let { toggleAudio(it) } }, Modifier.size(76.dp)) { if (state.buffering) CircularProgressIndicator(Modifier.size(30.dp)) else Icon(if (state.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (state.playing) "暂停" else "播放", Modifier.size(42.dp)) }
             IconButton(onClick = { controller?.seekTo((state.position + 30000).coerceAtMost(state.duration.takeIf { it > 0 } ?: Long.MAX_VALUE)) }) { Icon(Icons.Rounded.Forward30, "前进 30 秒") }
             IconButton(onClick = { controller?.seekToNextMediaItem() }, enabled = controller?.hasNextMediaItem() == true) { Icon(Icons.Rounded.SkipNext, "下一轨") }
         } }
@@ -427,9 +469,16 @@ private fun audioTime(value: Long): String { val seconds = value.coerceAtLeast(0
             when (panel) {
                 "倍速" -> listOf(.5f, .75f, 1f, 1.25f, 1.5f, 2f, 2.5f, 3f).forEach { speed -> TextButton(onClick = { controller?.setPlaybackSpeed(speed); panel = null }) { Text("$speed×") } }
                 "睡眠" -> listOf(0 to "关闭", 15 to "15 分钟", 30 to "30 分钟", 45 to "45 分钟", 60 to "60 分钟", -1 to "当前轨道结束").forEach { (minutes, title) -> TextButton(onClick = { controller?.let { AudiobookController.sleep(it, minutes) }; panel = null }) { Text(title) } }
-                "队列" -> LazyColumn(Modifier.heightIn(max = 480.dp)) { items(controller?.mediaItemCount ?: 0) { index ->
-                    val media = controller?.getMediaItemAt(index)
-                    TextButton(onClick = { controller?.seekToDefaultPosition(index); controller?.play(); panel = null }) { Text(media?.mediaMetadata?.title?.toString() ?: assets.firstOrNull { it.id == media?.mediaId }?.title ?: "轨道 ${index + 1}") }
+                "队列" -> LazyColumn(Modifier.heightIn(max = 480.dp)) { items(state.queue.size, key = { index -> state.queue[index].mediaMetadata.extras?.getString("shadow.audio.entry") ?: index }) { index ->
+                    val media = state.queue[index]
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { controller?.seekToDefaultPosition(index); controller?.let { if (it.playbackState == Player.STATE_IDLE) it.prepare(); it.play() }; panel = null }, modifier = Modifier.weight(1f)) {
+                            Text((if (index == state.currentIndex) "正在收听 · " else "") + (media.mediaMetadata.title?.toString() ?: "轨道 ${index + 1}"), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                        IconButton(onClick = { controller?.moveMediaItem(index, index - 1) }, enabled = index > 0) { Icon(Icons.Rounded.ArrowUpward, "上移") }
+                        IconButton(onClick = { controller?.moveMediaItem(index, index + 1) }, enabled = index < state.queue.lastIndex) { Icon(Icons.Rounded.ArrowDownward, "下移") }
+                        IconButton(onClick = { controller?.removeMediaItem(index) }) { Icon(Icons.Rounded.Close, "从队列移除") }
+                    }
                 } }
                 "书签" -> state.id?.let { id ->
                     val marks by library.dao.annotations(id).collectAsState(emptyList())

@@ -22,3 +22,7 @@ jobs:
       - run: yes | sdkmanager "platforms;android-36" "build-tools;35.0.0"
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew test lintDebug assembleDebug --stacktrace
+      - name: Verify additive library migrations
+        run: |
+          ruby scripts/verify-library-migration.rb 3
+          ruby scripts/verify-library-migration.rb 4

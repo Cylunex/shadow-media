@@ -5,6 +5,15 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
+import top.cylunex.shadowmedia.database.LibraryAssetEntity
+import top.cylunex.shadowmedia.database.ProgressSessionEntity
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
+
+class ProgressSession internal constructor(internal val record: ProgressSessionEntity) {
+    private val sequence = AtomicLong()
+    internal fun snapshot(): ProgressSessionEntity = record.copy(sequence = sequence.incrementAndGet())
+}
 
 /** Process-owned, ordered disk writer. Activity/service disposal never blocks the main thread. */
 object ProgressWriter {
@@ -21,9 +30,17 @@ object ProgressWriter {
             }
         }
     }
-    fun save(library: LibraryRepository, id: String, type: String, locator: JSONObject, fraction: Double?, completed: Boolean = false) {
+    suspend fun begin(library: LibraryRepository, asset: LibraryAssetEntity): ProgressSession {
+        flush()
+        val record = ProgressSessionEntity(asset.id, asset.revision, UUID.randomUUID().toString())
+        check(library.dao.beginProgressSession(record)) { "资源版本已变化，请重新打开" }
+        return ProgressSession(record)
+    }
+
+    fun save(library: LibraryRepository, session: ProgressSession, type: String, locator: JSONObject, fraction: Double?, completed: Boolean = false) {
         val snapshot = locator.toString()
-        check(writes.trySend { library.saveProgress(id, type, JSONObject(snapshot), fraction, completed) }.isSuccess)
+        val version = session.snapshot()
+        check(writes.trySend { library.saveProgress(version, type, JSONObject(snapshot), fraction, completed) }.isSuccess)
     }
 
     /** A resume/reset must observe every earlier snapshot, not just the last periodic DB write. */

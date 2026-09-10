@@ -24,13 +24,17 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ContentAnnotationEntity::class,
         SyncOperationEntity::class,
         MigrationImportEntity::class,
+        ProgressSessionEntity::class,
+        AudioQueueEntity::class,
+        AudioQueueEntryEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class ShadowMediaDatabase : RoomDatabase() {
     abstract fun dao(): ShadowMediaDao
     abstract fun libraryDao(): LibraryDao
+    abstract fun audioQueueDao(): AudioQueueDao
 
     companion object {
         @Volatile private var instance: ShadowMediaDatabase? = null
@@ -40,7 +44,16 @@ abstract class ShadowMediaDatabase : RoomDatabase() {
                 context.applicationContext,
                 ShadowMediaDatabase::class.java,
                 "shadow-media.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build().also { instance = it }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS progress_sessions (assetId TEXT NOT NULL PRIMARY KEY, resourceRevision TEXT NOT NULL, sessionId TEXT NOT NULL, sequence INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS audio_queues (id TEXT NOT NULL PRIMARY KEY, currentEntryId TEXT, positionMs INTEGER NOT NULL, speed REAL NOT NULL, repeatMode INTEGER NOT NULL, shuffleEnabled INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS audio_queue_entries (entryId TEXT NOT NULL PRIMARY KEY, queueId TEXT NOT NULL, assetId TEXT NOT NULL, resourceRevision TEXT NOT NULL, ordinal INTEGER NOT NULL, shuffleOrdinal INTEGER NOT NULL, FOREIGN KEY(queueId) REFERENCES audio_queues(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_audio_queue_entries_queueId ON audio_queue_entries(queueId)")
+            }
         }
 
         val MIGRATION_3_4 = object : Migration(3, 4) {

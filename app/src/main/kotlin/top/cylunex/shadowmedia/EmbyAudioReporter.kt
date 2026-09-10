@@ -9,7 +9,7 @@ import top.cylunex.shadowmedia.network.*
 /** Ephemeral playback sessions belong to the exact account/plan that produced the audio URL. */
 internal class EmbyAudioReporter(scope: CoroutineScope, private val outbox: PlaybackOutbox) {
     private sealed interface Event {
-        data class Resolved(val asset: String, val session: EmbySession, val plan: PlaybackPlan) : Event
+        data class Resolved(val entryId: String, val session: EmbySession, val plan: PlaybackPlan) : Event
         data class Progress(val snapshot: AudioProgressSnapshot) : Event
     }
     private data class Binding(val session: EmbySession, val plan: PlaybackPlan, var started: Boolean = false, var position: Long = 0)
@@ -20,13 +20,13 @@ internal class EmbyAudioReporter(scope: CoroutineScope, private val outbox: Play
             try {
                 when (event) {
                     is Event.Resolved -> {
-                        bindings.remove(event.asset)?.let { old -> if (old.started) report(old, old.position, true, true, PlaybackEvent.STOPPED) }
-                        bindings[event.asset] = Binding(event.session, event.plan)
+                        bindings.remove(event.entryId)?.let { old -> if (old.started) report(old, old.position, true, true, PlaybackEvent.STOPPED) }
+                        bindings[event.entryId] = Binding(event.session, event.plan)
                         // Only currently opened loader resources have sessions; no whole-book prefetch.
                         if (bindings.size > 16) bindings.entries.firstOrNull { !it.value.started }?.key?.let(bindings::remove)
                     }
                     is Event.Progress -> {
-                        val s = event.snapshot; val binding = bindings[s.assetId] ?: continue
+                        val s = event.snapshot; val binding = bindings[s.entryId] ?: continue
                         if (!s.ready && !s.stopped) continue
                         binding.position = s.positionMs
                         if (!binding.started && s.ready) {
@@ -34,14 +34,14 @@ internal class EmbyAudioReporter(scope: CoroutineScope, private val outbox: Play
                             binding.started = true
                         }
                         if (binding.started) report(binding, s.positionMs, s.paused, s.canSeek, if (s.stopped) PlaybackEvent.STOPPED else PlaybackEvent.TIME_UPDATE)
-                        if (s.stopped) bindings.remove(s.assetId)
+                        if (s.stopped) bindings.remove(s.entryId)
                     }
                 }
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { /* Room outbox preserves network failures; malformed legacy data remains intact. */ }
         }
     } }
-    fun resolved(asset: String, session: EmbySession, plan: PlaybackPlan) { queue.trySend(Event.Resolved(asset, session, plan)) }
+    fun resolved(entryId: String, session: EmbySession, plan: PlaybackPlan) { queue.trySend(Event.Resolved(entryId, session, plan)) }
     fun progress(snapshot: AudioProgressSnapshot) { queue.trySend(Event.Progress(snapshot)) }
     private suspend fun report(binding: Binding, position: Long, paused: Boolean, canSeek: Boolean, event: PlaybackEvent) {
         val plan = binding.plan

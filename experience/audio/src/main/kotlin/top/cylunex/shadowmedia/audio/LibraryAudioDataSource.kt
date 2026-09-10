@@ -23,8 +23,10 @@ internal class LibraryAudioDataSource(private val context: Context, private val 
         }
         // Media3 invokes DataSource.open on its loader thread, never on the UI thread.
         val asset = runBlocking(Dispatchers.IO) { library.dao.asset(requireNotNull(dataSpec.uri.host)) } ?: throw IOException("书库条目已移除")
+        if (dataSpec.uri.getQueryParameter("revision") != asset.revision) throw IOException("音频版本已变化，请重新打开")
+        val entryId = dataSpec.uri.getQueryParameter("entry") ?: throw IOException("音频队列条目标识缺失")
         for (attempt in 0..1) {
-            val candidate = runBlocking(Dispatchers.IO) { LibraryResources.resolve(asset) }
+            val candidate = runBlocking(Dispatchers.IO) { LibraryResources.resolveAudio(asset, entryId) }
             val origin = (candidate.credentialOrigin ?: candidate.url).toHttpUrlOrNull()
             val client = baseClient.newBuilder().addNetworkInterceptor { chain ->
                 val request = chain.request(); val url = request.url; val builder = request.newBuilder()

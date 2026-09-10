@@ -55,6 +55,7 @@ class ReaderActivity : FragmentActivity() {
     private var narrating by mutableStateOf(false)
     private var searchJob: Job? = null
     private var progressJob: Job? = null
+    private var progressSession: top.cylunex.shadowmedia.library.ProgressSession? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // The factory requires an asynchronously opened publication. Restore our versioned Locator,
@@ -63,6 +64,7 @@ class ReaderActivity : FragmentActivity() {
         library = LibraryRepository(this)
         val id = intent.getStringExtra("assetId")
         val saved = savedInstanceState?.getString("locator")
+        val savedRevision = savedInstanceState?.getString("revision")
         val settings = getSharedPreferences("reader_preferences", MODE_PRIVATE)
         prefs = EpubPreferences(fontSize = settings.getFloat("font", 115f).toDouble(), lineHeight = settings.getFloat("line", 1.7f).toDouble(),
             theme = runCatching { Theme.valueOf(settings.getString("theme", "SEPIA")!!) }.getOrDefault(Theme.SEPIA), publisherStyles = false, scroll = settings.getBoolean("scroll", false))
@@ -71,8 +73,9 @@ class ReaderActivity : FragmentActivity() {
                 val item = requireNotNull(id?.let { library.dao.asset(it) }) { "图书已移除" }
                 asset = item
                 require(item.format in setOf("epub", "txt")) { "此阅读器支持 EPUB 和 TXT" }
+                progressSession = ProgressWriter.begin(library, item)
                 val file = library.publicationFile(item)
-                initial = (saved ?: library.dao.progress(item.id)?.locatorJson)?.let { runCatching { Locator.fromJSON(JSONObject(it)) }.getOrNull() }
+                initial = (saved.takeIf { savedRevision == item.revision } ?: library.dao.progress(item.id)?.locatorJson)?.let { runCatching { Locator.fromJSON(JSONObject(it)) }.getOrNull() }
                 val pub = withContext(Dispatchers.IO) {
                     val http = DefaultHttpClient()
                     val retriever = AssetRetriever(contentResolver, http)
@@ -90,6 +93,7 @@ class ReaderActivity : FragmentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        asset?.let { outState.putString("revision", it.revision) }
         locator?.let { outState.putString("locator", it.toJSON().toString()) }
         super.onSaveInstanceState(outState)
     }
@@ -103,7 +107,7 @@ class ReaderActivity : FragmentActivity() {
         progressJob = lifecycleScope.launch {
             fragment.currentLocator.collectLatest { current ->
                 locator = current
-                asset?.let { ProgressWriter.save(library, it.id, "text", current.toJSON(), current.locations.totalProgression,
+                progressSession?.let { ProgressWriter.save(library, it, "text", current.toJSON(), current.locations.totalProgression,
                     completed = (current.locations.totalProgression ?: 0.0) >= 0.999) }
             }
         }

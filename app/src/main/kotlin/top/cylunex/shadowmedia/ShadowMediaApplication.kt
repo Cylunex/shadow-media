@@ -117,12 +117,22 @@ class AppContainer(application: Application) {
                 }
                 asset.providerId.startsWith("emby:") -> {
                     val session = requireNotNull(sessionStore.loadAll().firstOrNull { "emby:${it.serverId}:${it.userId}" == asset.providerId }) { "Emby 账号已移除" }
-                    embyRepository.audioPlan(session, asset.itemId).also { audioReporter.resolved(asset.id, session, it) }.candidates
+                    embyRepository.audioPlan(session, asset.itemId).candidates
                 }
                 else -> requireNotNull(providerRegistry.provider(asset.providerId)) { "来源不可用，请重新连接" }.resolve(top.cylunex.shadowmedia.model.UnifiedPlaybackRequest(key))
             }
             requireNotNull(candidates.firstOrNull()) { "来源没有返回资源" }
         }
+        top.cylunex.shadowmedia.library.LibraryResources.audioResolver = { asset, entryId ->
+            if (asset.providerId.startsWith("emby:")) {
+                val session = requireNotNull(sessionStore.loadAll().firstOrNull { "emby:${it.serverId}:${it.userId}" == asset.providerId }) { "Emby 账号已移除" }
+                val plan = embyRepository.audioPlan(session, asset.itemId)
+                val candidate = requireNotNull(plan.candidates.firstOrNull()) { "来源没有返回资源" }
+                audioReporter.resolved(entryId, session, plan)
+                candidate
+            } else top.cylunex.shadowmedia.library.LibraryResources.resolve(asset)
+        }
+
     }
 
     fun recordEmbyHistory(session: EmbySession, item: MediaItem, positionMs: Long, durationMs: Long?) {

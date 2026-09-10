@@ -54,12 +54,26 @@ data class SyncOperationEntity(
 @Entity(tableName = "migration_imports")
 data class MigrationImportEntity(@PrimaryKey val id: String)
 
+@Entity(tableName = "progress_sessions")
+data class ProgressSessionEntity(
+    @PrimaryKey val assetId: String,
+    val resourceRevision: String,
+    val sessionId: String,
+    val sequence: Long = 0,
+) {
+    fun accepts(incoming: ProgressSessionEntity, revision: String): Boolean =
+        assetId == incoming.assetId && resourceRevision == revision && incoming.resourceRevision == revision &&
+            sessionId == incoming.sessionId && incoming.sequence > sequence
+}
+
 @Dao
 interface LibraryDao {
     @Query("SELECT * FROM library_assets ORDER BY addedAt DESC")
     fun assets(): Flow<List<LibraryAssetEntity>>
     @Query("SELECT * FROM library_assets WHERE id = :id")
     suspend fun asset(id: String): LibraryAssetEntity?
+    @Query("SELECT * FROM library_assets WHERE id IN (:ids)")
+    suspend fun assetsByIds(ids: List<String>): List<LibraryAssetEntity>
     @Upsert suspend fun putAsset(asset: LibraryAssetEntity)
     @Query("UPDATE library_assets SET favorite = :favorite WHERE id = :id")
     suspend fun favorite(id: String, favorite: Boolean)
@@ -81,10 +95,32 @@ interface LibraryDao {
     suspend fun removeAnnotations(id: String)
     @Query("DELETE FROM progress_records WHERE assetId = :id")
     suspend fun removeProgress(id: String)
+    @Query("SELECT * FROM progress_sessions WHERE assetId = :id")
+    suspend fun progressSession(id: String): ProgressSessionEntity?
+    @Upsert suspend fun putProgressSession(session: ProgressSessionEntity)
+    @Query("DELETE FROM progress_sessions WHERE assetId = :id")
+    suspend fun removeProgressSession(id: String)
+    @Transaction suspend fun beginProgressSession(session: ProgressSessionEntity): Boolean {
+        if (asset(session.assetId)?.revision != session.resourceRevision) return false
+        putProgressSession(session)
+        return true
+    }
+    @Transaction suspend fun resetProgress(id: String) {
+        removeProgressSession(id)
+        removeProgress(id)
+    }
+    @Transaction suspend fun installAsset(asset: LibraryAssetEntity) {
+        val old = this.asset(asset.id)
+        if (old != null && old.revision != asset.revision) {
+            resetProgress(asset.id)
+            removeAssetOperations(asset.id)
+        }
+        putAsset(asset)
+    }
     @Transaction suspend fun removeFromShelf(id: String) {
         removeAssetOperations(id)
         removeAnnotations(id)
-        removeProgress(id)
+        resetProgress(id)
         removeAsset(id)
     }
     @Query("DELETE FROM sync_operations WHERE target = :id")
@@ -116,13 +152,16 @@ interface LibraryDao {
         operations.forEach { enqueue(it) }
         markImported(MigrationImportEntity(id))
     }
-    @Transaction suspend fun saveAndEnqueue(progress: ContentProgressEntity, operation: SyncOperationEntity?) {
-        if (asset(progress.assetId) == null) return
+    @Transaction suspend fun saveAndEnqueue(progress: ContentProgressEntity, operation: SyncOperationEntity?, session: ProgressSessionEntity): Boolean {
+        val asset = asset(progress.assetId) ?: return false
+        if (progressSession(progress.assetId)?.accepts(session, asset.revision) != true) return false
         putProgress(progress)
+        putProgressSession(session)
         if (operation != null) {
             removeSuperseded(operation.scope, operation.target, operation.kind)
             enqueue(operation)
         }
+        return true
     }
     @Transaction suspend fun seedProgress(record: ContentProgressEntity) {
         if (asset(record.assetId) != null && progress(record.assetId) == null) putProgress(record)

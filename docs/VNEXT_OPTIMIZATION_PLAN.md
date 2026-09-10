@@ -1,8 +1,8 @@
 # Shadow Media vNext 优化改造方案
 
-状态：设计提案，不表示已经实现；不授权打包、安装或部署。
+状态：目标设计；首批队列与进度改动已接入，范围和限制见 [2026-09-10 补充研究与实现](VNEXT_RESEARCH_2026_09_10.md)。
 
-核查日期：2026-09-07。代码基线：`ef5d17b`，应用版本 `1.1.1 (20)`。
+核查日期：2026-09-10。原实现基线：`ef5d17b`，方案基线：`22e96ff`；应用版本仍为 `1.1.1 (20)`。
 
 输入包括用户提供的三份评估、当前代码与路线图，以及本文末尾的一手资料。实际能力以
 [全媒介实施说明](MULTIMEDIA_IMPLEMENTATION.md) 和 [逻辑走查记录](LOGIC_AUDIT_2026_09_04.md)
@@ -36,7 +36,7 @@
 | 附件判断 | 当前核查 | 新决策 |
 | --- | --- | --- |
 | 项目没有后台音频 Service | 已有 `AudiobookService : MediaSessionService`、队列、倍速、睡眠和迷你栏 | 扩展现有服务，不另建 MusicService |
-| 音频 Lint 是发布阻塞 | `ef5d17b` 后整仓 Lint 已通过，0 错误、28 条警告 | 保留 CI 门禁，不把已消失问题列为批次 |
+| 音频 Lint 是发布阻塞 | 历史报告记录通过；本次完整验证实际发现旧 SessionResult 错误码触发 WrongConstant，已改用 SessionError | 以当前完整测试/Lint 结果为准，避免把历史记录当门禁 |
 | 音乐应等视频全部 Service 化 | 视频与听书生命周期不同，ISO 也不适合强塞进同一服务 | 音乐可在现有音频服务内先落地；视频 Service 化独立评估 |
 | Media3 1.11 可直接带来 M4B 章节 | 1.11 能提取 MP4/M4A/M4B 的 Nero/QuickTime `Chapter` 元数据，但项目尚未消费 | 做章节 SPI 和真实样本验收，不把依赖升级等同于功能完成 |
 | 直接升级 Readium | 项目固定 3.1.2；当前稳定版 3.3.0，且次版本允许小型破坏性变化 | 建兼容层和样本矩阵后单独升级 |
@@ -124,24 +124,22 @@ operation = BROWSE / SEARCH / OPEN / FAVORITE_WRITE / PROGRESS_WRITE /
 
 ## 4. 状态与数据库演进
 
-### 4.1 v5 最小新增表
+### 4.1 实际 v5 与后续数据库演进
 
-不一次性建立完整知识图谱。第一批只新增：
+本轮 v5 只新增三张直接服务当前路径的表，保留所有旧表：
 
 | 表 | 关键字段 | 用途 |
 | --- | --- | --- |
-| `user_states` | profile/scope/projection/rendition/revision/kind/payload/sequence | 收藏与各类 Locator 的权威状态 |
-| `audio_queues` | id/profile/mode/account/repeat/shuffleSeed/currentInstance/position/updatedAt | 可恢复队列头 |
-| `audio_queue_items` | instanceId/queueId/position/mediaKey/rendition/metadata | 同一曲目重复出现仍有独立身份 |
-| `catalog_entries` | projection/parent/type/title/sortKey/revision/availability/refreshedAt | 本地分页目录快照 |
-| `resource_tasks` | id/resourceKey/intent/state/bytes/error/constraints | 离线与导入任务状态，不保存 Lease |
+| `audio_queues` | id/currentEntryId/positionMs/speed/repeatMode/shuffleEnabled | 当前按模式命名的队列头，仅启用 AUDIOBOOK |
+| `audio_queue_entries` | entryId/queueId/assetId/resourceRevision/ordinal/shuffleOrdinal | 独立实例、普通顺序与实际随机顺序 |
+| `progress_sessions` | assetId/resourceRevision/sessionId/sequence | 事务核对当前消费会话 |
 
-现有 `library_assets`、`progress_records`、视频历史和 Outbox 继续存在。迁移采用：
+`user_states`、`catalog_entries`、`resource_tasks` 留给对应功能批次的后续增量版本。
+个人收录也要独立于目录和资源引用；禁止一次迁移创建所有尚未使用的领域表。
 
-1. 新表先上线，默认关闭新 UI；MigrationTestHelper 使用 v1、v2、v3、v4 的真实 schema 测试。
-2. 新音频链路直接写 v5；旧阅读/影视继续写旧表，同时由只读聚合层投影到“继续”。
-3. 单作品按需迁移，保存 migration marker；迁移失败保留旧记录并可重试。
-4. 两个版本稳定后才考虑停止旧写入；任何阶段都不 destructive migration。
+现有 `library_assets`、`progress_records`、视频历史和 Outbox 继续存在。主机 SQLite 脚本已覆盖
+v3→v4、v4→v5 的结构与旧表数据保留；Android MigrationTestHelper 和 v1 起的真实升级链仍需补齐。
+不使用 destructive migration；不能因迁移失败清空旧记录。
 
 ### 4.2 写入语义
 
@@ -155,8 +153,7 @@ operation = BROWSE / SEARCH / OPEN / FAVORITE_WRITE / PROGRESS_WRITE /
 
 ### 5.1 一个服务，多种业务语义
 
-将 `AudiobookService` 演进为 `ContinuousAudioService`；迁移期间保留组件别名或显式 manifest 迁移，避免系统
-快捷方式和恢复入口失效。
+继续扩展现有 `AudiobookService`，当前不重命名服务组件；未来确需重命名时单独处理 manifest 和系统恢复入口兼容。
 
 共享：ExoPlayer、MediaSession、音频焦点、耳机拔出、候选解析、账号归属、通知、错误恢复。
 
@@ -182,7 +179,7 @@ operation = BROWSE / SEARCH / OPEN / FAVORITE_WRITE / PROGRESS_WRITE /
 `onPlaybackResumption(session, controller, isForPlayback)`：
 
 - `isForPlayback=false` 时只返回一个带本地 title/artwork 的最近条目，不触网。
-- 真正播放时先迅速返回稳定 MediaItem，再按需解析 Lease；恢复 repeat、shuffle seed、速度与位置。
+- 真正播放时先迅速返回稳定 MediaItem，再按需解析 Lease；恢复 repeat、实际随机顺序、速度与位置。
 - 未知、已删除、账号失效的条目跳过并保留可诊断原因；空队列正常结束，不抛 `first()` 异常。
 
 目录快照能够在无网络时快速返回后，再升级为 `MediaLibraryService`，提供最近播放、专辑、艺人、歌单和
@@ -206,7 +203,7 @@ operation = BROWSE / SEARCH / OPEN / FAVORITE_WRITE / PROGRESS_WRITE /
 
 - 最近播放、专辑、艺人、歌曲、歌单和收藏；所有大列表从 Room 分页。
 - 专辑详情按 disc/track 排序；播放、下一首播放、加入队列、替换队列。
-- 迷你播放器、Now Playing、可重排队列、shuffle seed、repeat mode。
+- 迷你播放器、Now Playing、可重排队列、实际随机顺序、repeat mode。
 - 内嵌/同目录/服务端静态与同步歌词的来源优先级；没有歌词正常降级。
 - 播放诊断和账号/来源标签；本地歌单可以跨来源，写回服务器时只提交该服务器可识别的条目。
 
@@ -300,7 +297,7 @@ ChapterRef(resourceRevision, trackId, chapterId, title, startMs, endMs?)
 
 ### 8.1 自动化层次
 
-1. 纯 Kotlin：类型路由、身份作用域、队列 reducer、shuffle seed、revision、同步合并和候选策略。
+1. 纯 Kotlin：类型路由、身份作用域、队列 reducer、实际随机顺序、revision、同步合并和候选策略。
 2. Contract kit：每个 Provider 用相同 browse/search/detail/open/cancel/paging/credential 用例；网络 DataSource 做
    Range、重定向、取消和跨 origin 测试。
 3. Room：MigrationTestHelper 覆盖每个历史 schema；进程中断、重复迁移、删除与延迟写入竞态。
@@ -330,7 +327,7 @@ Debug 滚动感受当性能结论。
 | R0 设备基线 | 手机/平板/TV 冒烟矩阵；Emby 302、ISO、直播、阅读、漫画、音频样本；记录性能基线 | 现有能力先有可重复基准，不修改播放策略 |
 | R1 状态内核 | v5 最小表、队列 reducer、账号/Revision 键、旧进度只读聚合、真实迁移测试 | 升级不丢 v1-v4 数据；重复曲目、回退进度、换账号不串写 |
 | R2 连续音频 MVP | Service 持久队列与系统恢复、MUSIC 类型、Emby 单专辑、本地目录播放、音视频协调 | 后台连续播放、进程重建、通知/耳机可用；不污染听书进度 |
-| R3 音乐日用 | 艺人/专辑/歌曲/歌单/收藏、Room 分页、Now Playing、队列编辑、歌词与音质条 | 万级曲库滚动、shuffle seed、同曲重复入队、弱网候选回退 |
+| R3 音乐日用 | 艺人/专辑/歌曲/歌单/收藏、Room 分页、Now Playing、队列编辑、歌词与音质条 | 万级曲库滚动、实际随机顺序、同曲重复入队、弱网候选回退 |
 | R4 本地优先与离线 | 目录快照、可用性状态、资源任务、空间/网络约束、离线管理页 | 断网不清库；仅离线不偷跑网络；临时 Lease 不持久化 |
 | R5 现有体验增强 | M4B 章节、Readium 3.3 兼容升级、漫画 Render seam、统一继续视图、Feed 预加载实验 | 每项可单独回滚；302/ISO 首帧、Seek、凭据隔离不回退 |
 | R6 系统与来源 | MediaLibraryService/Auto、Jellyfin、OpenSubsonic、Kavita/RSS/可选 Runtime 评估 | 复用能力矩阵和状态内核，不复制页面与凭据体系 |
@@ -357,7 +354,7 @@ benchmark        critical user journeys and baseline profile
 | 场景 | 必须结果 |
 | --- | --- |
 | 同一首歌在队列出现两次 | 两个 instance 可分别移动/删除，播放事件不混淆 |
-| 第二首播放中杀掉服务/重启设备 | 恢复同一实例、顺序、位置、repeat、shuffle seed，不先触网绘制通知 |
+| 第二首播放中杀掉服务/重启设备 | 恢复同一实例、顺序、位置、repeat、实际随机顺序，不先触网绘制通知 |
 | 慢解析时暂停、换歌或换账号 | 旧 Lease 不起播，不覆盖当前状态，凭据不跨账号 |
 | 音乐 → 视频/PiP → 听书/TTS | 发声权唯一；被暂停会话保留队列、位置和模式设置 |
 | 文件 revision 改变且旧写入延迟到达 | 新版本不接受旧 Locator，提示可选恢复 |
@@ -398,7 +395,8 @@ benchmark        critical user journeys and baseline profile
 
 ## 12. 最终优先级
 
-建议下一步只启动 R0 和 R1，不同时开音乐 UI、Feed 池化、Readium 升级和离线下载：
+R1/R2 的听书持久队列、版本化位置和事件驱动 UI 已接入。下一步先完成设备验收并打通音乐单专辑批次；
+详细拆分见 [B1–F 验收表](VNEXT_RESEARCH_2026_09_10.md#5-下一批交付与验收)：
 
 ```text
 设备与性能基线
@@ -410,5 +408,4 @@ benchmark        critical user journeys and baseline profile
 → 更多来源与系统入口
 ```
 
-这条顺序不是减少功能，而是让随后加入的音乐、播客、Jellyfin、OpenSubsonic、离线和车机都落在同一套可靠
-状态基础上，同时不牺牲当前已经可用的影视、直播、阅读、漫画和听书。
+后续音乐、播客、Jellyfin、OpenSubsonic、离线和车机复用已验证的状态与资源访问能力。

@@ -45,6 +45,7 @@ class ComicActivity : ComponentActivity() {
     private var currentPage by mutableIntStateOf(0)
     private var currentOffset = 0f
     private var file: File? = null
+    private var progressSession: ProgressSession? = null
     private var lastSavedPage = -1
     private var lastSaveTime = 0L
     private var restoreEpoch by mutableIntStateOf(0)
@@ -63,9 +64,11 @@ class ComicActivity : ComponentActivity() {
                     else { SafeArchives.validate(requireNotNull(source)); LibraryRepository.comicPages(source) }
                 }
                 require(manifest.isNotEmpty()) { "未找到可显示的页面" }
+                progressSession = ProgressWriter.begin(library, item)
+                val saved = savedInstanceState?.takeIf { it.getString("revision") == item.revision }
                 val progress = library.dao.progress(item.id)?.let { runCatching { JSONObject(it.locatorJson) }.getOrNull() }
-                initialPage = (savedInstanceState?.getInt("page") ?: progress?.optInt("pageIndex") ?: 0).coerceIn(manifest.indices)
-                initialOffset = (savedInstanceState?.getFloat("offset") ?: progress?.optDouble("offset", 0.0)?.toFloat() ?: 0f).coerceIn(0f, 1f)
+                initialPage = (saved?.getInt("page") ?: progress?.optInt("pageIndex") ?: 0).coerceIn(manifest.indices)
+                initialOffset = (saved?.getFloat("offset") ?: progress?.optDouble("offset", 0.0)?.toFloat() ?: 0f).coerceIn(0f, 1f)
                 currentPage = initialPage; currentOffset = initialOffset
                 file = source; asset = item; pages = manifest
                 save()
@@ -74,14 +77,14 @@ class ComicActivity : ComponentActivity() {
         }
         setContent { ComicReader() }
     }
-    override fun onSaveInstanceState(outState: Bundle) { outState.putInt("page", currentPage); outState.putFloat("offset", currentOffset); super.onSaveInstanceState(outState) }
+    override fun onSaveInstanceState(outState: Bundle) { outState.putString("revision", asset?.revision); outState.putInt("page", currentPage); outState.putFloat("offset", currentOffset); super.onSaveInstanceState(outState) }
     private fun save(force: Boolean = false) {
         val item = asset ?: return
         val page = currentPage; val offset = currentOffset
         val now = android.os.SystemClock.elapsedRealtime()
         if (!force && page == lastSavedPage && now - lastSaveTime < 250) return
         lastSavedPage = page; lastSaveTime = now
-        ProgressWriter.save(library, item.id, "page", JSONObject().put("chapterId", item.id).put("pageIndex", page).put("offset", offset),
+        ProgressWriter.save(library, progressSession ?: return, "page", JSONObject().put("chapterId", item.id).put("pageIndex", page).put("offset", offset),
             (page + offset.toDouble()) / pages.size.coerceAtLeast(1))
     }
     override fun onStop() { save(force = true); super.onStop() }
