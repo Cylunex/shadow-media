@@ -20,9 +20,11 @@ class CachedMediaProviderTest {
         override suspend fun home() = emptyList<ProviderSection>()
         override suspend fun resolve(request: UnifiedPlaybackRequest) = listOf(PlaybackCandidate("https://example.com/stream?token=lease", PlayMethod.DIRECT_PLAY, emptyMap()))
     }
-    private fun cache(remote: Remote): Pair<CachedMediaProvider, MutableMap<String, CatalogPageEntity>> {
+    private fun cache(remote: Remote, failure: (String) -> Throwable? = { null }): Pair<CachedMediaProvider, MutableMap<String, CatalogPageEntity>> {
         val pages = mutableMapOf<String, CatalogPageEntity>()
-        val dao = Proxy.newProxyInstance(LibraryStateDao::class.java.classLoader, arrayOf(LibraryStateDao::class.java)) { _, method, args -> when(method.name) {
+        val dao = Proxy.newProxyInstance(LibraryStateDao::class.java.classLoader, arrayOf(LibraryStateDao::class.java)) { _, method, args ->
+            failure(method.name)?.let { throw it }
+            when(method.name) {
             "catalogPage" -> pages[args[0]]
             "cacheCatalogPage" -> { (args[0] as CatalogPageEntity).also { pages[it.id] = it }; Unit }
             else -> error(method.name)
@@ -47,5 +49,33 @@ class CachedMediaProviderTest {
         cached.browse(request); remote.rows = emptyList()
         assertTrue(cached.browse(request).cached)
         assertEquals("Movie", cached.cachedBrowse(request)!!.items.single().title)
+    }
+    @Test fun failedCacheWriteDoesNotReplaceFreshDirectoryWithStaleMetadata() = runBlocking {
+        var writeFails = false
+        val remote = Remote()
+        val (cached, _) = cache(remote) { if (writeFails && it == "cacheCatalogPage") IllegalStateException("disk full") else null }
+        val request = ProviderBrowseRequest()
+        cached.browse(request)
+        writeFails = true
+        remote.rows = remote.rows.map { it.copy(title = "New") }
+        val fresh = cached.browse(request)
+        assertFalse(fresh.cached)
+        assertEquals("New", fresh.items.single().title)
+        assertEquals("Movie", cached.cachedBrowse(request)!!.items.single().title)
+    }
+    @Test fun readFailureDoesNotPreventOnlineDetailOrBrowse() = runBlocking {
+        val remote = Remote()
+        val (cached, _) = cache(remote) { if (it == "catalogPage") IllegalStateException("cache unavailable") else null }
+        assertEquals(remote.rows, cached.browse(ProviderBrowseRequest()).items)
+        assertEquals(remote.rows.first(), cached.detail(remote.rows.first().key).item)
+    }
+    @Test fun foreignAccountCannotReadDetailOrBrowseThroughCache() = runBlocking {
+        val remote = Remote(); val (cached, _) = cache(remote)
+        cached.detail(remote.rows.first().key)
+        val foreign = remote.rows.first().key.copy(providerId = "storage:b")
+        assertTrue(runCatching { cached.cachedDetail(foreign) }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { cached.cachedBrowse(ProviderBrowseRequest(foreign)) }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { cached.browse(ProviderBrowseRequest(foreign)) }.exceptionOrNull() is IllegalArgumentException)
+        assertEquals(0, remote.calls)
     }
 }

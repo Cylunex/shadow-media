@@ -14,6 +14,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import top.cylunex.shadowmedia.database.LibraryAssetEntity
 import top.cylunex.shadowmedia.model.*
+import top.cylunex.shadowmedia.network.withOptionalCatalogCache
 
 class NativeCatalogRepository(private val context: Context, private val library: LibraryRepository) {
     val store = CatalogConnectionStore(context)
@@ -100,7 +101,10 @@ class NativeCatalogRepository(private val context: Context, private val library:
     private fun pageKey(c: CatalogConnection, node: String?, next: String?, query: String): String = java.security.MessageDigest.getInstance("SHA-256")
         .digest(scopedContentId(providerId(c), node.orEmpty(), next.orEmpty(), query).toByteArray()).joinToString("") { "%02x".format(it) }
     suspend fun cachedPage(c: CatalogConnection, node: String? = null, next: String? = null, query: String = ""): CatalogPage? =
-        run { migrateOpdsReferences(); snapshotDao.catalogPage(pageKey(c, node, next, query)) }?.let { runCatching { CatalogSnapshotCodec.decode(it.payload).copy(updatedAt = it.updatedAt) }.getOrNull() }
+        withOptionalCatalogCache {
+            migrateOpdsReferences()
+            snapshotDao.catalogPage(pageKey(c, node, next, query))?.let { CatalogSnapshotCodec.decode(it.payload).copy(updatedAt = it.updatedAt) }
+        }
     suspend fun browse(c: CatalogConnection, node: String? = null, next: String? = null, query: String = ""): CatalogPage =
         pageLocks[(pageKey(c, node, next, query).hashCode() and Int.MAX_VALUE) % pageLocks.size].withLock { fetchPage(c, node, next, query) }
     private suspend fun fetchPage(c: CatalogConnection, node: String?, next: String?, query: String): CatalogPage {
@@ -109,9 +113,11 @@ class NativeCatalogRepository(private val context: Context, private val library:
             val page = browseRemote(c, node, next, query)
             if (page.entries.isEmpty()) cachedPage(c, node, next, query)?.takeIf { it.entries.isNotEmpty() }?.let { return it }
             val now = System.currentTimeMillis()
-            val payload = CatalogSnapshotCodec.encode(page, c.kind)
-            if (payload.toByteArray().size <= 256 * 1024) {
-                snapshotDao.cacheCatalogPage(top.cylunex.shadowmedia.database.CatalogPageEntity(pageKey(c, node, next, query), payload, now))
+            withOptionalCatalogCache {
+                val payload = CatalogSnapshotCodec.encode(page, c.kind)
+                if (payload.toByteArray().size <= 256 * 1024) {
+                    snapshotDao.cacheCatalogPage(top.cylunex.shadowmedia.database.CatalogPageEntity(pageKey(c, node, next, query), payload, now))
+                }
             }
             page.copy(updatedAt = now)
         } catch (e: CancellationException) { throw e }

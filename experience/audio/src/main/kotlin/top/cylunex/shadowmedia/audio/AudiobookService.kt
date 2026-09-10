@@ -68,7 +68,7 @@ class AudiobookService : MediaLibraryService() {
         mode = runCatching { AudioMode.valueOf(getSharedPreferences("audio_preferences", MODE_PRIVATE).getString("mode", "AUDIOBOOK")!!) }.getOrDefault(AudioMode.AUDIOBOOK)
         val factory = DefaultMediaSourceFactory(DataSource.Factory { LibraryAudioDataSource(this, library, candidates) })
         player = ExoPlayer.Builder(this).setMediaSourceFactory(factory).build().apply {
-            setAudioAttributes(AudioAttributes.Builder().setContentType(C.AUDIO_CONTENT_TYPE_SPEECH).setUsage(C.USAGE_MEDIA).build(), true)
+            setAudioAttributes(AudioAttributes.Builder().setContentType(if (mode == AudioMode.MUSIC) C.AUDIO_CONTENT_TYPE_MUSIC else C.AUDIO_CONTENT_TYPE_SPEECH).setUsage(C.USAGE_MEDIA).build(), true)
             setHandleAudioBecomingNoisy(true)
             setWakeMode(C.WAKE_MODE_LOCAL)
             addListener(object : Player.Listener {
@@ -288,6 +288,7 @@ class AudiobookService : MediaLibraryService() {
         try {
             val queue = restored.snapshot.queue
             mode = AudioMode.valueOf(queue.id)
+            player.setAudioAttributes(AudioAttributes.Builder().setContentType(if (mode == AudioMode.MUSIC) C.AUDIO_CONTENT_TYPE_MUSIC else C.AUDIO_CONTENT_TYPE_SPEECH).setUsage(C.USAGE_MEDIA).build(), true)
             getSharedPreferences("audio_preferences", MODE_PRIVATE).edit().putString("mode", mode.name).apply()
             val index = restored.items.indexOfFirst { it.entryId() == queue.currentEntryId }.coerceAtLeast(0)
             player.setMediaItems(restored.items, index, queue.positionMs)
@@ -335,7 +336,7 @@ class AudiobookService : MediaLibraryService() {
             player.currentPosition.coerceAtLeast(0), true, player.isCurrentMediaItemSeekable, false, true, it.entryId() ?: it.mediaId)) }
         listening.sample(player, transition = true)
         initialized = false
-        scope.cancel(); audible.close(); candidates.clear(); clearSleep(); session?.release(); player.release(); super.onDestroy()
+        scope.cancel(); audible.close(); candidates.close(); clearSleep(); session?.release(); player.release(); super.onDestroy()
     }
     private fun <T> future(block: suspend () -> T): ListenableFuture<T> {
         val future = SettableFuture.create<T>()

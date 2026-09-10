@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      build_apk:
+        description: "明确构建 Debug APK"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -21,8 +28,19 @@ jobs:
       - uses: android-actions/setup-android@v3
       - run: yes | sdkmanager "platforms;android-36" "build-tools;35.0.0"
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew test lintDebug assembleDebug --stacktrace
+      - name: Test, lint and compile acceptance sources
+        run: >-
+          ./gradlew test lintDebug
+          :app:compileBenchmarkKotlin :benchmark:compileBenchmarkKotlin
+          :core:database:compileDebugAndroidTestKotlin :experience:reading:compileDebugAndroidTestKotlin
+          :app:writeRuntimeInventory --stacktrace
       - name: Verify additive library migrations
         run: |
-          ruby scripts/verify-library-migration.rb 3
-          ruby scripts/verify-library-migration.rb 4
+          for version in 3 4 5 6 7 8; do
+            ruby scripts/verify-library-migration.rb "$version" || exit 1
+          done
+      - name: Verify runtime notices, native hashes and fixtures
+        run: python3 scripts/verify-release.py
+      - name: Build APK only when explicitly requested
+        if: github.event_name == 'workflow_dispatch' && inputs.build_apk
+        run: ./gradlew :app:assembleDebug --stacktrace

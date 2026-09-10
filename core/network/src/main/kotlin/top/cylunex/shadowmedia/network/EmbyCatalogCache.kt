@@ -31,13 +31,13 @@ class EmbyCatalogCache(internal val dao: LibraryStateDao) {
     private val json = Json { ignoreUnknownKeys = true }
     internal fun key(session: EmbySession, operation: String, argument: String = ""): String = "emby-catalog:" +
         MessageDigest.getInstance("SHA-256").digest(scopedContentId(session.providerId, operation, argument).toByteArray()).joinToString("") { "%02x".format(it) }
-    internal suspend fun read(key: String): EmbyCatalogSnapshot? = dao.catalogPage(key)?.let { runCatching { json.decodeFromString<EmbyCatalogSnapshot>(it.payload) }.getOrNull() }
-    internal suspend fun write(key: String, value: EmbyCatalogSnapshot) {
+    internal suspend fun read(key: String): EmbyCatalogSnapshot? = withOptionalCatalogCache { dao.catalogPage(key)?.let { json.decodeFromString<EmbyCatalogSnapshot>(it.payload) } }
+    internal suspend fun write(key: String, value: EmbyCatalogSnapshot): Unit = withOptionalCatalogCache {
         val payload = json.encodeToString(value)
         if (payload.toByteArray().size <= 2 * 1024 * 1024) {
             dao.cacheCatalogPage(CatalogPageEntity(key, payload, System.currentTimeMillis()))
         }
-    }
+    } ?: Unit
     internal suspend fun fetch(key: String, request: suspend () -> EmbyCatalogSnapshot): Pair<EmbyCatalogSnapshot, Boolean> =
         locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock { fetchLocked(key, request) }
     private suspend fun fetchLocked(key: String, request: suspend () -> EmbyCatalogSnapshot): Pair<EmbyCatalogSnapshot, Boolean> {

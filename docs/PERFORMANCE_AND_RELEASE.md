@@ -14,6 +14,8 @@ API 35+ 设备优先用于 profile 采集；低版本设备按 Android 官方对
 
 ## 仅源码验证，不生成 APK
 
+GitHub Actions 的 push / pull_request 执行单元测试、Lint、benchmark/设备测试源编译、v3→v9 增量迁移和源码发布检查。只有手动运行工作流并明确勾选 `build_apk` 才执行 Debug APK 构建；不会自动安装设备或发布。
+
 ```sh
 ./gradlew test lintDebug :app:compileBenchmarkKotlin :benchmark:compileBenchmarkKotlin :core:database:compileDebugAndroidTestKotlin :experience:reading:compileDebugAndroidTestKotlin :app:writeRuntimeInventory --offline
 python3 scripts/dependency-inventory.py

@@ -16,30 +16,37 @@ class CachedMediaProvider(private val remote: MediaProvider, private val dao: Li
     private val json = Json { ignoreUnknownKeys = true }
     private fun key(operation: String, argument: String) = "provider-page:" + MessageDigest.getInstance("SHA-256")
         .digest(scopedContentId(descriptor.id, operation, argument).toByteArray()).joinToString("") { "%02x".format(it) }
-    private suspend fun read(key: String) = dao.catalogPage(key)?.let { runCatching { json.decodeFromString<Snapshot>(it.payload) }.getOrNull() }
+    private suspend fun read(key: String) = withOptionalCatalogCache { dao.catalogPage(key)?.let { json.decodeFromString<Snapshot>(it.payload) } }
     private suspend fun fetch(key: String, request: suspend () -> Snapshot): Pair<Snapshot, Boolean> = locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
         val cached = read(key)
         if (NetworkPolicy.offlineOnly) return@withLock requireNotNull(cached) { "此目录尚未缓存在本机" } to true
         try {
             val fresh = request()
             if (fresh.rows.isEmpty() && cached?.rows?.isNotEmpty() == true) return@withLock cached to true
-            if (fresh.safe()) {
+            withOptionalCatalogCache { if (fresh.safe()) {
                 val payload = json.encodeToString(fresh)
                 if (payload.toByteArray().size <= 2 * 1024 * 1024) dao.cacheCatalogPage(CatalogPageEntity(key, payload, System.currentTimeMillis()))
-            }
+            } }
             fresh to false
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) { (cached ?: throw e) to true }
     }
-    override suspend fun cachedDetail(key: MediaKey) = read(key("detail", key.itemId))?.detail(descriptor.id, true)
+    override suspend fun cachedDetail(key: MediaKey): MediaDetail? {
+        require(key.providerId == descriptor.id)
+        return read(key("detail", key.itemId))?.detail(descriptor.id, true)
+    }
     override suspend fun detail(key: MediaKey): MediaDetail {
         require(key.providerId == descriptor.id)
         var fresh: MediaDetail? = null
         val (value, cached) = fetch(key("detail", key.itemId)) { remote.detail(key).also { fresh = it }.let(Snapshot::from) }
         return if (!cached) requireNotNull(fresh) else value.detail(descriptor.id, true)
     }
-    override suspend fun cachedBrowse(request: ProviderBrowseRequest) = read(key("browse", request.toString()))?.page(descriptor.id, true)
+    override suspend fun cachedBrowse(request: ProviderBrowseRequest): UnifiedMediaPage? {
+        require(request.parentKey?.let { it.providerId == descriptor.id } != false)
+        return read(key("browse", request.toString()))?.page(descriptor.id, true)
+    }
     override suspend fun browse(request: ProviderBrowseRequest): UnifiedMediaPage {
+        require(request.parentKey?.let { it.providerId == descriptor.id } != false)
         var fresh: UnifiedMediaPage? = null
         val (value, cached) = fetch(key("browse", request.toString())) { remote.browse(request).also { fresh = it }.let(Snapshot::from) }
         return if (!cached) requireNotNull(fresh) else value.page(descriptor.id, true)

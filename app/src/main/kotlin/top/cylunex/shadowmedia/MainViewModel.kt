@@ -33,6 +33,7 @@ import top.cylunex.shadowmedia.model.PlaybackEvent
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
 import top.cylunex.shadowmedia.model.millisecondsToEmbyTicks
 import top.cylunex.shadowmedia.network.EmbyRepository
+import top.cylunex.shadowmedia.network.withOptionalCatalogCache
 import top.cylunex.shadowmedia.network.ExternalSourceRepository
 import top.cylunex.shadowmedia.network.ExternalSourceStore
 import top.cylunex.shadowmedia.network.LoginRequest
@@ -197,6 +198,7 @@ class MainViewModel(
     var feedPreloader: top.cylunex.shadowmedia.playback.FeedPreloadPool? = null
     private var playbackRequest: Job? = null
     private var contentRequest: Job? = null
+    private var unifiedPageRequest = 0L
     private var favoriteObservation: Job? = null
     private val wallPagination = WallPagination()
     private val playbackOwnership = PlaybackOwnership()
@@ -311,7 +313,8 @@ class MainViewModel(
     fun confirmRemoveServer() {
         val session = state.value.pendingRemoveSession ?: return
         cancelContentRequests()
-        sessionStore.remove(session)
+        try { sessionStore.remove(session) }
+        catch (e: Exception) { showError(e); return }
         val remaining = sessionStore.loadAll()
         mutableState.value = MainUiState(
             screen = if (remaining.isEmpty()) Screen.LOGIN else Screen.SERVERS,
@@ -404,16 +407,17 @@ class MainViewModel(
     fun showNetworkStorages() {
         cancelContentRequests()
         val returnScreen = state.value.screen
+        val connections = loadNetworkStorageConnections()
         update {
             copy(
                 screen = Screen.NETWORK_STORAGES,
-                networkStorages = networkStorageStore.loadAll(),
-                networkStorageMessage = null,
-                errorMessage = null,
+                networkStorages = connections.orEmpty(),
+                networkStorageMessage = if (connections != null) null else networkStorageMessage,
+                errorMessage = if (connections != null) null else errorMessage,
                 networkStorageReturnScreen = returnScreen,
             )
         }
-        refreshNetworkStorages()
+        if (connections != null) refreshNetworkStorages()
     }
 
     fun updateNetworkStorageKind(value: NetworkStorageKind) = update { copy(networkStorageKind = value) }
@@ -473,13 +477,18 @@ class MainViewModel(
                     )
                 }
             }.onFailure { error ->
+                if (error is CancellationException) throw error
                 update { copy(isSavingNetworkStorage = false, networkStorageMessage = "连接失败：${error.message ?: "未知错误"}") }
             }
         }
     }
 
     fun removeNetworkStorage(connectionId: String) {
-        networkStorageStore.remove(connectionId)
+        try { networkStorageStore.remove(connectionId) }
+        catch (e: Exception) {
+            update { copy(networkStorageMessage = e.message ?: "无法移除网络媒体库", errorMessage = e.message) }
+            return
+        }
         networkStorageRepository.forget(connectionId)
         syncProviders()
         update {
@@ -493,7 +502,7 @@ class MainViewModel(
 
     fun refreshNetworkStorages() {
         storageProbeRequest?.cancel()
-        val connections = networkStorageStore.loadAll()
+        val connections = loadNetworkStorageConnections() ?: return
         storageProbeRequest = viewModelScope.launch {
             supervisorScope {
                 connections.forEach { connection -> launch {
@@ -518,7 +527,7 @@ class MainViewModel(
         val provider = providerRegistry.provider(providerId) ?: return
         contentRequest = viewModelScope.launch {
             update { copy(screen = Screen.PROVIDER_DETAIL, selectedUnifiedDetail = null, providerDetailBackStack = emptyList(), providerDetailReturnScreen = Screen.NETWORK_STORAGES, isLoading = true, errorMessage = null) }
-            provider.cachedDetail(MediaKey(providerId, connection.rootPath.normalizedStoragePath()))?.let { update { copy(selectedUnifiedDetail = it) } }
+            withOptionalCatalogCache { provider.cachedDetail(MediaKey(providerId, connection.rootPath.normalizedStoragePath())) }?.let { update { copy(selectedUnifiedDetail = it) } }
             runCatching { provider.detail(MediaKey(providerId, connection.rootPath.normalizedStoragePath())) }
                 .onSuccess { detail -> ensureActive(); update { copy(selectedUnifiedDetail = detail, isLoading = false) } }
                 .onFailure { ensureActive(); showError(it) }
@@ -825,7 +834,7 @@ class MainViewModel(
                     errorMessage = null,
                 )
             }
-            provider.cachedDetail(item.key)?.let { update { copy(selectedUnifiedDetail = it) } }
+            withOptionalCatalogCache { provider.cachedDetail(item.key) }?.let { update { copy(selectedUnifiedDetail = it) } }
             runCatching { provider.detail(item.key) }
                 .onSuccess { detail -> ensureActive(); update { copy(selectedUnifiedDetail = detail, isLoading = false) } }
                 .onFailure { ensureActive(); showError(it) }
@@ -833,21 +842,28 @@ class MainViewModel(
     }
 
     fun loadMoreUnifiedChildren() {
+        if (state.value.screen != Screen.PROVIDER_DETAIL) return
         val detail = state.value.selectedUnifiedDetail ?: return
         val token = detail.childrenNextPageToken ?: return
-        if (state.value.isLoadingMore) return
+        if (state.value.isLoading || state.value.isLoadingMore) return
         val provider = providerRegistry.provider(detail.item.key.providerId) ?: return
+        val request = ++unifiedPageRequest
         contentRequest = viewModelScope.launch {
-            update { copy(isLoadingMore = true) }
+            update { copy(isLoadingMore = true, errorMessage = null) }
             try {
                 val page = provider.browse(top.cylunex.shadowmedia.provider.ProviderBrowseRequest(parentKey = detail.item.key, pageToken = token))
                 ensureActive()
                 require(page.nextPageToken != token) { "目录分页未前进" }
-                if (state.value.selectedUnifiedDetail?.item?.key == detail.item.key) update { copy(selectedUnifiedDetail = detail.copy(
-                    children = (detail.children + page.items).distinctBy { it.key }, childrenNextPageToken = page.nextPageToken, cached = detail.cached || page.cached)) }
+                update {
+                    val currentDetail = selectedUnifiedDetail
+                    if (request != unifiedPageRequest || currentDetail?.item?.key != detail.item.key) this
+                    else copy(selectedUnifiedDetail = currentDetail.copy(
+                        children = (currentDetail.children + page.items).distinctBy { it.key },
+                        childrenNextPageToken = page.nextPageToken, cached = currentDetail.cached || page.cached))
+                }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { showError(e) }
-            finally { if (contentRequest === coroutineContext[kotlinx.coroutines.Job]) update { copy(isLoadingMore = false) } }
+            finally { if (request == unifiedPageRequest) update { copy(isLoadingMore = false) } }
         }
     }
 
@@ -1512,8 +1528,16 @@ class MainViewModel(
 
     fun refreshProviderConnections() = syncProviders()
 
+    private fun loadNetworkStorageConnections(): List<NetworkStorageConnection>? = try {
+        networkStorageStore.loadAll()
+    } catch (e: Exception) {
+        val message = e.message ?: "网络存储凭据暂时无法读取，请解锁设备后重试"
+        update { copy(networkStorageMessage = message, errorMessage = message) }
+        null
+    }
+
     private fun syncProviders() {
-        val storedNetworkConnections = networkStorageStore.loadAll()
+        val storedNetworkConnections = loadNetworkStorageConnections().orEmpty()
         val providers = buildList {
             addAll(nativeProviders())
             library?.let { add(top.cylunex.shadowmedia.library.LibraryMediaProvider(it)) }
@@ -1725,7 +1749,8 @@ class MainViewModel(
         playbackRequest?.cancel()
         deleteRequest?.cancel()
         val session = state.value.session ?: return
-        sessionStore.remove(session)
+        try { sessionStore.remove(session) }
+        catch (e: Exception) { showError(e); return }
         val remaining = sessionStore.loadAll()
         mutableState.value = MainUiState(
             screen = if (remaining.isEmpty()) Screen.LOGIN else Screen.SERVERS,
@@ -1799,6 +1824,7 @@ class MainViewModel(
     private fun update(transform: MainUiState.() -> MainUiState) = mutableState.update(transform)
 
     private fun cancelContentRequests() {
+        unifiedPageRequest++
         contentRequest?.cancel()
         playbackRequest?.cancel()
         liveGuideRequest?.cancel()

@@ -382,9 +382,6 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                 }
             }
             if (detail.cached) item { Text("正在显示本机目录快照", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodySmall) }
-            if (detail.childrenNextPageToken != null) item {
-                TextButton(enabled = !state.isLoadingMore, onClick = viewModel::loadMoreUnifiedChildren) { Text(if (state.isLoadingMore) "加载中…" else "加载更多目录项") }
-            }
             if (detail.children.isNotEmpty()) {
                 item {
                     Text(
@@ -419,6 +416,12 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                             )
                         }
                     }
+                }
+            }
+            if (detail.childrenNextPageToken != null) item {
+                TextButton(enabled = !state.isLoading && !state.isLoadingMore, onClick = viewModel::loadMoreUnifiedChildren,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+                    Text(if (state.isLoadingMore) "加载中…" else "加载更多目录项")
                 }
             }
         } else if (!state.isLoading) {

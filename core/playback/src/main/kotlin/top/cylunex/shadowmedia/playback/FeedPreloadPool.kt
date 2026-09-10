@@ -55,11 +55,11 @@ class FeedPreloadPool(context: Context, private val session: EmbySession, identi
         }
     }) }
     fun buildPlayer(): ExoPlayer = builder.buildExoPlayer()
-    fun position(index: Int, stoppedScrolling: Boolean) {
+    fun position(index: Int, stoppedScrolling: Boolean, nextItemId: String?) {
         if (closed) return
         current = index; settled = stoppedScrolling
         val keep = if (stoppedScrolling && allowed()) (index - 1)..(index + 1) else index..index
-        entries.values.filter { it.index !in keep }.toList().forEach(::remove)
+        entries.values.filter { it.index !in keep || (it.index == index + 1 && it.plan.itemId != nextItemId) }.toList().forEach(::remove)
         manager.setCurrentPlayingIndex(index); manager.invalidate()
         publish()
     }
@@ -71,7 +71,8 @@ class FeedPreloadPool(context: Context, private val session: EmbySession, identi
         if (closed || !settled || !allowed() || index != current + 1 || !FeedPreloadPolicy.eligible(plan, resolutionMs)) return
         val url = plan.primary.url.toHttpUrl()
         if (url.scheme != origin.scheme || url.host != origin.host || url.port != origin.port) return
-        entries[plan.itemId]?.let { if (it.plan == plan) return else remove(it) }
+        entries[plan.itemId]?.let { if (it.plan == plan && it.index == index) return else remove(it) }
+        entries.values.filter { it.index == index }.toList().forEach(::remove)
         val item = MediaItem.Builder().setMediaId(plan.itemId).setUri(plan.primary.url).build()
         val entry = Entry(plan, item, index, SystemClock.elapsedRealtime())
         entries[plan.itemId] = entry
