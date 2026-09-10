@@ -44,6 +44,7 @@ class ResourceDownloader(private val client: OkHttpClient = OkHttpClient()) {
                     require(total == null || total <= maxBytes) { "文件超过允许大小" }
                     val buffer = ByteArray(64 * 1024)
                     while (true) { val n = source.read(buffer, 0, buffer.size); if (n < 0) break; write(buffer, n, output, total) }
+                    require(total == null || total == written) { "资源下载不完整" }
                 } }
             } else {
                 val initial = requireNotNull(candidate.url.toHttpUrlOrNull()) { "只支持 HTTP(S) 资源" }
@@ -63,6 +64,7 @@ class ResourceDownloader(private val client: OkHttpClient = OkHttpClient()) {
                 try {
                     call.execute().use { response ->
                         require(response.isSuccessful) { "资源请求失败 HTTP ${response.code}" }
+                        require(response.code != 206) { "来源仅返回了部分文件，请重新下载" }
                         val body = requireNotNull(response.body)
                         val total = body.contentLength().takeIf { it >= 0 }
                         require(total == null || total <= maxBytes) { "文件超过允许大小" }

@@ -380,10 +380,10 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
 }
 
 private fun toggleAudio(player: Player) {
-    if (player.playWhenReady && player.playbackState != Player.STATE_ENDED) player.pause()
+    if (player.playerError == null && player.playWhenReady && player.playbackState != Player.STATE_ENDED) player.pause()
     else {
         if (player.playbackState == Player.STATE_ENDED) player.seekToDefaultPosition()
-        if (player.playbackState == Player.STATE_IDLE) player.prepare()
+        if (player.playerError != null || player.playbackState == Player.STATE_IDLE) player.prepare()
         player.play()
     }
 }
@@ -394,11 +394,11 @@ private fun playerScreenForAudio(screen: Screen) = screen in setOf(Screen.PLAYER
     var state by remember(controller) { mutableStateOf(AudioUi()) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     fun snapshot(player: Player): AudioUi = AudioUi(player.currentMediaItem?.mediaId,
-        player.mediaMetadata.title?.toString().orEmpty(), player.playWhenReady && player.playbackState != Player.STATE_ENDED,
+        player.mediaMetadata.title?.toString().orEmpty(), player.playerError == null && player.playWhenReady && player.playbackState != Player.STATE_ENDED,
         player.currentPosition.coerceAtLeast(0), player.duration.takeIf { it > 0 } ?: 0,
         player.playbackParameters.speed, player.playbackState == Player.STATE_BUFFERING,
         player.playerError?.let { "播放失败，请检查来源连接或文件权限。" },
-        (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }, player.currentMediaItemIndex, player.isPlaying)
+        (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }, player.currentMediaItemIndex, player.isPlaying, player.audioChapters())
     DisposableEffect(controller) {
         val listener = object : Player.Listener {
             override fun onEvents(player: Player, events: Player.Events) { state = snapshot(player) }
@@ -421,7 +421,7 @@ private fun playerScreenForAudio(screen: Screen) = screen in setOf(Screen.PLAYER
     return state
 }
 
-private data class AudioUi(val id: String? = null, val title: String = "", val playing: Boolean = false, val position: Long = 0, val duration: Long = 0, val speed: Float = 1f, val buffering: Boolean = false, val error: String? = null, val queue: List<androidx.media3.common.MediaItem> = emptyList(), val currentIndex: Int = 0, val advancing: Boolean = false)
+private data class AudioUi(val id: String? = null, val title: String = "", val playing: Boolean = false, val position: Long = 0, val duration: Long = 0, val speed: Float = 1f, val buffering: Boolean = false, val error: String? = null, val queue: List<androidx.media3.common.MediaItem> = emptyList(), val currentIndex: Int = 0, val advancing: Boolean = false, val chapters: List<AudioChapter> = emptyList())
 private fun audioTime(value: Long): String { val seconds = value.coerceAtLeast(0) / 1000; return if (seconds >= 3600) "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60) else "%d:%02d".format(seconds / 60, seconds % 60) }
 
 @Composable private fun AudioMiniBar(state: AudioUi, onOpen: () -> Unit, onToggle: () -> Unit) {
@@ -437,13 +437,20 @@ private fun audioTime(value: Long): String { val seconds = value.coerceAtLeast(0
 @Composable private fun AudioNowPlaying(state: AudioUi, controller: MediaController?, assets: List<LibraryAssetEntity>, library: LibraryRepository, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val item = assets.firstOrNull { it.id == state.id }
+    val currentChapter = state.chapters.chapterAt(state.position)
     val sleep by AudioSleep.remainingMs.collectAsStateWithLifecycle()
     var panel by remember { mutableStateOf<String?>(null) }
-    var drag by remember(state.id) { mutableStateOf<Float?>(null) }
+    var drag by remember(state.currentIndex, state.queue.getOrNull(state.currentIndex)) { mutableStateOf<Float?>(null) }
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
         item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") }; Text("正在收听", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium); IconButton(onClick = { panel = "队列" }) { Icon(Icons.Rounded.QueueMusic, "播放队列") } } }
         item { if (item != null) PublicationCover(item, Modifier.widthIn(max = 360.dp).fillMaxWidth().aspectRatio(1f)) else Icon(Icons.Rounded.Headphones, null, Modifier.size(140.dp)) }
         item { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text(item?.title ?: state.title.ifBlank { "选择一本有声书" }, style = MaterialTheme.typography.headlineSmall, maxLines = 3); Text(item?.author.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+        if (state.chapters.isNotEmpty()) item {
+            TextButton(onClick = { panel = "章节" }) {
+                Icon(Icons.Rounded.FormatListBulleted, null)
+                Text("${currentChapter?.title ?: "查看章节"} · ${state.chapters.size} 章", maxLines = 2)
+            }
+        }
         item { Column(Modifier.fillMaxWidth()) {
             Slider(value = drag ?: if (state.duration > 0) state.position.toFloat() / state.duration else 0f, onValueChange = { drag = it }, onValueChangeFinished = { drag?.let { controller?.seekTo((it * state.duration).toLong()) }; drag = null }, enabled = state.duration > 0 && controller?.isCurrentMediaItemSeekable == true)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(audioTime(state.position)); Text(audioTime(state.duration)) }
@@ -467,6 +474,14 @@ private fun audioTime(value: Long): String { val seconds = value.coerceAtLeast(0
         Column(Modifier.padding(24.dp)) {
             Text(panel!!, style = MaterialTheme.typography.titleLarge)
             when (panel) {
+                "章节" -> LazyColumn(Modifier.heightIn(max = 480.dp)) { items(state.chapters, key = { it.startMs }) { chapter ->
+                    TextButton(enabled = controller?.isCurrentMediaItemSeekable == true, onClick = { controller?.seekTo(chapter.startMs); panel = null }, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.fillMaxWidth()) {
+                            Text((if (currentChapter == chapter) "正在收听 · " else "") + chapter.title)
+                            Text(audioTime(chapter.startMs) + (chapter.endMs?.let { " — ${audioTime(it)}" } ?: ""), style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                } }
                 "倍速" -> listOf(.5f, .75f, 1f, 1.25f, 1.5f, 2f, 2.5f, 3f).forEach { speed -> TextButton(onClick = { controller?.setPlaybackSpeed(speed); panel = null }) { Text("$speed×") } }
                 "睡眠" -> listOf(0 to "关闭", 15 to "15 分钟", 30 to "30 分钟", 45 to "45 分钟", 60 to "60 分钟", -1 to "当前轨道结束").forEach { (minutes, title) -> TextButton(onClick = { controller?.let { AudiobookController.sleep(it, minutes) }; panel = null }) { Text(title) } }
                 "队列" -> LazyColumn(Modifier.heightIn(max = 480.dp)) { items(state.queue.size, key = { index -> state.queue[index].mediaMetadata.extras?.getString("shadow.audio.entry") ?: index }) { index ->

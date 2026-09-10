@@ -85,7 +85,7 @@ class ComicActivity : ComponentActivity() {
         if (!force && page == lastSavedPage && now - lastSaveTime < 250) return
         lastSavedPage = page; lastSaveTime = now
         ProgressWriter.save(library, progressSession ?: return, "page", JSONObject().put("chapterId", item.id).put("pageIndex", page).put("offset", offset),
-            (page + offset.toDouble()) / pages.size.coerceAtLeast(1))
+            (page + offset.toDouble()) / pages.size.coerceAtLeast(1), completed = comicCompleted(page, pages.size, mode, offset))
     }
     override fun onStop() { save(force = true); super.onStop() }
 
@@ -181,6 +181,7 @@ class ComicActivity : ComponentActivity() {
                                 val scale = width.toFloat() / sWidth.coerceAtLeast(1)
                                 val offset = if (index == initialPage) initialOffset else 0f
                                 setScaleAndCenter(scale, PointF(sWidth / 2f, (height / (2 * scale) + offset * (sHeight - height / scale)).coerceAtLeast(0f)))
+                                if (index == currentPage && sHeight * scale <= height) { currentOffset = 1f; save(force = true) }
                             }
                         }
                         override fun onImageLoadError(e: Exception) { failure = "图片格式损坏或设备不支持" }
@@ -190,7 +191,7 @@ class ComicActivity : ComponentActivity() {
                         override fun onCenterChanged(newCenter: PointF, origin: Int) {
                             if (index == currentPage && scale > 0 && origin != 0) {
                                 val visible = height / scale
-                                currentOffset = ((newCenter.y - visible / 2) / (sHeight - visible).coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                currentOffset = if (sHeight <= visible) 1f else ((newCenter.y - visible / 2) / (sHeight - visible)).coerceIn(0f, 1f)
                                 save()
                             }
                         }

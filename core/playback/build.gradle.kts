@@ -35,4 +35,5 @@ dependencies {
     implementation(libs.media3.datasource.okhttp)
     implementation(libs.media3.session)
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

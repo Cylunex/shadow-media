@@ -41,6 +41,12 @@ class XmlTvParserTest {
 }
 
 class CatchupUrlResolverTest {
+    @Test fun `calendar placeholders distinguish month minute day and seconds`() {
+        val start = java.time.Instant.parse("2026-09-10T13:27:45Z").toEpochMilli()
+        val entry = top.cylunex.shadowmedia.model.ExternalMediaEntry("news", "source", "News", "https://example.com/live", catchupSource = "https://example.com/{Y}/{m}/{d}/{H}/{M}/{S}")
+        val program = top.cylunex.shadowmedia.model.LiveProgram("source", "news", "News", startEpochMs = start, endEpochMs = start + 60000)
+        assertEquals("https://example.com/2026/09/10/13/27/45", CatchupUrlResolver.resolve(entry, program)?.url)
+    }
     @Test
     fun `resolves common timestamp template`() {
         val entry = top.cylunex.shadowmedia.model.ExternalMediaEntry(

@@ -69,7 +69,7 @@ class AudiobookService : MediaSessionService() {
                     } else if (reason == Player.DISCONTINUITY_REASON_SEEK) saveCurrent(playbackState == Player.STATE_ENDED)
                 }
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                    if (stopAfterTrack && reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) { pause(); clearSleep() }
+                    if (stopAfterTrack && reason in setOf(Player.MEDIA_ITEM_TRANSITION_REASON_AUTO, Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT)) { pause(); clearSleep() }
                     if (!applyingQueue) {
                         val speed = mediaItem?.mediaId?.let { getSharedPreferences("audio_preferences", MODE_PRIVATE).getFloat("speed:$it", 1f) } ?: 1f
                         setPlaybackSpeed(speed.takeIf { it.isFinite() && it in .5f..3f } ?: 1f)
@@ -110,7 +110,7 @@ class AudiobookService : MediaSessionService() {
                 delay(1000)
                 if (sleepDeadline > 0 && SystemClock.elapsedRealtime() >= sleepDeadline) { player.pause(); clearSleep() }
                 AudioSleep.remaining.value = when { stopAfterTrack -> -1; sleepDeadline > 0 -> (sleepDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0); else -> 0 }
-                if (player.isPlaying && ++tick % 5 == 0) { saveCurrent(); persistQueue() }
+                if (player.isPlaying && ++tick % 5 == 0) { startProgressSession(); saveCurrent(); persistQueue() }
             }
         }
     }
@@ -133,7 +133,10 @@ class AudiobookService : MediaSessionService() {
                     saveCurrent(player.playbackState == Player.STATE_ENDED)
                 }
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { AudioQueueStatus.message.value = "音频进度无法保存，请重新打开当前资源" }
+            catch (_: Exception) {
+                if (progressEntry == item.entryId()) { progressEntry = null; progressSession = null }
+                AudioQueueStatus.message.value = "音频进度暂时无法保存，播放期间会重试"
+            }
         }
     }
     private fun saveCurrent(completed: Boolean = false) {
@@ -285,7 +288,7 @@ class AudiobookService : MediaSessionService() {
             val request = ++queueRequest
             pendingResumption = null
             return future {
-                require(mediaItems.size <= 2000) { "单次最多播放 2000 个已加载条目" }
+                require(player.mediaItemCount + mediaItems.size <= 2000) { "播放队列最多容纳 2000 个条目" }
                 val resolved = resolveItems(mediaItems)
                 check(request == queueRequest) { "已切换播放队列" }
                 initialized = true
@@ -296,6 +299,7 @@ class AudiobookService : MediaSessionService() {
         override fun onSetMediaItems(session: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: List<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
             val request = ++queueRequest
             pendingResumption = null
+            saveCurrent(player.playbackState == Player.STATE_ENDED)
             return future {
                 require(mediaItems.size <= 2000) { "单次最多播放 2000 个已加载条目" }
                 ProgressWriter.flush()

@@ -9,6 +9,34 @@ import org.junit.Assert.*
 import top.cylunex.shadowmedia.model.*
 
 class ResourceDownloaderTest {
+    @Test fun partialHttpResponseCannotBeInstalledAsWholeFile() = runBlocking {
+        val server = MockWebServer(); server.start(); val file = File.createTempFile("shadow-partial-test", ".part")
+        try {
+            server.enqueue(MockResponse().setResponseCode(206).setHeader("Content-Range", "bytes 0-2/100").setBody("abc"))
+            try { ResourceDownloader().download(PlaybackCandidate(server.url("/file").toString(), PlayMethod.DIRECT_PLAY, emptyMap()), file); fail("must reject partial resource") }
+            catch (_: IllegalArgumentException) {}
+            assertFalse(file.exists())
+        } finally { file.delete(); server.shutdown() }
+    }
+    @Test fun truncatedSmbResponseRemovesPartialFile() = runBlocking {
+        val previous = LibraryResources.networkStorage
+        LibraryResources.networkStorage = object : top.cylunex.shadowmedia.network.NetworkStorageRepository {
+            override fun provider(connection: NetworkStorageConnection): top.cylunex.shadowmedia.provider.MediaProvider = error("unused")
+            override suspend fun probe(connection: NetworkStorageConnection): NetworkStorageStatus = error("unused")
+            override fun openSmbResource(url: String, position: Long) = object : top.cylunex.shadowmedia.network.NetworkReadHandle {
+                val input = "abc".byteInputStream()
+                override val remainingLength = 100L
+                override fun read(buffer: ByteArray, offset: Int, length: Int) = input.read(buffer, offset, length)
+                override fun close() = input.close()
+            }
+        }
+        val file = File.createTempFile("shadow-smb-test", ".part")
+        try {
+            try { ResourceDownloader().download(PlaybackCandidate("shadow-smb://example/resource", PlayMethod.DIRECT_PLAY, emptyMap()), file); fail("must reject truncated resource") }
+            catch (_: IllegalArgumentException) {}
+            assertFalse(file.exists())
+        } finally { file.delete(); LibraryResources.networkStorage = previous }
+    }
     @Test fun credentialsDoNotCrossOriginEvenWhenOnlyPortChanges() = runBlocking {
         val api = MockWebServer(); val cdn = MockWebServer(); api.start(); cdn.start()
         val file = File.createTempFile("shadow-resource-test", ".part")

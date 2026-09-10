@@ -21,6 +21,17 @@ class EmbyAudioReporterTest {
     }
     private val account = EmbySession("https://example.com", "server", "alice", "Alice", "test-only", false)
     private fun plan(id: String) = PlaybackPlan("book", "source", id, listOf(PlaybackCandidate("https://example.com/emby/Audio/book/stream", PlayMethod.DIRECT_STREAM, emptyMap())), "m4b", null, null, "aac", null)
+    @Test fun `buffered repeat restarts reporting without duplicate terminal events`() = runTest {
+        val outbox = Outbox(); val reporter = EmbyAudioReporter(backgroundScope, outbox)
+        reporter.resolved("asset", account, plan("p1"))
+        reporter.progress(AudioProgressSnapshot("asset", 100, false, true, true, false))
+        repeat(3) { reporter.progress(AudioProgressSnapshot("asset", 1000, true, true, true, true)) }
+        reporter.progress(AudioProgressSnapshot("asset", 0, false, true, true, false))
+        reporter.progress(AudioProgressSnapshot("asset", 400, true, true, false, true))
+        runCurrent()
+        assertEquals(listOf(PlaybackEvent.STARTED, PlaybackEvent.TIME_UPDATE, PlaybackEvent.STOPPED, PlaybackEvent.STARTED, PlaybackEvent.TIME_UPDATE, PlaybackEvent.STOPPED), outbox.records.map { it.second.event })
+        assertEquals(0L, outbox.records[3].second.positionTicks)
+    }
     @Test fun `progress stays with resolved account and balanced session events`() = runTest {
         val outbox = Outbox(); val reporter = EmbyAudioReporter(backgroundScope, outbox)
         reporter.resolved("asset", account, plan("p1"))

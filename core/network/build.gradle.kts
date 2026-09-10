@@ -36,4 +36,5 @@ dependencies {
     implementation(libs.smbj)
     runtimeOnly(libs.slf4j.nop)
     testImplementation(libs.junit)
+    testImplementation("com.squareup.okhttp3:mockwebserver:5.1.0")
 }

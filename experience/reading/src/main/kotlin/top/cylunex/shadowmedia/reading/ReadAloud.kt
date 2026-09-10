@@ -7,6 +7,7 @@ import android.media.AudioManager
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import java.util.Locale
+import java.util.UUID
 import kotlinx.coroutines.*
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -29,13 +30,15 @@ internal class ReadAloud(private val context: Context) : AutoCloseable {
         .setOnAudioFocusChangeListener { if (it < 0) stop() }.build()
 
     suspend fun read(publication: Publication, locator: Locator?, onLocation: (Locator) -> Unit) {
-        initialized.await()
-        val voice = engine.voices.orEmpty().filterNot { it.isNetworkConnectionRequired }.firstOrNull { it.locale.language == Locale.getDefault().language }
-            ?: throw IllegalStateException("请先在系统文字转语音设置中安装当前语言的离线语音")
-        engine.voice = voice
-        check(audio.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) { "其他应用正在占用音频" }
+        // Stop/background must cancel even while Android is still initializing the engine.
         speaking = currentCoroutineContext()[Job]
         try {
+            initialized.await()
+            currentCoroutineContext().ensureActive()
+            val voice = engine.voices.orEmpty().filterNot { it.isNetworkConnectionRequired }.firstOrNull { it.locale.language == Locale.getDefault().language }
+                ?: throw IllegalStateException("请先在系统文字转语音设置中安装当前语言的离线语音")
+            engine.voice = voice
+            check(audio.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) { "其他应用正在占用音频" }
             val iterator = requireNotNull(publication.content(locator)) { "这本书不支持正文提取" }.iterator()
             while (currentCoroutineContext().isActive && iterator.hasNext()) {
                 val element = iterator.next() as? Content.TextElement ?: continue
@@ -48,13 +51,15 @@ internal class ReadAloud(private val context: Context) : AutoCloseable {
     }
 
     private suspend fun speak(text: String) = suspendCancellableCoroutine<Unit> { continuation ->
+        val requestId = UUID.randomUUID().toString()
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {}
-            override fun onDone(utteranceId: String?) { if (continuation.isActive) continuation.resume(Unit) }
-            @Deprecated("Platform callback") override fun onError(utteranceId: String?) { if (continuation.isActive) continuation.resumeWithException(IllegalStateException("系统朗读失败")) }
+            override fun onDone(utteranceId: String?) { if (utteranceId == requestId && continuation.isActive) continuation.resume(Unit) }
+            @Deprecated("Platform callback") override fun onError(utteranceId: String?) { if (utteranceId == requestId && continuation.isActive) continuation.resumeWithException(IllegalStateException("系统朗读失败")) }
+            override fun onStop(utteranceId: String?, interrupted: Boolean) { if (utteranceId == requestId) continuation.cancel() }
         })
         continuation.invokeOnCancellation { engine.stop() }
-        if (engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "shadow-paragraph") == TextToSpeech.ERROR && continuation.isActive) continuation.resumeWithException(IllegalStateException("系统朗读失败"))
+        if (engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, requestId) == TextToSpeech.ERROR && continuation.isActive) continuation.resumeWithException(IllegalStateException("系统朗读失败"))
     }
     fun stop() { speaking?.cancel(); engine.stop(); audio.abandonAudioFocusRequest(focus) }
     override fun close() { stop(); engine.shutdown() }

@@ -12,7 +12,7 @@ internal class EmbyAudioReporter(scope: CoroutineScope, private val outbox: Play
         data class Resolved(val entryId: String, val session: EmbySession, val plan: PlaybackPlan) : Event
         data class Progress(val snapshot: AudioProgressSnapshot) : Event
     }
-    private data class Binding(val session: EmbySession, val plan: PlaybackPlan, var started: Boolean = false, var position: Long = 0)
+    private data class Binding(val session: EmbySession, val plan: PlaybackPlan, var started: Boolean = false, var position: Long = 0, var stopped: Boolean = false)
     private val queue = Channel<Event>(Channel.UNLIMITED)
     private val bindings = linkedMapOf<String, Binding>()
     init { scope.launch {
@@ -28,13 +28,16 @@ internal class EmbyAudioReporter(scope: CoroutineScope, private val outbox: Play
                     is Event.Progress -> {
                         val s = event.snapshot; val binding = bindings[s.entryId] ?: continue
                         if (!s.ready && !s.stopped) continue
+                        // Repeating buffered audio need not resolve a new URL. Repeated terminal
+                        // callbacks must not reopen the session, but a new playable snapshot can.
+                        if (binding.stopped && s.stopped) continue
                         binding.position = s.positionMs
                         if (!binding.started && s.ready) {
                             report(binding, s.positionMs, s.paused, s.canSeek, PlaybackEvent.STARTED)
-                            binding.started = true
+                            binding.started = true; binding.stopped = false
                         }
                         if (binding.started) report(binding, s.positionMs, s.paused, s.canSeek, if (s.stopped) PlaybackEvent.STOPPED else PlaybackEvent.TIME_UPDATE)
-                        if (s.stopped) bindings.remove(s.entryId)
+                        if (s.stopped) { binding.started = false; binding.stopped = true }
                     }
                 }
             } catch (e: CancellationException) { throw e }

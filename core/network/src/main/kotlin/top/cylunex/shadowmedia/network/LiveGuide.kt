@@ -3,6 +3,7 @@ package top.cylunex.shadowmedia.network
 import java.io.FilterInputStream
 import java.io.IOException
 import java.io.InputStream
+import java.io.PushbackInputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -11,6 +12,8 @@ import java.util.zip.GZIPInputStream
 import javax.xml.parsers.SAXParserFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.awaitCancellation
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -52,7 +55,8 @@ object CatchupUrlResolver {
             "{S}" to time.getOrElse(2) { "" },
         )
         val resolved = replacements.entries.fold(template) { value, (token, replacement) ->
-            value.replace(token, replacement, ignoreCase = true)
+            // Calendar placeholders are case-sensitive: {m} is month, {M} is minute.
+            value.replace(token, replacement)
         }
         if ('{' in resolved || resolved.toHttpUrlOrNull() == null) return null
         return entry.copy(
@@ -81,24 +85,17 @@ class DefaultLiveGuideRepository(
             .url(address)
             .header("Accept", "application/xml, text/xml, application/gzip;q=0.9")
             .build()
-        client.newCall(request).execute().use { response ->
+        val call = client.newCall(request)
+        val cancellation = launch { try { awaitCancellation() } finally { call.cancel() } }
+        try { call.execute().use { response ->
             if (!response.isSuccessful) throw IOException("节目单读取失败（HTTP ${response.code}）")
             if (address.scheme == "https" && response.request.url.scheme != "https") {
                 throw IOException("已拒绝节目单从 HTTPS 降级到 HTTP")
             }
             val body = response.body
             if (body.contentLength() > MAX_COMPRESSED_EPG_BYTES) throw IOException("节目单文件过大")
-            val bounded = BoundedInputStream(body.byteStream(), MAX_EXPANDED_EPG_BYTES)
-            val input = if (
-                response.header("Content-Encoding").equals("gzip", true) ||
-                response.request.url.encodedPath.endsWith(".gz", true)
-            ) {
-                GZIPInputStream(bounded)
-            } else {
-                bounded
-            }
-            XmlTvParser.parse(sourceId, input)
-        }
+            decodeGuide(body.byteStream(), MAX_COMPRESSED_EPG_BYTES, MAX_EXPANDED_EPG_BYTES).use { XmlTvParser.parse(sourceId, it) }
+        } } finally { cancellation.cancel() }
     }
 
     private fun String.isLoopbackHost(): Boolean =
@@ -108,6 +105,16 @@ class DefaultLiveGuideRepository(
         const val MAX_COMPRESSED_EPG_BYTES = 32L * 1024 * 1024
         const val MAX_EXPANDED_EPG_BYTES = 96L * 1024 * 1024
     }
+}
+
+/** OkHttp may have already decoded Content-Encoding even when the path still ends in .gz. */
+internal fun decodeGuide(source: InputStream, compressedLimit: Long, expandedLimit: Long): InputStream {
+    val peek = PushbackInputStream(source, 2)
+    val first = peek.read(); val second = if (first >= 0) peek.read() else -1
+    if (second >= 0) peek.unread(second)
+    if (first >= 0) peek.unread(first)
+    val decoded = if (first == 0x1f && second == 0x8b) GZIPInputStream(BoundedInputStream(peek, compressedLimit)) else peek
+    return BoundedInputStream(decoded, expandedLimit)
 }
 
 object XmlTvParser {

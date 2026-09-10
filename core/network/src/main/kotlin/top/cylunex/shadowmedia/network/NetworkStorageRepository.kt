@@ -25,6 +25,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import javax.xml.parsers.DocumentBuilderFactory
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -78,6 +79,7 @@ interface NetworkStorageRepository {
     fun provider(connection: NetworkStorageConnection): MediaProvider
     suspend fun probe(connection: NetworkStorageConnection): NetworkStorageStatus
     fun openSmbResource(url: String, position: Long): NetworkReadHandle
+    fun forget(connectionId: String) {}
 }
 
 class DefaultNetworkStorageRepository(
@@ -89,6 +91,11 @@ class DefaultNetworkStorageRepository(
     private val applicationContext = context.applicationContext
     private val connections = ConcurrentHashMap<String, NetworkStorageConnection>()
     private val backends = ConcurrentHashMap<String, NetworkBackend>()
+
+    override fun forget(connectionId: String) {
+        connections.remove(connectionId)
+        backends.remove(connectionId)
+    }
 
     override fun provider(connection: NetworkStorageConnection): MediaProvider {
         connections[connection.id] = connection
@@ -108,6 +115,7 @@ class DefaultNetworkStorageRepository(
                 latencyMs = (System.nanoTime() - started) / 1_000_000,
             )
         }.getOrElse { error ->
+            if (error is CancellationException) throw error
             val auth = error.message.orEmpty().contains("401") || error.message.orEmpty().contains("403") ||
                 error.message.orEmpty().contains("logon", true) || error.message.orEmpty().contains("auth", true)
             NetworkStorageStatus(

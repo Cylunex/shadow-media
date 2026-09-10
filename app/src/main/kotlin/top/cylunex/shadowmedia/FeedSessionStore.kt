@@ -14,6 +14,13 @@ data class FeedSessionSnapshot(
     val updatedAtEpochMs: Long,
 )
 
+internal fun FeedSessionSnapshot.removing(itemId: String, nowMs: Long): FeedSessionSnapshot {
+    val ordered = orderedItemIds.filterNot { it == itemId }
+    val retained = ordered.indexOf(currentItemId)
+    val index = if (retained >= 0) retained else currentIndex.coerceIn(0, ordered.lastIndex.coerceAtLeast(0))
+    return copy(orderedItemIds = ordered, currentItemId = ordered.getOrNull(index), currentIndex = index, updatedAtEpochMs = nowMs)
+}
+
 class FeedSessionStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
@@ -56,17 +63,7 @@ class FeedSessionStore(context: Context) {
     @Synchronized
     fun removeItem(session: EmbySession, libraryId: String, itemId: String) {
         val previous = read(session, libraryId) ?: return
-        val ordered = previous.orderedItemIds.filterNot { it == itemId }
-        val index = previous.currentIndex.coerceIn(0, (ordered.size - 1).coerceAtLeast(0))
-        write(
-            session,
-            previous.copy(
-                orderedItemIds = ordered,
-                currentItemId = ordered.getOrNull(index),
-                currentIndex = index,
-                updatedAtEpochMs = System.currentTimeMillis(),
-            ),
-        )
+        write(session, previous.removing(itemId, System.currentTimeMillis()))
     }
 
     @Synchronized

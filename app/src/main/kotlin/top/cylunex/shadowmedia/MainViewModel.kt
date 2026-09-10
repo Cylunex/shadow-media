@@ -198,6 +198,8 @@ class MainViewModel(
     private var deleteRequest: Job? = null
     private var liveGuideRequest: Job? = null
     private var providerSearchRequest: Job? = null
+    private var storageProbeRequest: Job? = null
+    private var integrationProbeRequest: Job? = null
     private val searchPageJobs = mutableMapOf<String, Job>()
     private var searchGeneration = 0L
     private var submittedQuery = ""
@@ -460,6 +462,7 @@ class MainViewModel(
 
     fun removeNetworkStorage(connectionId: String) {
         networkStorageStore.remove(connectionId)
+        networkStorageRepository.forget(connectionId)
         syncProviders()
         update {
             copy(
@@ -471,10 +474,21 @@ class MainViewModel(
     }
 
     fun refreshNetworkStorages() {
-        networkStorageStore.loadAll().forEach { connection ->
-            viewModelScope.launch {
-                val status = networkStorageRepository.probe(connection)
-                update { copy(networkStorageStatuses = networkStorageStatuses + (connection.id to status)) }
+        storageProbeRequest?.cancel()
+        val connections = networkStorageStore.loadAll()
+        storageProbeRequest = viewModelScope.launch {
+            supervisorScope {
+                connections.forEach { connection -> launch {
+                    try {
+                        if (connection !in networkStorageStore.loadAll()) return@launch
+                        val status = networkStorageRepository.probe(connection)
+                        ensureActive()
+                        if (connection in networkStorageStore.loadAll()) {
+                            update { copy(networkStorageStatuses = networkStorageStatuses + (connection.id to status)) }
+                        }
+                    } catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { update { copy(networkStorageMessage = e.message ?: "连接检查失败") } }
+                } }
             }
         }
     }
@@ -638,15 +652,24 @@ class MainViewModel(
     }
 
     fun refreshIntegrations() {
+        integrationProbeRequest?.cancel()
         val connections = integrationStore.loadAll()
         if (connections.isEmpty()) return
-        viewModelScope.launch {
-            val statuses = supervisorScope {
-                connections.map { connection ->
-                    async { connection.id to integrationRepository.probe(connection) }
-                }.map { it.await() }.toMap()
-            }
-            update { copy(integrations = connections, integrationStatuses = statuses) }
+        integrationProbeRequest = viewModelScope.launch {
+            try {
+                val statuses = supervisorScope {
+                    connections.map { connection -> async { connection.id to integrationRepository.probe(connection) } }.map { it.await() }.toMap()
+                }
+                ensureActive()
+                val current = integrationStore.loadAll()
+                val currentIds = current.map { it.id }.toSet()
+                val validIds = current.filter { it in connections }.map { it.id }.toSet()
+                update { copy(
+                    integrations = current,
+                    integrationStatuses = (integrationStatuses + statuses.filterKeys { it in validIds }).filterKeys { it in currentIds },
+                ) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { update { copy(integrationMessage = e.message ?: "连接检查失败") } }
         }
     }
 
@@ -838,7 +861,7 @@ class MainViewModel(
                         update {
                             copy(
                                 screen = Screen.EXTERNAL_PLAYER,
-                                externalPlayerReturnScreen = Screen.PROVIDER_DETAIL,
+                                externalPlayerReturnScreen = screen,
                                 selectedExternalEntry = ExternalMediaEntry(
                                     id = item.key.itemId,
                                     sourceId = item.key.providerId,
@@ -1477,7 +1500,8 @@ class MainViewModel(
                 val removedActiveItem = snapshot.screen == Screen.PLAYER && snapshot.selectedItem?.id == item.id
                 val remaining = snapshot.items.filterNot { it.id == item.id }
                 val remainingWallItems = snapshot.wallItems.filterNot { it.id == item.id }
-                val nextIndex = snapshot.currentIndex.coerceAtMost((remaining.size - 1).coerceAtLeast(0))
+                val retainedIndex = remaining.indexOfFirst { it.id == snapshot.items.getOrNull(snapshot.currentIndex)?.id }
+                val nextIndex = retainedIndex.takeIf { it >= 0 } ?: snapshot.currentIndex.coerceAtMost((remaining.size - 1).coerceAtLeast(0))
                 snapshot.selectedLibrary?.let { feedSessionStore.removeItem(session, it.id, item.id) }
                 if (removedActiveItem) playbackRequest?.cancel()
                 update {

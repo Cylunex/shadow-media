@@ -12,6 +12,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -44,6 +45,7 @@ class DefaultIntegrationRepository(
         for (path in connection.kind.probePaths()) {
             val url = base.resolve(path) ?: continue
             val result = runCatching { executeProbe(connection, url) }
+            ensureActive()
             result.getOrNull()?.let { probe ->
                 val latency = (System.nanoTime() - started) / 1_000_000
                 return@withContext IntegrationStatus(

@@ -42,14 +42,9 @@ class ExternalPlaybackRuntime(
         .followRedirects(true)
         .followSslRedirects(true)
         .addNetworkInterceptor { chain ->
-            val origin = entry.credentialOrigin?.toHttpUrlOrNull()
+            val origin = (entry.credentialOrigin ?: entry.url).toHttpUrlOrNull()
             val request = chain.request()
-            val scoped = if (origin != null && !request.url.sameOriginAs(origin)) {
-                request.newBuilder()
-                    .removeHeader("Authorization")
-                    .removeHeader("Cookie")
-                    .build()
-            } else request
+            val scoped = request.newBuilder().headers(externalHeaders(origin, request.url, request.headers)).build()
             chain.proceed(scoped)
         }
         .build()
@@ -93,15 +88,17 @@ class RoutingDataSource(
     private val networkStorageRepository: NetworkStorageRepository?,
 ) : DataSource {
     private var active: DataSource? = null
+    private val listeners = mutableListOf<TransferListener>()
 
     override fun addTransferListener(transferListener: TransferListener) {
+        listeners += transferListener
         http.addTransferListener(transferListener)
     }
 
     override fun open(dataSpec: DataSpec): Long {
         val delegate = if (dataSpec.uri.scheme == "shadow-smb") {
             val repository = networkStorageRepository ?: throw java.io.IOException("SMB 播放服务未初始化")
-            SmbDataSource(repository)
+            SmbDataSource(repository).also { source -> listeners.forEach(source::addTransferListener) }
         } else http
         active = delegate
         return delegate.open(dataSpec)
@@ -111,6 +108,8 @@ class RoutingDataSource(
         active?.read(buffer, offset, readLength) ?: C.RESULT_END_OF_INPUT
 
     override fun getUri(): Uri? = active?.uri
+
+    override fun getResponseHeaders(): Map<String, List<String>> = active?.responseHeaders.orEmpty()
 
     override fun close() {
         active?.close()
@@ -165,6 +164,3 @@ private class SmbDataSource(
         }
     }
 }
-
-private fun okhttp3.HttpUrl.sameOriginAs(other: okhttp3.HttpUrl): Boolean =
-    scheme == other.scheme && host == other.host && port == other.port

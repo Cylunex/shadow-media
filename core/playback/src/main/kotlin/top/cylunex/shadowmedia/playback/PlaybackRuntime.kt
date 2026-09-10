@@ -76,6 +76,7 @@ class PlaybackRuntime(
     private val onTerminalError: (positionMs: Long, message: String) -> Unit = { _, _ -> },
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val reporter = OrderedPlaybackReporter(CoroutineScope(scope.coroutineContext + Dispatchers.IO)) { playbackOutbox.submit(session, it) }
     private var candidateIndex = 0
     private var positionOffsetMs = 0L
     private var started = false
@@ -180,22 +181,10 @@ class PlaybackRuntime(
         mediaSession.release()
         exoPlayer.release()
         if (started) {
-            scope.launch(Dispatchers.IO) {
-                runCatching {
-                    report(
-                        PlaybackEvent.STOPPED,
-                        finalPosition,
-                        paused,
-                        canSeek,
-                        candidate.method,
-                        candidate.mediaSourceId,
-                    )
-                }
-                scope.cancel()
-            }
-        } else {
-            scope.cancel()
+            report(PlaybackEvent.STOPPED, finalPosition, paused, canSeek, candidate.method, candidate.mediaSourceId)
         }
+        reporter.close()
+        reporter.completion.invokeOnCompletion { scope.cancel() }
     }
 
     private fun mediaSource(candidate: PlaybackCandidate) =
@@ -242,18 +231,15 @@ class PlaybackRuntime(
     }
 
     private fun reportCurrent(event: PlaybackEvent) {
+        if (!started || released) return
         val position = currentPositionMs.millisecondsToEmbyTicks()
         val paused = !player.isPlaying
         val canSeek = isSeekSupported
         val candidate = currentCandidate()
-        scope.launch(Dispatchers.IO) {
-            runCatching {
-                report(event, position, paused, canSeek, candidate.method, candidate.mediaSourceId)
-            }
-        }
+        report(event, position, paused, canSeek, candidate.method, candidate.mediaSourceId)
     }
 
-    private suspend fun report(
+    private fun report(
         event: PlaybackEvent,
         positionTicks: Long,
         paused: Boolean,
@@ -261,8 +247,7 @@ class PlaybackRuntime(
         playMethod: PlayMethod,
         mediaSourceId: String?,
     ) {
-        playbackOutbox.submit(
-            session,
+        reporter.submit(
             PlaybackReport(
                 itemId = plan.itemId,
                 mediaSourceId = mediaSourceId ?: plan.mediaSourceId,
@@ -294,7 +279,7 @@ class PlaybackRuntime(
         telemetryErrorMessage = error.message ?: error.errorCodeName
         telemetrySink.record(telemetrySnapshot(completed = false))
         diagnosticsState.value = diagnostics("上一播放地址失败，已切换回退链路：${error.errorCodeName}")
-        prepareCandidate(currentCandidate(), absolutePosition, playWhenReady = true)
+        prepareCandidate(currentCandidate(), absolutePosition, playWhenReady = player.playWhenReady)
         return true
     }
 
