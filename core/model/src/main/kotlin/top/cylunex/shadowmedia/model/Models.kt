@@ -307,6 +307,8 @@ data class MediaDetail(
     val related: List<UnifiedMediaItem> = emptyList(),
     val genres: List<String> = emptyList(),
     val people: List<String> = emptyList(),
+    val childrenNextPageToken: String? = null,
+    val cached: Boolean = false,
 )
 
 data class UnifiedPlaybackRequest(

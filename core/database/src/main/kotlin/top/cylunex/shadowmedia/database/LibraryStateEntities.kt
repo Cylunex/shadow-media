@@ -23,6 +23,7 @@ data class ContinueRow(val rowId: String, val assetId: String?, val providerId: 
     val kind: String, val positionMs: Long?, val durationMs: Long?, val progression: Double?, val updatedAt: Long)
 
 @Dao interface LibraryStateDao {
+    @Query("SELECT a.* FROM library_assets a JOIN remote_user_states s ON s.providerId = a.providerId AND s.itemId = a.itemId WHERE a.providerId = :provider AND s.favorite = 1 ORDER BY s.updatedAt DESC LIMIT 200") suspend fun favoriteAssets(provider: String): List<LibraryAssetEntity>
     @Query("SELECT * FROM remote_user_states WHERE providerId = :provider") fun userStates(provider: String): Flow<List<RemoteUserStateEntity>>
     @Query("SELECT * FROM remote_user_states WHERE providerId = :provider") suspend fun readUserStates(provider: String): List<RemoteUserStateEntity>
     @Query("SELECT * FROM remote_user_states WHERE providerId = :provider AND itemId = :item") suspend fun userState(provider: String, item: String): RemoteUserStateEntity?
@@ -61,6 +62,8 @@ data class ContinueRow(val rowId: String, val assetId: String?, val providerId: 
     @Query("DELETE FROM playlist_exports WHERE providerId = :provider AND playlistId = :playlist") suspend fun removeExport(provider: String, playlist: String)
     @Query("SELECT * FROM catalog_pages WHERE id = :id") suspend fun catalogPage(id: String): CatalogPageEntity?
     @Query("DELETE FROM catalog_pages WHERE id IN (SELECT id FROM catalog_pages ORDER BY updatedAt DESC LIMIT -1 OFFSET 256)") suspend fun trimCatalogPages()
+    @Query("SELECT * FROM catalog_pages") suspend fun allCatalogPages(): List<CatalogPageEntity>
+    @Query("DELETE FROM catalog_pages WHERE id = :id") suspend fun removeCatalogPage(id: String)
     @Upsert suspend fun putCatalogPage(page: CatalogPageEntity)
     @Query("SELECT COALESCE(SUM(length(CAST(payload AS BLOB))), 0) FROM catalog_pages") suspend fun catalogBytes(): Long
     @Query("DELETE FROM catalog_pages WHERE id = (SELECT id FROM catalog_pages ORDER BY updatedAt, id LIMIT 1)") suspend fun removeOldestCatalogPage()

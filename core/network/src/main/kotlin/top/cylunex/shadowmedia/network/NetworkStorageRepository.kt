@@ -100,7 +100,7 @@ class DefaultNetworkStorageRepository(
     override fun provider(connection: NetworkStorageConnection): MediaProvider {
         connections[connection.id] = connection
         val backend = backend(connection)
-        return NetworkStorageMediaProvider(connection, backend, ::cacheArtwork, playbackState)
+        return CachedMediaProvider(NetworkStorageMediaProvider(connection, backend, ::cacheArtwork, playbackState), top.cylunex.shadowmedia.database.ShadowMediaDatabase.create(applicationContext).libraryStateDao())
     }
 
     override suspend fun probe(connection: NetworkStorageConnection): NetworkStorageStatus {
@@ -608,9 +608,11 @@ private class NetworkStorageMediaProvider(
             rating = folderNfo?.rating,
             externalIds = folderNfo?.externalIds.orEmpty(),
         )
+        val visible = children.filter { it.isDirectory || it.isPlayable() }.sortedWith(compareByDescending<RemoteFile> { it.isDirectory }.thenBy { it.name.lowercase() })
         return MediaDetail(
             item = item,
-            children = children.filter { it.isDirectory || it.isPlayable() }.toItems(children),
+            children = visible.take(60).toItems(children),
+            childrenNextPageToken = "60".takeIf { visible.size > 60 },
             genres = folderNfo?.genres.orEmpty(),
             people = folderNfo?.actors.orEmpty(),
         )

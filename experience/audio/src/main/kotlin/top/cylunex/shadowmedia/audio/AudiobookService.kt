@@ -50,7 +50,15 @@ class AudiobookService : MediaLibraryService() {
     private var progressEntry: String? = null
     private var progressJob: Job? = null
     private var restoring: Job? = null
+    private var lastPreloadUs = -1L
     private var pendingResumption: RestoredQueue? = null
+
+    private fun updatePreloading() {
+        val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
+        val duration = if (mode == AudioMode.MUSIC && player.playWhenReady &&
+            ResourceDevicePolicy.backgroundAllowed(this) && !connectivity.isActiveNetworkMetered) 3_000_000L else 0L
+        if (duration != lastPreloadUs) { lastPreloadUs = duration; player.setPreloadConfiguration(ExoPlayer.PreloadConfiguration(duration)) }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -90,7 +98,7 @@ class AudiobookService : MediaLibraryService() {
                 }
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                     if (stopAfterTrack && reason in setOf(Player.MEDIA_ITEM_TRANSITION_REASON_AUTO, Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT)) { pause(); clearSleep() }
-                    AudioDiagnostics.method.value = ""
+                    candidates.activate(mediaItem?.entryId())
                     AudioDiagnostics.format.value = ""
                     listening.sample(this@apply, transition = true)
                     if (jumpToLastChapter != null && jumpToLastChapter != mediaItem?.entryId()) jumpToLastChapter = null
@@ -99,6 +107,7 @@ class AudiobookService : MediaLibraryService() {
                         val speed = if (mediaItem?.audioMode() == AudioMode.MUSIC) 1f else mediaItem?.mediaId?.let { getSharedPreferences("audio_preferences", MODE_PRIVATE).getFloat("speed:$it", 1f) } ?: 1f
                         setPlaybackSpeed(speed.takeIf { it.isFinite() && it in .5f..3f } ?: 1f)
                     }
+                    updatePreloading()
                     startProgressSession()
                 }
                 override fun onPlayerError(error: PlaybackException) {
@@ -157,6 +166,7 @@ class AudiobookService : MediaLibraryService() {
             while (isActive) {
                 delay(1000)
                 listening.sample(player)
+                updatePreloading()
                 chapterStop?.let { (entry, end) ->
                     if (entry != player.currentMediaItem?.entryId() || player.currentPosition >= end) { player.pause(); clearSleep() }
                 }

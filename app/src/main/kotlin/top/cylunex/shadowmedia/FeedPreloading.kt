@@ -18,6 +18,17 @@ import top.cylunex.shadowmedia.network.ResourcePriority
 
 @Composable internal fun rememberFeedPreloading(state: MainUiState, viewModel: MainViewModel, container: AppContainer, scrolling: Boolean): FeedPreloadPool? {
     val context = LocalContext.current.applicationContext
+    val connectivity = context.getSystemService(ConnectivityManager::class.java)
+    val unmetered by produceState(initialValue = !connectivity.isActiveNetworkMetered, connectivity) {
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: android.net.Network, capabilities: android.net.NetworkCapabilities) { value = capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED) }
+            override fun onLost(network: android.net.Network) { value = false }
+        }
+        connectivity.registerDefaultNetworkCallback(callback)
+        awaitDispose { connectivity.unregisterNetworkCallback(callback) }
+    }
+    var deviceAllowed by remember { mutableStateOf(container.backgroundResourcesAllowed()) }
+    LaunchedEffect(Unit) { while (true) { deviceAllowed = container.backgroundResourcesAllowed(); delay(5000) } }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val lifecycleState by lifecycle.currentStateAsState()
     val foreground = lifecycleState.isAtLeast(Lifecycle.State.STARTED)
@@ -35,10 +46,10 @@ import top.cylunex.shadowmedia.network.ResourcePriority
         viewModel.feedPreloader = pool
         onDispose { if (viewModel.feedPreloader === pool) viewModel.feedPreloader = null; pool?.close() }
     }
-    LaunchedEffect(pool, state.currentIndex, scrolling, foreground) {
+    LaunchedEffect(pool, state.currentIndex, scrolling, foreground, unmetered, deviceAllowed) {
         pool ?: return@LaunchedEffect
-        pool.position(state.currentIndex, !scrolling && foreground)
-        if (scrolling || !foreground) return@LaunchedEffect
+        pool.position(state.currentIndex, !scrolling && foreground && unmetered && deviceAllowed)
+        if (scrolling || !foreground || !unmetered || !deviceAllowed) return@LaunchedEffect
         delay(600)
         val next = state.items.getOrNull(state.currentIndex + 1) ?: return@LaunchedEffect
         if (next.playbackPositionTicks > 0 || !container.backgroundResourcesAllowed() || context.getSystemService(ConnectivityManager::class.java).isActiveNetworkMetered) return@LaunchedEffect

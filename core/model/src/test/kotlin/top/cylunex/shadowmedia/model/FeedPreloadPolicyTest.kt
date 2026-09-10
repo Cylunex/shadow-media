@@ -16,6 +16,8 @@ class FeedPreloadPolicyTest {
         val plan = PlaybackPlan("item", "source", "session", listOf(PlaybackCandidate("https://example.com/stream", PlayMethod.DIRECT_PLAY, emptyMap())), "mp4", null, null, null, 100000000)
         assertTrue(FeedPreloadPolicy.eligible(plan, 20))
         assertFalse(FeedPreloadPolicy.eligible(plan, 1600))
+        assertFalse(FeedPreloadPolicy.eligible(plan.copy(runTimeTicks = null), 20))
+        assertFalse(FeedPreloadPolicy.eligible(plan.copy(container = "hls"), 20))
         assertFalse(FeedPreloadPolicy.eligible(plan.copy(container = "iso"), 20))
         assertFalse(FeedPreloadPolicy.eligible(plan.copy(candidates = listOf(plan.primary.copy(method = PlayMethod.TRANSCODE))), 20))
         assertFalse(FeedPreloadPolicy.eligible(plan.copy(candidates = listOf(plan.primary.copy(url = "https://example.com/live.m3u8?token=example"))), 20))

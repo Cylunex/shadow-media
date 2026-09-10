@@ -51,8 +51,7 @@ class KeystoreNetworkStorageStore(
             cipher.doFinal(payload.copyOfRange(IV_SIZE, payload.size)).decodeToString()
         )
     }.getOrElse {
-        preferences.edit().remove(KEY).commit()
-        null
+        throw IllegalStateException("网络存储凭据无法解密，原数据已保留", it)
     }
 
     private fun write(rows: List<StoredConnection>) {

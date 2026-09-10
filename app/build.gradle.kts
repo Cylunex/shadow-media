@@ -32,7 +32,14 @@ android {
                 "proguard-rules.pro",
             )
         }
+        create("benchmark") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".benchmark"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
+        }
     }
+    sourceSets.getByName("benchmark").assets.srcDir(rootProject.file("fixtures/reading"))
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -73,8 +80,25 @@ dependencies {
     implementation(libs.coil.network.okhttp)
     implementation(libs.media3.ui.compose.material3)
     implementation(libs.paging.compose)
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+}
+
+// Resolves artifacts only. This task does not compile, package, sign or install an APK.
+tasks.register("writeRuntimeInventory") {
+    val output = layout.buildDirectory.file("reports/runtime-artifacts.tsv")
+    outputs.file(output)
+    doLast {
+        val rows = listOf("releaseRuntimeClasspath", "coreLibraryDesugaring").flatMap { configuration -> configurations.getByName(configuration).incoming.artifactView {
+            componentFilter { it is org.gradle.api.artifacts.component.ModuleComponentIdentifier }
+        }.artifacts.artifacts }.distinctBy { it.id }
+            .map { artifact ->
+                val id = artifact.id.componentIdentifier as org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                "${id.group}:${id.module}:${id.version}\t${artifact.file.absolutePath}"
+            }.sorted()
+        output.get().asFile.apply { parentFile.mkdirs(); writeText(rows.joinToString("\n", postfix = "\n")) }
+    }
 }

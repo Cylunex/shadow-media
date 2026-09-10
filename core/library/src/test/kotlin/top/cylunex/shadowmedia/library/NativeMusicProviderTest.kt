@@ -12,6 +12,18 @@ import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 class NativeMusicProviderTest {
+    @Test fun cancellingNativeCatalogRequestClosesTheSocketAsCancellation() = runBlocking {
+        val server = MockWebServer(); server.start()
+        try {
+            server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE))
+            val provider = NativeMusicProvider(CatalogConnection(name = "Test", kind = CatalogKind.JELLYFIN, url = server.url("/").toString(), token = "example", allowHttp = true))
+            val job = async(Dispatchers.Default) { provider.browse(ProviderBrowseRequest()) }
+            assertNotNull(withContext(Dispatchers.IO) { server.takeRequest(5, TimeUnit.SECONDS) })
+            withTimeout(2000) { job.cancelAndJoin() }
+            assertTrue(job.isCancelled)
+        } finally { server.shutdown() }
+    }
+
     @Test fun playlistFormExportPreservesRepeatedSongsAndReadbackOrder() = runBlocking {
         val server = MockWebServer(); server.start()
         try {

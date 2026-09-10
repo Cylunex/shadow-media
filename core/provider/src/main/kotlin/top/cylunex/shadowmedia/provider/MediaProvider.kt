@@ -14,6 +14,10 @@ interface MediaProvider {
 
     suspend fun home(): List<ProviderSection>
 
+    suspend fun cachedBrowse(request: ProviderBrowseRequest): UnifiedMediaPage? = null
+
+    suspend fun cachedDetail(key: MediaKey): MediaDetail? = null
+
     suspend fun browse(request: ProviderBrowseRequest): UnifiedMediaPage
 
     suspend fun search(request: ProviderSearchRequest): UnifiedMediaPage

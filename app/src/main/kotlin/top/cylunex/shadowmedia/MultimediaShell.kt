@@ -329,6 +329,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                 IconButton(onClick = { selected = item }) { Icon(Icons.Rounded.MoreHoriz, "作品选项") }
             }
             Text(item.author.ifBlank { item.format.uppercase() }, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, style = MaterialTheme.typography.labelSmall)
+            AssetAvailabilityLabel(item.providerId, item.itemId, when { row.completed == true -> "已完成"; row.progression != null -> "${(row.progression!!.coerceIn(0.0, 1.0) * 100).toInt()}%"; row.updatedAt != null -> "位置已保存"; else -> null })
             row.progression?.let { LinearProgressIndicator(progress = { it.toFloat() }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp), trackColor = MaterialTheme.colorScheme.surfaceVariant) }
         } }
     }

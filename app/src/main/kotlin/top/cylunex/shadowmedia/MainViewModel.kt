@@ -518,6 +518,7 @@ class MainViewModel(
         val provider = providerRegistry.provider(providerId) ?: return
         contentRequest = viewModelScope.launch {
             update { copy(screen = Screen.PROVIDER_DETAIL, selectedUnifiedDetail = null, providerDetailBackStack = emptyList(), providerDetailReturnScreen = Screen.NETWORK_STORAGES, isLoading = true, errorMessage = null) }
+            provider.cachedDetail(MediaKey(providerId, connection.rootPath.normalizedStoragePath()))?.let { update { copy(selectedUnifiedDetail = it) } }
             runCatching { provider.detail(MediaKey(providerId, connection.rootPath.normalizedStoragePath())) }
                 .onSuccess { detail -> ensureActive(); update { copy(selectedUnifiedDetail = detail, isLoading = false) } }
                 .onFailure { ensureActive(); showError(it) }
@@ -824,9 +825,29 @@ class MainViewModel(
                     errorMessage = null,
                 )
             }
+            provider.cachedDetail(item.key)?.let { update { copy(selectedUnifiedDetail = it) } }
             runCatching { provider.detail(item.key) }
                 .onSuccess { detail -> ensureActive(); update { copy(selectedUnifiedDetail = detail, isLoading = false) } }
                 .onFailure { ensureActive(); showError(it) }
+        }
+    }
+
+    fun loadMoreUnifiedChildren() {
+        val detail = state.value.selectedUnifiedDetail ?: return
+        val token = detail.childrenNextPageToken ?: return
+        if (state.value.isLoadingMore) return
+        val provider = providerRegistry.provider(detail.item.key.providerId) ?: return
+        contentRequest = viewModelScope.launch {
+            update { copy(isLoadingMore = true) }
+            try {
+                val page = provider.browse(top.cylunex.shadowmedia.provider.ProviderBrowseRequest(parentKey = detail.item.key, pageToken = token))
+                ensureActive()
+                require(page.nextPageToken != token) { "目录分页未前进" }
+                if (state.value.selectedUnifiedDetail?.item?.key == detail.item.key) update { copy(selectedUnifiedDetail = detail.copy(
+                    children = (detail.children + page.items).distinctBy { it.key }, childrenNextPageToken = page.nextPageToken, cached = detail.cached || page.cached)) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { showError(e) }
+            finally { if (contentRequest === coroutineContext[kotlinx.coroutines.Job]) update { copy(isLoadingMore = false) } }
         }
     }
 
@@ -1256,7 +1277,10 @@ class MainViewModel(
         val session = state.value.session ?: return
         val target = !item.favorite
         viewModelScope.launch {
-            runCatching { repository.setFavorite(session, item.id, target) }
+            runCatching {
+                library?.addRemote(UnifiedMediaItem(MediaKey(session.providerId, item.id), item.name, item.type, favorite = target), "video", collected = false)
+                repository.setFavorite(session, item.id, target)
+            }
                 .onSuccess {
                     if (state.value.session != session) return@onSuccess
                     update {
@@ -1271,14 +1295,15 @@ class MainViewModel(
                             selectedSeries = selectedSeries?.let {
                                 if (it.id == item.id) it.copy(favorite = target) else it
                             },
-                            homeSections = homeSections.map { section ->
+                            homeSections = (if (target && homeSections.none { it.kind == MediaSectionKind.FAVORITES }) homeSections + MediaSection("favorites", "我的收藏", MediaSectionKind.FAVORITES, emptyList()) else homeSections).map { section ->
                                 section.copy(
                                     items = section.items.map {
                                         if (it.id == item.id) it.copy(favorite = target) else it
                                     }.let { updated ->
                                         if (section.kind == MediaSectionKind.FAVORITES && !target) {
                                             updated.filterNot { it.id == item.id }
-                                        } else updated
+                                        } else if (section.kind == MediaSectionKind.FAVORITES && target) (listOf(item.copy(favorite = true)) + updated).distinctBy { it.id }
+                                        else updated
                                     }
                                 )
                             }.filter { it.items.isNotEmpty() },
@@ -1492,7 +1517,7 @@ class MainViewModel(
         val providers = buildList {
             addAll(nativeProviders())
             library?.let { add(top.cylunex.shadowmedia.library.LibraryMediaProvider(it)) }
-            sessionStore.loadAll().distinctBy { it.serverId to it.userId }.forEach { add(EmbyMediaProvider(it, repository)) }
+            sessionStore.loadAll().distinctBy { it.providerId }.forEach { add(EmbyMediaProvider(it, repository)) }
             storedNetworkConnections.forEach { connection ->
                 add(networkStorageRepository.provider(connection))
             }
@@ -1501,8 +1526,8 @@ class MainViewModel(
                 val entries = runCatching { externalSourceRepository.entries(imported) }.getOrDefault(emptyList())
                 if (entries.isNotEmpty()) add(LiveMediaProvider(summary, entries))
                 externalSourceRepository.catalogSites(imported).forEach { site ->
-                    if (count { it is TvBoxHttpMediaProvider } < MAX_HTTP_PROVIDERS) {
-                        add(TvBoxHttpMediaProvider(site, externalClient))
+                    if (count { it.descriptor.kind == top.cylunex.shadowmedia.model.ProviderKind.DECLARATIVE_HTTP } < MAX_HTTP_PROVIDERS) {
+                        TvBoxHttpMediaProvider(site, externalClient).let { add(library?.cacheProvider(it) ?: it) }
                     }
                 }
             }

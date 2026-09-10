@@ -157,13 +157,11 @@ ISO 是光盘镜像而不是普通视频容器。Emby Server 不支持 ISO 转�
 外部服务能力与凭据边界见 [服务连接](docs/INTEGRATIONS.md)。
 媒体时刻、用户片段与脱敏统计见 [媒体记忆与洞察](docs/MEMORY_AND_INSIGHTS.md)。
 
-## 下一阶段
-
-真实链路兼容性矩阵验证通过后，按 Media3 官方短视频示例引入容量为 3 的 `PlayerPool`、
-`rememberPooledPlayer` 与共享
-`DefaultPreloadManager.Builder`。最终 CDN URL 只解析当前项和后续 1–2 项，不落盘。
-
 本项目整体以 GPL-3.0 发布。详见 [架构说明](docs/ARCHITECTURE.md)、
 [全媒介实施说明](docs/MULTIMEDIA_IMPLEMENTATION.md)、
 [ISO 播放说明](docs/ISO_PLAYBACK.md)、[第三方来源](third_party/webhtv-mpv/NOTICE.md)、
 [参考实现与取舍](docs/REFERENCES.md) 与 [路线图](docs/ROADMAP.md)。
+
+- [vNext 实现与验收账本](docs/VNEXT_IMPLEMENTATION_STATUS.md)
+- [性能工程与发布检查](docs/PERFORMANCE_AND_RELEASE.md)
+- [来源扩展与音质评估](docs/SOURCE_AND_AUDIO_EVALUATION.md)

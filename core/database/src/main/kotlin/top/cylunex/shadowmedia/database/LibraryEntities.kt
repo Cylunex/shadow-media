@@ -66,10 +66,14 @@ data class ProgressSessionEntity(
             sessionId == incoming.sessionId && incoming.sequence > sequence
 }
 
+data class AssetAvailability(val localCopy: Boolean, val state: String, val currentRevision: Boolean)
+
 data class LibraryShelfRow(@Embedded val asset: LibraryAssetEntity, val progression: Double?, val completed: Boolean?, val updatedAt: Long?)
 
 @Dao
 interface LibraryDao {
+    @Query("SELECT a.localUri != '' AS localCopy, COALESCE(t.state, '') AS state, COALESCE(t.revision = a.revision, 0) AS currentRevision FROM library_assets a LEFT JOIN resource_tasks t ON t.assetId = a.id WHERE a.providerId = :provider AND a.itemId = :item LIMIT 1")
+    fun availability(provider: String, item: String): Flow<AssetAvailability?>
     @Query("SELECT a.*, p.progression, p.completed, p.updatedAt FROM library_assets a LEFT JOIN progress_records p ON p.assetId = a.id WHERE COALESCE((SELECT c.collected FROM user_collection c WHERE c.assetId = a.id AND c.profileId = 'default'), 1) = 1 AND a.kind IN (:kinds) AND (:favorite = 0 OR a.favorite = 1) AND (:unfinished = 0 OR p.completed IS NULL OR p.completed = 0) AND (a.title LIKE :query ESCAPE '\\' OR a.author LIKE :query ESCAPE '\\') ORDER BY CASE WHEN :byName THEN a.title END COLLATE NOCASE, a.addedAt DESC, a.id")
     fun shelf(kinds: List<String>, query: String, favorite: Boolean, unfinished: Boolean, byName: Boolean): androidx.paging.PagingSource<Int, LibraryShelfRow>
     @Query("SELECT a.*, p.progression, p.completed, p.updatedAt FROM library_assets a JOIN progress_records p ON p.assetId = a.id WHERE a.kind IN (:kinds) AND p.completed = 0 ORDER BY p.updatedAt DESC LIMIT 1")
@@ -87,6 +91,8 @@ interface LibraryDao {
     suspend fun assetForKey(providerId: String, itemId: String): LibraryAssetEntity?
     @Query("SELECT * FROM library_assets WHERE id IN (:ids)")
     suspend fun assetsByIds(ids: List<String>): List<LibraryAssetEntity>
+    @Query("SELECT * FROM library_assets WHERE providerId LIKE 'catalog:OPDS:%' AND itemId NOT LIKE 'opds-ref:v1:%'") suspend fun legacyOpdsAssets(): List<LibraryAssetEntity>
+    @Query("UPDATE library_assets SET itemId = :value WHERE id = :id AND itemId = :expected") suspend fun updateItemId(id: String, expected: String, value: String)
     @Upsert suspend fun putAsset(asset: LibraryAssetEntity)
     @Query("UPDATE library_assets SET localUri = '' WHERE id = :id AND localUri = :expectedUri")
     suspend fun clearLocalCopy(id: String, expectedUri: String)
@@ -129,11 +135,18 @@ interface LibraryDao {
         removeProgressSession(id)
         removeProgress(id)
     }
+    @Query("UPDATE audio_chapters SET resourceRevision = :revision WHERE assetId = :id AND resourceRevision = ''") suspend fun bindInitialChapterRevision(id: String, revision: String)
     @Transaction suspend fun installAsset(asset: LibraryAssetEntity) {
         val old = this.asset(asset.id)
         if (old != null && old.revision != asset.revision) {
-            resetProgress(asset.id)
-            removeAssetOperations(asset.id)
+            if (old.providerId != "local" && old.localUri.isBlank() && old.revision.isBlank()) {
+                // The first verified copy establishes a byte hash, not a different edition.
+                removeProgressSession(asset.id)
+                bindInitialChapterRevision(asset.id, asset.revision)
+            } else {
+                resetProgress(asset.id)
+                removeAssetOperations(asset.id)
+            }
         }
         putAsset(asset.copy(favorite = old?.favorite ?: asset.favorite))
     }

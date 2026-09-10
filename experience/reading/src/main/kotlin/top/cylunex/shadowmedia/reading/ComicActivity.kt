@@ -200,7 +200,7 @@ class ComicActivity : ComponentActivity() {
             }
         }
         Column(modifier.background(MaterialTheme.colorScheme.surface).padding(horizontal = 16.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 TextButton(onClick = { mode = "LTR"; currentPage = index; currentOffset = 0f; initialPage = index; initialOffset = 0f; restoreEpoch++ }) { Text("查看原页 ${index + 1}") }
                 TextButton(onClick = { textSize = (textSize - 2).coerceAtLeast(14f) }) { Text("字小") }
                 TextButton(onClick = { textSize = (textSize + 2).coerceAtMost(36f) }) { Text("字大") }

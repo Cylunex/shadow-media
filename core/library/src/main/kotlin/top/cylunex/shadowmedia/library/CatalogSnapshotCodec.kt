@@ -20,16 +20,21 @@ internal object CatalogSnapshotCodec {
         val entries = JSONArray()
         for (entry in page.entries) {
             if (!stableUrl(entry.id)) continue
-            if (kind == CatalogKind.OPDS && entry.format.isNotBlank()) {
-                val catalog = runCatching { OpdsCatalog.decodeLocator(entry.locator).first }.getOrNull() ?: continue
-                if (!stableUrl(catalog)) continue
-            }
+            if (kind == CatalogKind.OPDS && listOfNotNull(entry.id, entry.locator, entry.navigation).any { !OpdsReferenceStore.isReference(it) }) continue
             if (entry.navigation != null && !stableUrl(entry.navigation)) continue
             entries.put(JSONObject().put("id", entry.id).put("title", entry.title.take(2048)).put("author", entry.author.take(2048))
                 .put("format", entry.format).put("navigation", entry.navigation).put("locator", entry.locator))
         }
-        return JSONObject().put("title", page.title.take(2048)).put("entries", entries).put("next", page.next?.takeIf(::stableUrl)).toString()
+        return JSONObject().put("title", page.title.take(2048)).put("entries", entries).put("next", page.next?.takeIf { stableUrl(it) && (kind != CatalogKind.OPDS || OpdsReferenceStore.isReference(it)) }).toString()
     }
+    fun hasLegacyWebReferences(payload: String): Boolean = runCatching {
+        val entries = JSONObject(payload).optJSONArray("entries") ?: return@runCatching false
+        (0 until entries.length()).any { index ->
+            val entry = entries.getJSONObject(index)
+            listOf(entry.optString("id"), entry.optString("navigation")).any { it.startsWith("http", true) } ||
+                runCatching { OpdsCatalog.decodeLocator(entry.optString("locator")) }.isSuccess
+        } || JSONObject(payload).optString("next").startsWith("http", true)
+    }.getOrDefault(false)
     fun decode(payload: String): CatalogPage {
         val json = JSONObject(payload); val entries = json.getJSONArray("entries")
         return CatalogPage(json.getString("title"), (0 until entries.length()).map { index ->

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
+import androidx.room.withTransaction
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
@@ -20,23 +21,26 @@ import top.cylunex.shadowmedia.model.*
 class LibraryRepository(context: Context) {
     private val context = context.applicationContext
     val dao = ShadowMediaDatabase.create(this.context).libraryDao()
+    fun cacheProvider(provider: top.cylunex.shadowmedia.provider.MediaProvider): top.cylunex.shadowmedia.provider.MediaProvider =
+        top.cylunex.shadowmedia.network.CachedMediaProvider(provider, ShadowMediaDatabase.create(context).libraryStateDao())
     val assets = dao.assets()
     val progress = dao.progress()
     private val root = File(this.context.filesDir, "publications").apply { mkdirs() }
 
-    suspend fun addRemote(item: UnifiedMediaItem, format: String, collected: Boolean = true): LibraryAssetEntity {
+    suspend fun addRemote(item: UnifiedMediaItem, format: String, collected: Boolean = true): LibraryAssetEntity = ShadowMediaDatabase.create(context).withTransaction {
+        val states = ShadowMediaDatabase.create(context).libraryStateDao()
+        val seededFavorite = states.userState(item.key.providerId, item.key.itemId)?.favorite ?: item.favorite
         val id = digest("${item.key.providerId.length}:${item.key.providerId}:${item.key.itemId}")
         val asset = dao.assetForKey(item.key.providerId, item.key.itemId) ?: LibraryAssetEntity(id, item.key.providerId, item.key.itemId, item.title,
-            author = item.subtitle.orEmpty(), kind = contentKind(item.type).name, format = format, addedAt = System.currentTimeMillis()).also {
+            author = item.subtitle.orEmpty(), kind = contentKind(item.type).name, format = format, favorite = seededFavorite, addedAt = System.currentTimeMillis()).also {
             dao.putAsset(it)
             if (contentKind(item.type) == ContentKind.AUDIOBOOK && (item.progressMs > 0 || item.played)) dao.seedProgress(ContentProgressEntity(id,
                 locatorType = "time", locatorJson = JSONObject().put("trackId", id).put("positionMs", item.progressMs).put("durationMs", item.durationMs).toString(),
                 completed = item.played, updatedAt = System.currentTimeMillis()))
         }
-        val states = ShadowMediaDatabase.create(context).libraryStateDao()
         states.seedCollection(UserCollectionEntity(assetId = asset.id, collected = collected, favorite = asset.favorite, addedAt = asset.addedAt))
         if (collected) states.collect(asset.id)
-        return asset
+        asset
     }
 
     suspend fun fetchRemote(asset: LibraryAssetEntity, candidate: PlaybackCandidate, onProgress: (Long, Long?) -> Unit = { _, _ -> }): LibraryAssetEntity {

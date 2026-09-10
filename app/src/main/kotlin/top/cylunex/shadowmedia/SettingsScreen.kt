@@ -36,8 +36,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -47,6 +49,8 @@ import top.cylunex.shadowmedia.ui.ShadowGlassPanel
 
 @Composable
 internal fun SettingsScreen(viewModel: MainViewModel) {
+    var showNotices by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    if (showNotices) OpenSourceNoticesDialog { showNotices = false }
     BackHandler(onBack = viewModel::back)
     val flags by viewModel.featureFlags.collectAsStateWithLifecycle()
     val preload = androidx.compose.ui.platform.LocalContext.current.getSharedPreferences("feed_preload_metrics", android.content.Context.MODE_PRIVATE)
@@ -63,6 +67,7 @@ internal fun SettingsScreen(viewModel: MainViewModel) {
                 onAction = viewModel::back,
             )
         }
+        item { FilledTonalButton(onClick = { showNotices = true }, modifier = Modifier.padding(horizontal = 20.dp).heightIn(min = 48.dp)) { Text("开源许可") } }
         item {
             FilledTonalButton(
                 onClick = viewModel::showNetworkStorages,

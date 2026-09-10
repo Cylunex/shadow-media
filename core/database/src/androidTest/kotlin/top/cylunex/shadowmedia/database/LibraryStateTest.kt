@@ -12,6 +12,21 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class LibraryStateTest {
+    @Test fun firstRemoteCopyPreservesCoordinatesAndBindsChaptersButReplacementResetsProgress() = runBlocking {
+        Room.inMemoryDatabaseBuilder(InstrumentationRegistry.getInstrumentation().targetContext, ShadowMediaDatabase::class.java).build().useDatabase { db ->
+            val remote = LibraryAssetEntity("book", "catalog:AUDIOBOOKSHELF:account", "book::track", "Book", kind = "AUDIOBOOK", format = "m4b", addedAt = 1)
+            val progress = ContentProgressEntity("book", locatorType = "time", locatorJson = "{\"positionMs\":1234}", updatedAt = 2)
+            db.libraryDao().putAsset(remote); db.libraryDao().putProgress(progress)
+            db.chapterDao().replace("book", listOf(AudioChapterEntity("book", "chapter", "", "book::track", "Chapter", 0, 3000)))
+            db.libraryDao().installAsset(remote.copy(revision = "verified-hash", localUri = "file:///fixture.m4b"))
+            assertEquals(progress, db.libraryDao().progress("book"))
+            assertEquals(1, db.chapterDao().chapters("book", "verified-hash").size)
+            db.libraryDao().installAsset(remote.copy(revision = "different-hash", localUri = "file:///replacement.m4b"))
+            assertNull(db.libraryDao().progress("book"))
+            assertTrue(db.chapterDao().chapters("book", "different-hash").isEmpty())
+        }
+    }
+
     @Test fun lateFavoriteAcknowledgementCannotClearNewerLocalChoice() = runBlocking {
         Room.inMemoryDatabaseBuilder(InstrumentationRegistry.getInstrumentation().targetContext, ShadowMediaDatabase::class.java).build().useDatabase { db ->
             val dao = db.libraryStateDao()

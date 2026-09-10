@@ -1,6 +1,8 @@
 package top.cylunex.shadowmedia.network
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -25,6 +27,7 @@ internal fun MediaItem.snapshotDto() = BaseItemDto(id, name, type, music?.album.
     userData = UserDataDto(playbackPositionTicks, played, favorite))
 
 class EmbyCatalogCache(internal val dao: LibraryStateDao) {
+    private val locks = Array(64) { Mutex() }
     private val json = Json { ignoreUnknownKeys = true }
     internal fun key(session: EmbySession, operation: String, argument: String = ""): String = "emby-catalog:" +
         MessageDigest.getInstance("SHA-256").digest(scopedContentId(session.providerId, operation, argument).toByteArray()).joinToString("") { "%02x".format(it) }
@@ -35,7 +38,9 @@ class EmbyCatalogCache(internal val dao: LibraryStateDao) {
             dao.cacheCatalogPage(CatalogPageEntity(key, payload, System.currentTimeMillis()))
         }
     }
-    internal suspend fun fetch(key: String, request: suspend () -> EmbyCatalogSnapshot): Pair<EmbyCatalogSnapshot, Boolean> {
+    internal suspend fun fetch(key: String, request: suspend () -> EmbyCatalogSnapshot): Pair<EmbyCatalogSnapshot, Boolean> =
+        locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock { fetchLocked(key, request) }
+    private suspend fun fetchLocked(key: String, request: suspend () -> EmbyCatalogSnapshot): Pair<EmbyCatalogSnapshot, Boolean> {
         val cached = read(key)
         if (NetworkPolicy.offlineOnly) return requireNotNull(cached) { "本机还没有这个目录的副本" } to true
         try {
@@ -58,8 +63,19 @@ class CachedEmbyRepository(private val remote: EmbyRepository, private val cache
     override suspend fun libraries(session: EmbySession) = cache.fetch(cache.key(session, "libraries")) {
         EmbyCatalogSnapshot(remote.libraries(session).map { BaseItemDto(it.id, it.name, collectionType = it.collectionType) })
     }.first.items.map { MediaLibrary(it.id, it.name, it.collectionType) }
-    private suspend fun sections(session: EmbySession, snapshot: EmbyCatalogSnapshot) = snapshot.sections.map {
-        MediaSection(it.id, it.title, MediaSectionKind.valueOf(it.kind), userState.overlay(session, it.items.map(BaseItemDto::toModel)))
+    private suspend fun sections(session: EmbySession, snapshot: EmbyCatalogSnapshot): List<MediaSection> {
+        val local = cache.dao.favoriteAssets(session.providerId).map { asset ->
+            cache.read(cache.key(session, "item", asset.itemId))?.items?.firstOrNull()?.toModel()?.copy(favorite = true)
+                ?: MediaItem(asset.itemId, asset.title, asset.kind, null, null, null, null, 0, false, true)
+        }
+        val sections = snapshot.sections.map {
+            MediaSection(it.id, it.title, MediaSectionKind.valueOf(it.kind), userState.overlay(session, it.items.map(BaseItemDto::toModel)))
+        }.toMutableList()
+        val index = sections.indexOfFirst { it.kind == MediaSectionKind.FAVORITES }
+        val favorites = (sections.getOrNull(index)?.items.orEmpty() + local).distinctBy { it.id }.filter { it.favorite }
+        if (index >= 0) sections[index] = sections[index].copy(items = favorites)
+        else if (favorites.isNotEmpty()) sections += MediaSection("favorites", "我的收藏", MediaSectionKind.FAVORITES, favorites)
+        return sections.filter { it.items.isNotEmpty() }
     }
     override suspend fun cachedHome(session: EmbySession, libraryIds: List<String>) = cache.read(cache.key(session, "home", libraryIds.sorted().joinToString("\u0000")))?.let { sections(session, it) }
     override suspend fun home(session: EmbySession, libraryIds: List<String>) = sections(session, cache.fetch(cache.key(session, "home", libraryIds.sorted().joinToString("\u0000"))) {

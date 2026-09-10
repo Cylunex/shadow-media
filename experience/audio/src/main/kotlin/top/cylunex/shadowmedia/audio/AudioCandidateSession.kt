@@ -6,11 +6,17 @@ import top.cylunex.shadowmedia.model.PlaybackCandidate
 
 /** Ephemeral URLs belong to one queue instance, and are never persisted or exposed to UI. */
 internal class AudioCandidateSessions {
-    private data class State(val candidates: List<PlaybackCandidate>, var index: Int = 0, var refreshed: Boolean = false)
+    private data class State(val candidates: List<PlaybackCandidate>, var index: Int = 0, var refreshed: Boolean = false, var selected: PlaybackCandidate? = null)
+    @Volatile private var activeEntry: String? = null
+    fun priority(entry: String) = if (entry == activeEntry) top.cylunex.shadowmedia.network.ResourcePriority.FOREGROUND else top.cylunex.shadowmedia.network.ResourcePriority.ADJACENT
+    fun activate(entry: String?) {
+        activeEntry = entry
+        AudioDiagnostics.method.value = synchronized(states) { states[entry]?.selected?.method?.name }.orEmpty()
+    }
     private val states = linkedMapOf<String, State>()
     suspend fun current(asset: LibraryAssetEntity, entry: String): PlaybackCandidate {
         synchronized(states) { states[entry]?.let { return it.candidates[it.index] } }
-        val candidates = LibraryResources.resolveAudio(asset, entry).take(16)
+        val candidates = LibraryResources.resolveAudio(asset, entry, priority(entry)).take(16)
         require(candidates.isNotEmpty()) { "来源没有返回音频线路" }
         synchronized(states) {
             states[entry] = State(candidates)
@@ -30,14 +36,15 @@ internal class AudioCandidateSessions {
             state.refreshed = true
             state.index
         }
-        val candidates = LibraryResources.resolveAudio(asset, entry).take(16)
+        val candidates = LibraryResources.resolveAudio(asset, entry, priority(entry)).take(16)
         if (candidates.isEmpty()) return false
         synchronized(states) { states[entry] = State(candidates, index.coerceAtMost(candidates.lastIndex), true) }
         return true
     }
     fun selected(entry: String, candidate: PlaybackCandidate) {
         LibraryResources.audioCandidateSelected?.invoke(entry, candidate)
-        AudioDiagnostics.method.value = candidate.method.name
+        synchronized(states) { states[entry]?.selected = candidate }
+        if (activeEntry == entry) AudioDiagnostics.method.value = candidate.method.name
     }
     fun clear() = synchronized(states) { states.clear() }
 }

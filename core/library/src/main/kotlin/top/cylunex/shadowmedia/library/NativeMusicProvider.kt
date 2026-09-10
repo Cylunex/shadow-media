@@ -42,11 +42,11 @@ class NativeMusicProvider(val connection: CatalogConnection, client: OkHttpClien
             headers.forEach { (key, value) -> header(key, value) }
             if (form != null) post(form) else if (body != null) post(body.toString().toRequestBody("application/json".toMediaType()))
         }.build())
-        val cancellation = launch { try { awaitCancellation() } finally { call.cancel() } }
+        val cancellation = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) { try { awaitCancellation() } finally { call.cancel() } }
         try { call.execute().use { response ->
             if (!response.isSuccessful) throw NativeHttpFailure(response.code)
             JSONObject(requireNotNull(response.body).byteStream().use { SafeArchives.readBounded(it, 8L * 1024 * 1024) }.toString(Charsets.UTF_8))
-        } } finally { cancellation.cancel() }
+        } } catch (e: Exception) { currentCoroutineContext().ensureActive(); throw e } finally { cancellation.cancel() }
     }
     private fun authorization(token: String = ""): Map<String, String> {
         require(token.none { it == '"' || it == '\\' || it.code < 32 }) { "来源令牌格式无效" }

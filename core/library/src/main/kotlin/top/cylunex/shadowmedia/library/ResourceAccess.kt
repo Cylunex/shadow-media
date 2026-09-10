@@ -32,10 +32,11 @@ object LibraryResources {
         check(!offlineOnly) { "仅离线模式：此内容尚无可用的本机副本" }
         return ResourceScheduler.process.run(ResourcePriority.FOREGROUND) { requireNotNull(resolver) { "来源服务尚未初始化" }(asset) }
     }
-    suspend fun resolveAudio(asset: LibraryAssetEntity, entryId: String): List<PlaybackCandidate> {
+    suspend fun resolveAudio(asset: LibraryAssetEntity, entryId: String, priority: ResourcePriority = ResourcePriority.FOREGROUND): List<PlaybackCandidate> {
         check(!offlineOnly) { "仅离线模式：此音频尚无可用的本机副本" }
-        val resolver = audioResolver ?: return listOf(resolve(asset))
-        return ResourceScheduler.process.run(ResourcePriority.FOREGROUND) { resolver(asset, entryId) }
+        return ResourceScheduler.process.run(priority) {
+            audioResolver?.invoke(asset, entryId) ?: listOf(requireNotNull(resolver) { "来源服务尚未初始化" }(asset))
+        }
     }
 }
 

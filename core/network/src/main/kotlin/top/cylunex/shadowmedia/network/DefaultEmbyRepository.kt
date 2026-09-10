@@ -203,8 +203,22 @@ class DefaultEmbyRepository(
             .addQueryParameter("SortOrder", "Ascending")
             .addQueryParameter("Limit", MAX_BROWSE_PAGE_SIZE.toString())
             .build()
-        val result: QueryResultDto = executeJson(authenticatedRequest(session, url).get().build())
-        return result.items.distinctBy(BaseItemDto::id).map { it.toModel() }
+        val items = linkedMapOf<String, MediaItem>()
+        var offset = 0
+        do {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            val result: QueryResultDto = executeJson(authenticatedRequest(session, url.newBuilder().addQueryParameter("StartIndex", offset.toString()).build()).get().build())
+            val before = items.size
+            result.items.forEach { items[it.id] = it.toModel() }
+            offset += result.items.size
+            require(offset <= 10_000) { "剧集目录超过一万项，请进入较小的季目录" }
+            if (offset >= result.totalRecordCount) {
+                require(items.size >= result.totalRecordCount) { "剧集分页包含重复或缺失条目，请刷新目录" }
+                break
+            }
+            require(items.size > before && result.items.isNotEmpty()) { "剧集分页未前进，请刷新目录" }
+        } while (true)
+        return items.values.toList()
     }
 
     override suspend fun setFavorite(session: EmbySession, itemId: String, favorite: Boolean) {

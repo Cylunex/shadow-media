@@ -18,6 +18,33 @@ import top.cylunex.shadowmedia.model.*
 class NativeCatalogRepository(private val context: Context, private val library: LibraryRepository) {
     val store = CatalogConnectionStore(context)
     private val syncLock = Mutex()
+    private val pageLocks = Array(64) { Mutex() }
+    private val opdsReferences = OpdsReferenceStore(context)
+    private val migrationLock = Mutex()
+    private var opdsMigrated = false
+    /** Upgrade locators in place: queue ids, annotations and progress retain their original asset id. */
+    suspend fun migrateOpdsReferences() = migrationLock.withLock {
+        if (opdsMigrated) return@withLock
+        if (library.dao.imported("opds-reference-v1")) { opdsMigrated = true; return@withLock }
+        withContext(Dispatchers.IO) {
+            for (asset in library.dao.legacyOpdsAssets()) {
+                val reference = opdsReferences.encode(asset.providerId, listOf(asset.itemId)).getValue(asset.itemId)
+                library.dao.updateItemId(asset.id, asset.itemId, reference)
+            }
+            // Old snapshot keys cannot identify their account. Discard only unsafe OPDS/web
+            // navigation metadata; personal state and installed publications are untouched.
+            for (page in snapshotDao.allCatalogPages()) {
+                if (CatalogSnapshotCodec.hasLegacyWebReferences(page.payload)) snapshotDao.removeCatalogPage(page.id)
+            }
+        }
+        library.dao.markImported(top.cylunex.shadowmedia.database.MigrationImportEntity("opds-reference-v1"))
+        opdsMigrated = true
+    }
+    private fun protect(c: CatalogConnection, page: CatalogPage): CatalogPage {
+        val values = page.entries.flatMap { listOfNotNull(it.id, it.locator, it.navigation) } + listOfNotNull(page.next)
+        val refs = opdsReferences.encode(providerId(c), values)
+        return page.copy(entries = page.entries.map { it.copy(id = refs.getValue(it.id), locator = refs.getValue(it.locator), navigation = it.navigation?.let(refs::getValue)) }, next = page.next?.let(refs::getValue))
+    }
     private val nativeMusic = java.util.concurrent.ConcurrentHashMap<String, NativeMusicProvider>()
     fun musicProvider(c: CatalogConnection): NativeMusicProvider {
         require(c.kind.isNativeMusic())
@@ -60,11 +87,11 @@ class NativeCatalogRepository(private val context: Context, private val library:
             credentials(c, url).forEach { (k, v) -> header(k, v) }
             if (body != null) { require(sameOrigin(c.base(), url)); patch(body.toString().toRequestBody("application/json".toMediaType())) }
         }.build())
-        val cancellation = launch { try { awaitCancellation() } finally { call.cancel() } }
+        val cancellation = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) { try { awaitCancellation() } finally { call.cancel() } }
         try { call.execute().use { response ->
             require(response.isSuccessful) { "来源请求失败 HTTP ${response.code}" }
             response.body?.byteStream()?.use { SafeArchives.readBounded(it, 8L * 1024 * 1024) } ?: byteArrayOf()
-        } } finally { cancellation.cancel() }
+        } } catch (e: Exception) { currentCoroutineContext().ensureActive(); throw e } finally { cancellation.cancel() }
     }
     private suspend fun json(c: CatalogConnection, url: HttpUrl) = JSONObject(request(c, url).toString(Charsets.UTF_8))
     private fun JSONArray?.objects() = this?.let { (0 until length()).mapNotNull { optJSONObject(it) } }.orEmpty()
@@ -73,8 +100,10 @@ class NativeCatalogRepository(private val context: Context, private val library:
     private fun pageKey(c: CatalogConnection, node: String?, next: String?, query: String): String = java.security.MessageDigest.getInstance("SHA-256")
         .digest(scopedContentId(providerId(c), node.orEmpty(), next.orEmpty(), query).toByteArray()).joinToString("") { "%02x".format(it) }
     suspend fun cachedPage(c: CatalogConnection, node: String? = null, next: String? = null, query: String = ""): CatalogPage? =
-        snapshotDao.catalogPage(pageKey(c, node, next, query))?.let { runCatching { CatalogSnapshotCodec.decode(it.payload).copy(updatedAt = it.updatedAt) }.getOrNull() }
-    suspend fun browse(c: CatalogConnection, node: String? = null, next: String? = null, query: String = ""): CatalogPage {
+        run { migrateOpdsReferences(); snapshotDao.catalogPage(pageKey(c, node, next, query)) }?.let { runCatching { CatalogSnapshotCodec.decode(it.payload).copy(updatedAt = it.updatedAt) }.getOrNull() }
+    suspend fun browse(c: CatalogConnection, node: String? = null, next: String? = null, query: String = ""): CatalogPage =
+        pageLocks[(pageKey(c, node, next, query).hashCode() and Int.MAX_VALUE) % pageLocks.size].withLock { fetchPage(c, node, next, query) }
+    private suspend fun fetchPage(c: CatalogConnection, node: String?, next: String?, query: String): CatalogPage {
         if (LibraryResources.offlineOnly) return cachedPage(c, node, next, query) ?: error("此目录尚未缓存在本机")
         return try {
             val page = browseRemote(c, node, next, query)
@@ -98,9 +127,9 @@ class NativeCatalogRepository(private val context: Context, private val library:
                 CatalogEntry(item.key.itemId, item.title, item.subtitle.orEmpty(), format = if (folder) "" else "audio", navigation = item.key.itemId.takeIf { folder })
             }, page.nextPageToken)
         }
-        CatalogKind.OPDS -> {
-            val url = (next ?: node ?: c.url).toHttpUrl()
-            OpdsCatalog.parse(request(c, url), url.toString())
+        CatalogKind.OPDS -> withContext(Dispatchers.IO) {
+            val url = opdsReferences.decode(providerId(c), next ?: node ?: c.url).toHttpUrl()
+            protect(c, OpdsCatalog.parse(request(c, url), url.toString()))
         }
         CatalogKind.KOMGA -> {
             val page = next?.toIntOrNull()?.coerceAtLeast(0) ?: 0
@@ -239,8 +268,9 @@ class NativeCatalogRepository(private val context: Context, private val library:
         return when (c.kind) {
             CatalogKind.JELLYFIN, CatalogKind.OPENSUBSONIC -> musicProvider(c).resolve(UnifiedPlaybackRequest(MediaKey(providerId(c), asset.itemId))).first()
             CatalogKind.OPDS -> {
-                val (catalog, id) = OpdsCatalog.decodeLocator(asset.itemId)
-                val entry = browse(c, catalog).entries.firstOrNull { it.id == id && it.format == asset.format } ?: error("目录条目已变更，请重新加入")
+                val (catalog, id) = OpdsCatalog.decodeLocator(opdsReferences.decode(providerId(c), asset.itemId))
+                val url = catalog.toHttpUrl()
+                val entry = OpdsCatalog.parse(request(c, url), url.toString()).entries.firstOrNull { it.id == id && it.format == asset.format } ?: error("目录条目已变更，请重新加入")
                 candidate(c, requireNotNull(entry.acquisition))
             }
             CatalogKind.KOMGA -> candidate(c, api(c, "api", "v1", "books", asset.itemId, "file").toString())

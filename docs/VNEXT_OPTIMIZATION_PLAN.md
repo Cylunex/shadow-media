@@ -396,17 +396,6 @@ benchmark        critical user journeys and baseline profile
 
 ## 12. 最终优先级
 
-R1/R2 的听书持久队列、版本化位置和事件驱动 UI 已接入。下一步先完成设备验收并打通音乐单专辑批次；
-详细拆分见 [B1–F 验收表](VNEXT_RESEARCH_2026_09_10.md#5-下一批交付与验收)：
+R1–R7 本轮代码接入与主机验证已分批落地，包括音乐、持久离线、原生来源、阅读/章节、Feed 实验和性能验收工程。逐项证据与能力边界见 [实现与验收账本](VNEXT_IMPLEMENTATION_STATUS.md)。
 
-```text
-设备与性能基线
-→ 账号/Revision 安全的状态与持久队列
-→ 一张 Emby 专辑 + 一个本地目录的连续播放
-→ 完整音乐体验
-→ 本地优先与离线
-→ M4B / 阅读 / 漫画 / Feed 增强
-→ 更多来源与系统入口
-```
-
-后续音乐、播客、Jellyfin、OpenSubsonic、离线和车机复用已验证的状态与资源访问能力。
+下一步执行真实设备与协议基线、Baseline Profile 采集和历史版本升级安装，之后才作发布与性能结论。具体入口见 [设备矩阵](DEVICE_ACCEPTANCE.md) 和 [性能/发布说明](PERFORMANCE_AND_RELEASE.md)。Kavita、RSS、音质和可选 Runtime 的采用条件见 [独立评估](SOURCE_AND_AUDIO_EVALUATION.md)，不将评估项伪装成已开放功能。

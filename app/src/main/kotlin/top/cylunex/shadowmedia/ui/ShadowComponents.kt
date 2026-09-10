@@ -316,6 +316,7 @@ fun MediaPosterCard(
         }
         Spacer(Modifier.height(9.dp))
         Text(item.name.withoutEmoji(), style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        session?.let { top.cylunex.shadowmedia.AssetAvailabilityLabel(it.providerId, item.id, when { item.played -> "已看完"; progress > 0f -> "${(progress.coerceIn(0f, 1f) * 100).toInt()}%"; item.playbackPositionTicks > 0 -> "位置已保存"; else -> null }) }
         Text(
             episodeLabel,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

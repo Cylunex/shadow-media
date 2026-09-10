@@ -39,7 +39,7 @@ import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.ExternalMediaEntry
 import top.cylunex.shadowmedia.model.MediaItem
 
-class ShadowMediaApplication : Application(), coil3.SingletonImageLoader.Factory {
+open class ShadowMediaApplication : Application(), coil3.SingletonImageLoader.Factory {
     override fun newImageLoader(context: android.content.Context): coil3.ImageLoader = coil3.ImageLoader.Builder(context)
         .components { add(coil3.network.okhttp.OkHttpNetworkFetcherFactory(callFactory = { okhttp3.OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor()).addInterceptor(top.cylunex.shadowmedia.network.ResourceBudgetInterceptor { top.cylunex.shadowmedia.network.ResourcePriority.VISIBLE }).build() })) }.build()
     val container: AppContainer by lazy { AppContainer(this) }
@@ -65,7 +65,7 @@ class AppContainer(private val application: Application) {
         version = BuildConfig.VERSION_NAME,
     )
     val sessionStore: SessionStore = KeystoreSessionStore(application)
-    val accountScopesReady = applicationScope.async { database.migrateAccountScopes(sessionStore.loadAll()) }
+    val accountScopesReady = applicationScope.async { database.migrateAccountScopes(sessionStore.loadAll()); catalogs.migrateOpdsReferences() }
     val embyRepository: EmbyRepository = top.cylunex.shadowmedia.network.CachedEmbyRepository(DefaultEmbyRepository(
         client = OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor())
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -166,7 +166,7 @@ class AppContainer(private val application: Application) {
             } else {
                 val provider = providerRegistry.provider(asset.providerId)
                 if (provider != null) provider.resolve(top.cylunex.shadowmedia.model.UnifiedPlaybackRequest(top.cylunex.shadowmedia.model.MediaKey(asset.providerId, asset.itemId)))
-                else listOf(top.cylunex.shadowmedia.library.LibraryResources.resolve(asset))
+                else listOf(requireNotNull(top.cylunex.shadowmedia.library.LibraryResources.resolver)(asset))
             }
         }
 

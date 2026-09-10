@@ -16,6 +16,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,7 +69,7 @@ import top.cylunex.shadowmedia.model.AudioMode
         val control = controller ?: run { model.message.value = "音频服务正在连接"; return }
         AudiobookController.play(control, ids, selected, AudioMode.MUSIC); onPlaying()
     }
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }) {
         Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("最近", "专辑", "艺人", "歌曲", "目录", "歌单", "收藏").forEach { title ->
                 FilterChip(section == title, onClick = { section = title; model.filter.value = MusicFilter(recent = title == "最近", favorite = title == "收藏") }, label = { Text(title) })
@@ -94,7 +97,7 @@ import top.cylunex.shadowmedia.model.AudioMode
                 Text("${tracks.itemCount} 首已加载", Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
             }
         }
-        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
+        LazyColumn(Modifier.weight(1f).testTag("music-list"), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
             when (section) {
                 "专辑", "艺人", "目录" -> {
                     val groups = when (section) { "专辑" -> albums; "艺人" -> artists; else -> folders }
@@ -110,7 +113,7 @@ import top.cylunex.shadowmedia.model.AudioMode
                 else -> {
                     if (tracks.itemCount == 0) item { Text("这里还没有歌曲。导入文件、选择音乐目录或索引已连接的音乐库。", Modifier.padding(20.dp)) }
                     items(tracks.itemCount, key = tracks.itemKey { it.asset.id }, contentType = { "song" }) { index -> tracks[index]?.let { row ->
-                        ListItem(headlineContent = { Text(row.asset.title, maxLines = 2, overflow = TextOverflow.Ellipsis) }, supportingContent = { Text(listOf(row.artist, row.album, row.asset.providerId.substringBefore(':')).filter { it.isNotBlank() }.joinToString(" · "), maxLines = 2) },
+                        ListItem(headlineContent = { Text(row.asset.title, maxLines = 2, overflow = TextOverflow.Ellipsis) }, supportingContent = { Column { Text(listOf(row.artist, row.album).filter { it.isNotBlank() }.joinToString(" · "), maxLines = 2); AssetAvailabilityLabel(row.asset.providerId, row.asset.itemId) } },
                             leadingContent = { Icon(if (row.asset.favorite) Icons.Rounded.Favorite else Icons.Rounded.MusicNote, null) }, trailingContent = { IconButton(onClick = { selected = row }) { Icon(Icons.Rounded.MoreVert, "歌曲操作") } },
                             modifier = Modifier.clickable { play(listOf(row.asset.id), row.asset.id) })
                     } }

@@ -13,7 +13,10 @@
 | physical-pages.pdf | 两页文本提取、回到原页、重排末尾完成状态 |
 | legacy-locator.json | 升级后保留旧 Locator，不静默换算 |
 | silence.wav | 六秒静音音频，后台/恢复测试 |
+| fixture-video.mp4 | 六秒原创 FFmpeg testsrc2 图案，320×180 H.264，回环 302/Range 播放 |
 
 EPUB2/3 每本含两个章节，搜索标记为 `SHADOW_SEARCH_NEEDLE_1`。在手机、平板和 TV 上按 `docs/DEVICE_ACCEPTANCE.md` 操作，记录实际截图、Locator 和基线数据；本目录存在不代表设备验收已执行。
 
 字体为未修改的 Noto Sans Regular，Copyright 2018 The Noto Project Authors，SIL OFL 1.1；完整许可在 `fonts/OFL.txt`，并随嵌入字体包含于 EPUB 中。一手来源：[字体](https://github.com/notofonts/noto-fonts/tree/main/hinted/ttf/NotoSans)、[许可](https://github.com/notofonts/noto-fonts/blob/main/LICENSE)。`manifest.json` 锁定所有样本 SHA-256。
+
+视频样本由 FFmpeg 的 testsrc2 生成，没有外部视频内容；重编码会受工具版本影响，固定验收使用已提交文件及 manifest 哈希。其余样本由 Python 生成器复现。

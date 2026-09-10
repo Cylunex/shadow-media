@@ -44,7 +44,9 @@ internal class EmbyMediaProvider(
             ProviderCapability.SUBTITLES,
         ),
     )
-    private val cache = ConcurrentHashMap<String, MediaItem>()
+    private val cache: MutableMap<String, MediaItem> = java.util.Collections.synchronizedMap(object : LinkedHashMap<String, MediaItem>(256, .75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MediaItem>?) = size > 512
+    })
 
     override suspend fun home(): List<ProviderSection> {
         val libraries = repository.libraries(session)
@@ -109,7 +111,11 @@ internal class EmbyMediaProvider(
             do {
                 val page = repository.browse(session, BrowseRequest(parentId = item.id, includeItemTypes = setOf("Audio"), startIndex = offset, limit = 200))
                 require(page.items.isNotEmpty() || !page.hasMore) { "专辑分页异常，请重试" }
-                values += page.items; offset += page.items.size
+                val oldSize = values.size
+                val known = values.map { it.id }.toHashSet()
+                values += page.items.filter { known.add(it.id) }; offset += page.items.size
+                require(!page.hasMore || values.size > oldSize) { "专辑分页未前进" }
+                require(offset <= 10_000) { "专辑曲目过多" }
             } while (page.hasMore)
             values.onEach { cache[it.id] = it }.sortedWith(compareBy({ it.music?.disc ?: 0 }, { it.music?.track ?: 0 }, { it.name }))
         } else if (item.type.equals("Series", true) || item.type.equals("BoxSet", true)) {
