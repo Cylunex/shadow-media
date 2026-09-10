@@ -14,6 +14,7 @@ import top.cylunex.shadowmedia.model.*
 class MusicRepository(private val context: Context, private val library: LibraryRepository) {
     private val database = ShadowMediaDatabase.create(context)
     val dao = database.musicDao()
+    val snapshots = database.catalogSnapshotDao()
 
     suspend fun importDocument(uri: Uri, folder: String = "", lyrics: String = ""): LibraryAssetEntity = withContext(Dispatchers.IO) {
         val asset = library.importDocument(uri, AudioMode.MUSIC)
@@ -63,7 +64,7 @@ class MusicRepository(private val context: Context, private val library: Library
         val tags = item.music ?: MusicMetadata()
         val asset = library.addRemote(item.copy(type = "MUSIC"), "audio")
         database.withTransaction {
-            library.dao.putAsset(asset.copy(kind = "MUSIC"))
+            library.dao.asset(asset.id)?.let { library.dao.putAsset(it.copy(kind = "MUSIC", title = item.title, author = tags.artist)) }
             dao.putTrack(MusicTrackEntity(asset.id, album = tags.album, artist = tags.artist,
                 albumArtist = tags.albumArtist, disc = tags.disc, track = tags.track,
                 durationMs = item.durationMs ?: 0).scoped(asset.providerId, tags.albumId))

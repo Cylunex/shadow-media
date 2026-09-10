@@ -722,6 +722,7 @@ private fun ItemScreen(state: MainUiState, viewModel: MainViewModel) {
                     { viewModel.requestDelete(item) }
                 },
                 onFavorite = { viewModel.toggleFavorite(item) },
+                onOffline = if (item.type in setOf("Movie", "Video", "Episode")) ({ viewModel.downloadEmby(item) }) else null,
             )
         }
         if (state.wallHasMore) {

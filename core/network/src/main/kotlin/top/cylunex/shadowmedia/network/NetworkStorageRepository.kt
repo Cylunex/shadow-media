@@ -128,6 +128,7 @@ class DefaultNetworkStorageRepository(
     }
 
     override fun openSmbResource(url: String, position: Long): NetworkReadHandle {
+        check(!top.cylunex.shadowmedia.model.NetworkPolicy.offlineOnly) { "仅离线模式已开启" }
         val uri = URI(url)
         require(uri.scheme == SMB_SCHEME) { "不是 Shadow SMB 地址" }
         val id = uri.host ?: throw IOException("SMB 连接标识缺失")
@@ -200,6 +201,7 @@ private class OpenListBackend(
     @Volatile private var token: String? = null
 
     override suspend fun list(path: String): List<RemoteFile> = withContext(Dispatchers.IO) {
+        check(!top.cylunex.shadowmedia.model.NetworkPolicy.offlineOnly) { "仅离线模式已开启" }
         val result = mutableListOf<RemoteFile>()
         var page = 1
         var total = Long.MAX_VALUE
@@ -327,6 +329,7 @@ private class WebDavBackend(
     private val origin = base.origin()
 
     override suspend fun list(path: String): List<RemoteFile> = withContext(Dispatchers.IO) {
+        check(!top.cylunex.shadowmedia.model.NetworkPolicy.offlineOnly) { "仅离线模式已开启" }
         val url = urlFor(path, directory = true)
         val request = Request.Builder().url(url)
             .method("PROPFIND", WEBDAV_PROPFIND.toRequestBody(XML_MEDIA_TYPE))
@@ -401,6 +404,7 @@ private class SmbBackend(override val connection: NetworkStorageConnection) : Ne
     private val sizes = ConcurrentHashMap<String, Long>()
 
     override suspend fun list(path: String): List<RemoteFile> = withContext(Dispatchers.IO) {
+        check(!top.cylunex.shadowmedia.model.NetworkPolicy.offlineOnly) { "仅离线模式已开启" }
         withShare { share ->
             share.list(smbPath(path)).mapNotNull { row ->
                 val name = row.fileName
@@ -442,6 +446,7 @@ private class SmbBackend(override val connection: NetworkStorageConnection) : Ne
     }
 
     fun open(path: String, position: Long, knownLength: Long?): NetworkReadHandle {
+        check(!top.cylunex.shadowmedia.model.NetworkPolicy.offlineOnly) { "仅离线模式已开启" }
         val endpoint = connection.smbEndpoint()
         val client = SMBClient()
         val networkConnection = client.connect(endpoint.first, endpoint.second)
@@ -468,6 +473,7 @@ private class SmbBackend(override val connection: NetworkStorageConnection) : Ne
             override val remainingLength: Long? get() = remaining
 
             override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                if (top.cylunex.shadowmedia.model.NetworkPolicy.offlineOnly) throw IOException("仅离线模式已开启")
                 val allowed = remaining?.let { minOf(length.toLong(), it).toInt() } ?: length
                 if (allowed <= 0) return -1
                 val read = input.read(buffer, offset, allowed)
@@ -487,6 +493,7 @@ private class SmbBackend(override val connection: NetworkStorageConnection) : Ne
     }
 
     private inline fun <T> withShare(block: (DiskShare) -> T): T {
+        check(!top.cylunex.shadowmedia.model.NetworkPolicy.offlineOnly) { "仅离线模式已开启" }
         val endpoint = connection.smbEndpoint()
         SMBClient().use { client ->
             client.connect(endpoint.first, endpoint.second).use { networkConnection ->

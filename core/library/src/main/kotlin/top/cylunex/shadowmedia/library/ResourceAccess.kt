@@ -13,6 +13,11 @@ import top.cylunex.shadowmedia.network.NetworkStorageRepository
 
 /** Installed by the application composition root; only stable identities live in Room. */
 object LibraryResources {
+    var offlineOnly: Boolean
+        get() = top.cylunex.shadowmedia.model.NetworkPolicy.offlineOnly
+        set(value) { top.cylunex.shadowmedia.model.NetworkPolicy.offlineOnly = value }
+    var mediaOffline: (suspend (top.cylunex.shadowmedia.database.ResourceTaskEntity, String) -> Unit)? = null
+    var hasOfflineMedia: (suspend (LibraryAssetEntity) -> Boolean)? = null
     var resolver: (suspend (LibraryAssetEntity) -> PlaybackCandidate)? = null
     var networkStorage: NetworkStorageRepository? = null
     var pageManifest: (suspend (LibraryAssetEntity) -> List<String>)? = null
@@ -20,18 +25,25 @@ object LibraryResources {
     var audioEvent: ((AudioProgressSnapshot) -> Unit)? = null
     var audioResolver: (suspend (LibraryAssetEntity, String) -> List<PlaybackCandidate>)? = null
     var audioCandidateSelected: ((String, PlaybackCandidate) -> Unit)? = null
-    suspend fun resolve(asset: LibraryAssetEntity): PlaybackCandidate = requireNotNull(resolver) { "来源服务尚未初始化" }(asset)
-    suspend fun resolveAudio(asset: LibraryAssetEntity, entryId: String): List<PlaybackCandidate> =
-        audioResolver?.invoke(asset, entryId) ?: listOf(resolve(asset))
+    suspend fun resolve(asset: LibraryAssetEntity): PlaybackCandidate {
+        check(!offlineOnly) { "仅离线模式：此内容尚无可用的本机副本" }
+        return ResourceScheduler.process.run(ResourcePriority.FOREGROUND) { requireNotNull(resolver) { "来源服务尚未初始化" }(asset) }
+    }
+    suspend fun resolveAudio(asset: LibraryAssetEntity, entryId: String): List<PlaybackCandidate> {
+        check(!offlineOnly) { "仅离线模式：此音频尚无可用的本机副本" }
+        val resolver = audioResolver ?: return listOf(resolve(asset))
+        return ResourceScheduler.process.run(ResourcePriority.FOREGROUND) { resolver(asset, entryId) }
+    }
 }
 
 data class AudioProgressSnapshot(val assetId: String, val positionMs: Long, val paused: Boolean, val canSeek: Boolean, val ready: Boolean, val stopped: Boolean, val entryId: String = assetId)
 
 /** No preflight probes; one bounded GET. Credentials are reapplied only at their original origin. */
-class ResourceDownloader(private val client: OkHttpClient = OkHttpClient()) {
+class ResourceDownloader(private val client: OkHttpClient = OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor()).build()) {
     suspend fun download(candidate: PlaybackCandidate, destination: File, maxBytes: Long = 1024L * 1024 * 1024, onProgress: (Long, Long?) -> Unit = { _, _ -> }) = withContext(Dispatchers.IO) {
         var written = 0L
         fun write(buffer: ByteArray, size: Int, output: java.io.OutputStream, total: Long?) {
+            check(!LibraryResources.offlineOnly) { "仅离线模式已开启" }
             ensureActive(); written += size
             require(written <= maxBytes) { "文件超过允许大小" }
             require(destination.parentFile!!.usableSpace > 32L * 1024 * 1024) { "可用存储空间不足" }

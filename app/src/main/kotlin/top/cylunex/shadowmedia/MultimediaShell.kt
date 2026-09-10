@@ -82,6 +82,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             block()
         }
     }
+    var offlineScreen by rememberSaveable { mutableStateOf(false) }
     var catalogScreen by rememberSaveable { mutableStateOf(false) }
     val playerScreen = state.screen in setOf(Screen.PLAYER, Screen.EXTERNAL_PLAYER)
     val television = LocalConfiguration.current.uiMode and Configuration.UI_MODE_TYPE_MASK == Configuration.UI_MODE_TYPE_TELEVISION
@@ -161,7 +162,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             }
         }
     }
-    fun select(index: Int) { tab = index; audioExpanded = false; catalogScreen = false; viewModel.showHome() }
+    fun select(index: Int) { tab = index; audioExpanded = false; catalogScreen = false; offlineScreen = false; viewModel.showHome() }
     if (playerScreen) { LegacyMediaRoot(viewModel, container); return }
     BackHandler(enabled = audioExpanded) { audioExpanded = false }
     Scaffold(bottomBar = {
@@ -187,6 +188,9 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                 }
                 when {
                     audioExpanded -> AudioNowPlaying(controller, container.library, onBack = { audioExpanded = false })
+                    offlineScreen -> OfflineScreen(container, onBack = { offlineScreen = false }, onOpen = { asset ->
+                        if (asset.kind in setOf("MOVIE", "EPISODE")) viewModel.playOfflineAsset(asset) else open(asset)
+                    })
                     tab == 3 && musicTab && state.screen == Screen.HOME && !catalogScreen -> MusicScreen(container, controller, onPlaying = { audioExpanded = true })
                     catalogScreen -> CatalogSourcesScreen(container.catalogs, onBack = { catalogScreen = false }, onOpen = ::open, onQueue = { tracks ->
                         val control = controller
@@ -202,20 +206,11 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                     })
                     (tab == 2 || tab == 3) && state.screen == Screen.HOME -> PublicationShelf(container.library, audio = tab == 3, onImport = { importer.launch(arrayOf("*/*")) }, onOpen = ::open,
                         onDirectory = { directoryImporter.launch(null) },
-                        onOffline = { item ->
-                            startImport {
-                                try {
-                                    importing = "准备离线保存"
-                                    val candidate = top.cylunex.shadowmedia.library.LibraryResources.resolve(item)
-                                    container.library.fetchRemote(if (item.format == "komga") item.copy(format = "cbz") else item, candidate) { bytes, total ->
-                                        importing = "离线保存 ${bytes / 1024 / 1024} MiB" + (total?.let { " / ${it / 1024 / 1024} MiB" } ?: "")
-                                    }
-                                    message = "已保存离线副本，原文件未修改"
-                                } catch (e: CancellationException) { throw e }
-                                catch (_: Exception) { message = "离线保存失败，可能超出 1 GiB、空间不足或服务端原文件格式不受支持" }
-                                finally { importing = null }
-                            }
-                        },
+                        onOffline = { item -> scope.launch {
+                            try { container.offline.enqueue(item); message = "已加入离线任务" }
+                            catch (e: CancellationException) { throw e }
+                            catch (e: Exception) { message = e.message ?: "无法加入离线任务" }
+                        } },
                         onFavorite = { item -> scope.launch { container.library.dao.favorite(item.id, !item.favorite) } },
                         onRemove = { item -> scope.launch {
                             importJob?.cancelAndJoin()
@@ -224,7 +219,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                             }
                             container.library.remove(item.id)
                         } })
-                    tab == 4 && state.screen == Screen.HOME -> SourcesHub(state, viewModel, pendingSync, onImport = { importer.launch(arrayOf("*/*")) }, onCatalogs = { catalogScreen = true })
+                    tab == 4 && state.screen == Screen.HOME -> SourcesHub(state, viewModel, pendingSync, onImport = { importer.launch(arrayOf("*/*")) }, onCatalogs = { catalogScreen = true }, onOffline = { offlineScreen = true })
                     tab == 1 && state.screen == Screen.HOME -> LiveLanding(state, container, viewModel)
                     else -> LegacyMediaRoot(viewModel, container)
                 }
@@ -353,11 +348,12 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     }
 }
 
-@Composable private fun SourcesHub(state: MainUiState, viewModel: MainViewModel, pendingSync: Int, onImport: () -> Unit, onCatalogs: () -> Unit) {
+@Composable private fun SourcesHub(state: MainUiState, viewModel: MainViewModel, pendingSync: Int, onImport: () -> Unit, onCatalogs: () -> Unit, onOffline: () -> Unit) {
     val context = LocalContext.current
     val appearance = remember { context.getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE) }
     var theme by remember { mutableStateOf(appearance.getString("theme", "深色")) }
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item { OutlinedButton(onClick = onOffline, modifier = Modifier.fillMaxWidth()) { Text("离线任务与存储") } }
         item { Text("来源", style = MaterialTheme.typography.headlineLarge); Text("你的内容，按自己的方式连接", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item { SourceTile("Emby 媒体服务", "${state.savedSessions.size} 个已保存账号", Icons.Rounded.Dns, viewModel::showServers) }
         item { SourceTile("网络存储", "OpenList / WebDAV / SMB · ${state.networkStorages.size} 个连接", Icons.Rounded.FolderOpen, viewModel::showNetworkStorages) }

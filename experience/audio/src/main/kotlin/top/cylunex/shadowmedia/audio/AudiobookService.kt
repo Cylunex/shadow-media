@@ -203,7 +203,7 @@ class AudiobookService : MediaLibraryService() {
         if (asset.kind !in AudioMode.entries.map { it.name }) throw QueueEntryUnavailable("条目不是音频")
         if (revision != null && asset.revision != revision) throw QueueEntryUnavailable("音频版本已变化")
         // Stable URI only; network resolution stays on the Media3 loader thread.
-        val uri = Uri.parse(asset.localUri.ifBlank { "shadow-audio://${asset.id}/audio.${asset.format}?revision=${Uri.encode(asset.revision)}&entry=$entryId" })
+        val uri = Uri.parse("shadow-audio://${asset.id}/audio.${asset.format}?revision=${Uri.encode(asset.revision)}&entry=$entryId")
         if (uri.scheme !in setOf("content", "file", "shadow-audio")) throw QueueEntryUnavailable("音频资源引用无效")
         val db = ShadowMediaDatabase.create(this)
         val chapters = db.chapterDao().chapters(asset.id, asset.revision)

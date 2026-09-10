@@ -47,6 +47,7 @@ import top.cylunex.shadowmedia.model.AudioMode
     val filter by model.filter.collectAsStateWithLifecycle()
     val message by model.message.collectAsStateWithLifecycle()
     val busy by model.working.collectAsStateWithLifecycle()
+    val snapshots by model.snapshotState.collectAsStateWithLifecycle()
     val sources by model.sources.collectAsStateWithLifecycle()
     var section by rememberSaveable { mutableStateOf("歌曲") }
     var playlistName by remember { mutableStateOf<String?>(null) }
@@ -78,6 +79,7 @@ import top.cylunex.shadowmedia.model.AudioMode
             TextButton(onClick = { controller?.let { AudiobookController.restoreMode(it, AudioMode.MUSIC) } }) { Text("恢复音乐队列") }
         }
         if (busy) Row(verticalAlignment = Alignment.CenterVertically) { LinearProgressIndicator(Modifier.weight(1f)); TextButton(onClick = model::cancel) { Text("取消") } }
+        if (snapshots.any { !it.completed }) Text("部分目录可能过期，正在显示本机快照", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodySmall)
         message?.let { Text(it, Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodySmall) }
         if (section !in setOf("专辑", "艺人", "目录", "歌单")) {
             OutlinedTextField(filter.query, onValueChange = { model.filter.value = filter.copy(query = it) }, label = { Text("搜索歌曲、专辑或艺人") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(16.dp))
@@ -127,6 +129,11 @@ import top.cylunex.shadowmedia.model.AudioMode
                 TextButton(onClick = { play(listOf(row.asset.id), row.asset.id); selected = null }) { Text("播放") }
                 listOf(true to "下一首播放", false to "加入队列").forEach { (next, title) -> TextButton(enabled = controller != null && (controller.mediaItemCount == 0 || controller.currentMediaItem?.audioMode() == AudioMode.MUSIC), onClick = { controller?.let { AudiobookController.enqueue(it, listOf(row.asset.id), next) }; selected = null }) { Text(title) } }
                 TextButton(onClick = { model.favorite(row); selected = null }) { Text(if (row.asset.favorite) "取消收藏" else "收藏") }
+                TextButton(onClick = { scope.launch {
+                    try { container.offline.enqueue(row.asset); model.message.value = "已加入离线任务" }
+                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (e: Exception) { model.message.value = e.message ?: "无法保存离线副本" }
+                }; selected = null }) { Text("保存离线副本") }
                 TextButton(onClick = { addPlaylist = true }) { Text("加入歌单") }
             }
         }

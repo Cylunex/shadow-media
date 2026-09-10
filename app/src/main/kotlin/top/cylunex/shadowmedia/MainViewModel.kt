@@ -189,6 +189,7 @@ class MainViewModel(
     private val networkStorageRepository: NetworkStorageRepository,
     private val networkStorageStore: NetworkStorageStore,
     private val library: top.cylunex.shadowmedia.library.LibraryRepository? = null,
+    private val offline: top.cylunex.shadowmedia.library.OfflineRepository? = null,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     private var playbackRequest: Job? = null
@@ -814,6 +815,12 @@ class MainViewModel(
 
     fun playUnifiedItem(item: UnifiedMediaItem) {
         cancelContentRequests()
+        contentRequest = viewModelScope.launch {
+            if (!tryOfflineVideo(item.key, item.progressMs)) playUnifiedOnline(item)
+        }
+    }
+    private fun playUnifiedOnline(item: UnifiedMediaItem) {
+        cancelContentRequests()
         if (top.cylunex.shadowmedia.model.contentKind(item.type) in setOf(
                 top.cylunex.shadowmedia.model.ContentKind.BOOK, top.cylunex.shadowmedia.model.ContentKind.COMIC, top.cylunex.shadowmedia.model.ContentKind.AUDIOBOOK, top.cylunex.shadowmedia.model.ContentKind.MUSIC, top.cylunex.shadowmedia.model.ContentKind.PODCAST)) {
             update { copy(pendingPublication = item) }
@@ -1196,6 +1203,7 @@ class MainViewModel(
         }
         playbackRequest = viewModelScope.launch {
             try {
+                if (tryOfflineVideo(MediaKey("emby:${session.serverId}:${session.userId}", item.id), startPositionMs)) return@launch
                 val plan = repository.playbackPlan(session, item.id)
                 ensureActive()
                 if (state.value.session == session && state.value.screen == Screen.PLAYER && state.value.selectedItem?.id == item.id) {
@@ -1372,6 +1380,42 @@ class MainViewModel(
         } else {
             playExternalEntry(resolved)
         }
+    }
+
+    fun downloadEmby(item: MediaItem) {
+        val session = state.value.session ?: return
+        downloadUnified(UnifiedMediaItem(MediaKey("emby:${session.serverId}:${session.userId}", item.id), item.name, item.type, subtitle = item.seriesName))
+    }
+    fun downloadUnified(item: UnifiedMediaItem) {
+        viewModelScope.launch {
+            try {
+                val kind = top.cylunex.shadowmedia.model.contentKind(item.type)
+                require(kind !in setOf(top.cylunex.shadowmedia.model.ContentKind.FOLDER, top.cylunex.shadowmedia.model.ContentKind.SERIES, top.cylunex.shadowmedia.model.ContentKind.LIVE_CHANNEL)) { "请选择具体文件" }
+                val asset = requireNotNull(library).addRemote(item, if (kind in setOf(top.cylunex.shadowmedia.model.ContentKind.MUSIC, top.cylunex.shadowmedia.model.ContentKind.AUDIOBOOK)) "audio" else "mp4")
+                requireNotNull(offline).enqueue(asset)
+                update { copy(errorMessage = "已加入离线任务，可在来源页的离线管理查看") }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { showError(e) }
+        }
+    }
+
+    private suspend fun tryOfflineVideo(key: MediaKey, positionMs: Long): Boolean {
+        val asset = library?.dao?.assetForKey(key.providerId, key.itemId)?.takeIf { it.kind in setOf("MOVIE", "EPISODE") } ?: return false
+        if (top.cylunex.shadowmedia.library.LibraryResources.hasOfflineMedia?.invoke(asset) != true) return false
+        showOfflineVideo(asset, positionMs)
+        return true
+    }
+    fun playOfflineAsset(asset: top.cylunex.shadowmedia.database.LibraryAssetEntity) {
+        cancelContentRequests()
+        contentRequest = viewModelScope.launch {
+            val history = localMediaState.history("${asset.providerId}:${asset.itemId}")
+            showOfflineVideo(asset, history?.takeUnless { it.completed }?.positionMs ?: 0)
+        }
+    }
+    private fun showOfflineVideo(asset: top.cylunex.shadowmedia.database.LibraryAssetEntity, positionMs: Long) = update {
+        copy(screen = Screen.EXTERNAL_PLAYER, externalPlayerReturnScreen = if (screen == Screen.PLAYER) playerReturnScreen else screen,
+            selectedExternalEntry = ExternalMediaEntry(id = asset.itemId, sourceId = asset.providerId, title = asset.title,
+                startPositionMs = positionMs, url = "shadow-cached://${asset.id}/resource.${asset.format}"), isLoading = false, errorMessage = null)
     }
 
     fun playExternalEntry(entry: ExternalMediaEntry) = navigate {

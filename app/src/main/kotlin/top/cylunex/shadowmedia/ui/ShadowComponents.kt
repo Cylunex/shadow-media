@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
@@ -246,6 +247,7 @@ fun MediaPosterCard(
     onClick: () -> Unit,
     onDelete: (() -> Unit)? = null,
     onFavorite: (() -> Unit)? = null,
+    onOffline: (() -> Unit)? = null,
 ) {
     Column {
         Card(onClick = onClick, modifier = Modifier.fillMaxWidth().shadowTvFocus()) {
@@ -287,6 +289,11 @@ fun MediaPosterCard(
                                     tint = if (item.favorite) MaterialTheme.colorScheme.primary else Color.White,
                                 )
                             }
+                        }
+                    }
+                    onOffline?.let { offlineAction ->
+                        Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.64f)) {
+                            IconButton(onClick = offlineAction, modifier = Modifier.size(48.dp)) { Icon(Icons.Rounded.Download, "保存离线副本", tint = Color.White) }
                         }
                     }
                     onDelete?.let { deleteAction ->

@@ -22,6 +22,7 @@ class MusicViewModel(private val container: AppContainer) : ViewModel() {
     val working = MutableStateFlow(false)
     val sources = MutableStateFlow<List<MusicSource>>(emptyList())
     private var job: Job? = null
+    val snapshotState = container.music.snapshots.scopes().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val dao = container.music.dao
     val tracks = filter.flatMapLatest { f -> Pager(PagingConfig(60, enablePlaceholders = false)) {
         dao.page("%" + f.query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%", f.album, f.artist, f.folder, f.favorite, f.recent, f.playlist)
@@ -79,20 +80,38 @@ class MusicViewModel(private val container: AppContainer) : ViewModel() {
     }
     fun refresh(source: MusicSource) = work {
         val provider = container.providerRegistry.provider(source.providerId) ?: error("来源已断开，请重新连接")
-        var token: String? = null
-        val visited = mutableSetOf<String?>()
-        var total = 0
-        do {
-            currentCoroutineContext().ensureActive()
-            check(visited.add(token)) { "来源重复返回相同分页，已保留索引的歌曲" }
-            val page = provider.browse(ProviderBrowseRequest(MediaKey(source.providerId, source.parentId), type = "Audio", pageToken = token, pageSize = 200))
-            check(page.items.isNotEmpty() || page.nextPageToken == null) { "来源返回空的中间页，请稍后重试" }
-            for (item in page.items) { container.music.importRemote(item); total++ }
-            token = page.nextPageToken
-            message.value = "已索引 $total 首歌曲"
-        } while (token != null)
-        sources.value = emptyList()
-        message.value = "音乐库索引完成，共 $total 首歌曲"
+        val scopeId = scopedContentId(source.providerId, source.parentId)
+        val generation = UUID.randomUUID().toString()
+        val snapshots = container.music.snapshots
+        snapshots.begin(scopeId, generation)
+        try {
+            top.cylunex.shadowmedia.library.ResourceScheduler.process.run(top.cylunex.shadowmedia.library.ResourcePriority.INDEX) {
+                var token: String? = null
+                val visited = mutableSetOf<String?>()
+                val ids = mutableSetOf<String>()
+                var expected: Int? = null
+                do {
+                    currentCoroutineContext().ensureActive()
+                    check(container.backgroundResourcesAllowed()) { "后台索引已暂停，请检查网络和设备状态" }
+                    check(visited.add(token)) { "来源重复返回相同分页，旧目录已保留" }
+                    val page = provider.browse(ProviderBrowseRequest(MediaKey(source.providerId, source.parentId), type = "Audio", pageToken = token, pageSize = 200))
+                    check(page.items.isNotEmpty()) { "来源返回空页，未删除旧目录" }
+                    expected = page.totalCount ?: expected
+                    val assets = page.items.map { container.music.importRemote(it).id }
+                    snapshots.append(scopeId, generation, assets)
+                    ids += assets
+                    token = page.nextPageToken
+                    message.value = "已索引 ${ids.size} 首歌曲"
+                } while (token != null)
+                check(expected == null || ids.size == expected) { "目录分页未完整返回，旧记录已保留" }
+                snapshots.finish(scopeId, generation, System.currentTimeMillis(), true)
+                sources.value = emptyList()
+                message.value = "音乐库索引完成，共 ${ids.size} 首歌曲"
+            }
+        } catch (e: Exception) {
+            withContext(NonCancellable) { snapshots.finish(scopeId, generation, System.currentTimeMillis(), false, "目录可能过期，已保留本机快照") }
+            throw e
+        }
     }
     fun favorite(row: MusicRow) { viewModelScope.launch { container.library.dao.favorite(row.asset.id, !row.asset.favorite) } }
     fun playlist(title: String) = work {

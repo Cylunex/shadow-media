@@ -27,14 +27,17 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProgressSessionEntity::class,
         AudioQueueEntity::class,
         AudioQueueEntryEntity::class,
+        ResourceTaskEntity::class, CatalogScopeEntity::class, CatalogEntryEntity::class,
         AudioChapterEntity::class, MusicTrackEntity::class, MusicListeningEntity::class, MusicPlaylistEntity::class, MusicPlaylistEntryEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 abstract class ShadowMediaDatabase : RoomDatabase() {
     abstract fun dao(): ShadowMediaDao
     abstract fun libraryDao(): LibraryDao
+    abstract fun resourceTaskDao(): ResourceTaskDao
+    abstract fun catalogSnapshotDao(): CatalogSnapshotDao
     abstract fun chapterDao(): ChapterDao
     abstract fun musicDao(): MusicDao
     abstract fun audioQueueDao(): AudioQueueDao
@@ -47,7 +50,17 @@ abstract class ShadowMediaDatabase : RoomDatabase() {
                 context.applicationContext,
                 ShadowMediaDatabase::class.java,
                 "shadow-media.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build().also { instance = it }
+        }
+
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS resource_tasks (assetId TEXT NOT NULL PRIMARY KEY, operationId TEXT NOT NULL, revision TEXT NOT NULL, state TEXT NOT NULL, transport TEXT NOT NULL, bytes INTEGER NOT NULL, totalBytes INTEGER NOT NULL, validator TEXT NOT NULL, unmetered INTEGER NOT NULL, charging INTEGER NOT NULL, message TEXT NOT NULL, updatedAt INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_resource_tasks_state ON resource_tasks(state)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS catalog_scopes (id TEXT NOT NULL PRIMARY KEY, generation TEXT NOT NULL, completed INTEGER NOT NULL, refreshedAt INTEGER NOT NULL, message TEXT NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS catalog_entries (scopeId TEXT NOT NULL, assetId TEXT NOT NULL, generation TEXT NOT NULL, present INTEGER NOT NULL, PRIMARY KEY(scopeId, assetId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_catalog_entries_assetId ON catalog_entries(assetId)")
+            }
         }
 
         val MIGRATION_5_6 = object : Migration(5, 6) {
@@ -88,7 +101,7 @@ abstract class ShadowMediaDatabase : RoomDatabase() {
             }
         }
 
-        private val MIGRATION_1_2 = object : Migration(1, 2) {
+        val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     """
@@ -115,7 +128,7 @@ abstract class ShadowMediaDatabase : RoomDatabase() {
             }
         }
 
-        private val MIGRATION_2_3 = object : Migration(2, 3) {
+        val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     """

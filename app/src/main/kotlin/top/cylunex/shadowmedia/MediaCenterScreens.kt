@@ -319,6 +319,7 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                                 }
                             )
                         }
+                        if (detail.children.isEmpty() && detail.item.type.lowercase() in setOf("movie", "video", "episode", "music", "audio", "audiobook")) OutlinedButton(onClick = { viewModel.downloadUnified(detail.item) }) { Text("保存离线副本") }
                         OutlinedButton(
                             onClick = {
                                 val target = detail.children.firstOrNull() ?: detail.item
@@ -743,6 +744,7 @@ internal fun SeriesDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                 progress = mediaProgress(episode),
                 onClick = { viewModel.playEpisode(episode) },
                 onFavorite = { viewModel.toggleFavorite(episode) },
+                onOffline = { viewModel.downloadEmby(episode) },
             )
         }
         if (!state.isLoading && state.detailEpisodes.isEmpty()) {

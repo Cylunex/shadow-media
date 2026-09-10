@@ -35,13 +35,16 @@ import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.ExternalMediaEntry
 import top.cylunex.shadowmedia.model.MediaItem
 
-class ShadowMediaApplication : Application() {
+class ShadowMediaApplication : Application(), coil3.SingletonImageLoader.Factory {
+    override fun newImageLoader(context: android.content.Context): coil3.ImageLoader = coil3.ImageLoader.Builder(context)
+        .components { add(coil3.network.okhttp.OkHttpNetworkFetcherFactory(callFactory = { okhttp3.OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor()).build() })) }.build()
     val container: AppContainer by lazy { AppContainer(this) }
     override fun onCreate() { super.onCreate(); container.initializeLibraryResources() }
 }
 
-class AppContainer(application: Application) {
+class AppContainer(private val application: Application) {
     val library = top.cylunex.shadowmedia.library.LibraryRepository(application)
+    val offline = top.cylunex.shadowmedia.library.OfflineRepository(application, library)
     val music = top.cylunex.shadowmedia.library.MusicRepository(application, library)
     val catalogs = top.cylunex.shadowmedia.library.NativeCatalogRepository(application, library)
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -58,7 +61,7 @@ class AppContainer(application: Application) {
     )
     val sessionStore: SessionStore = KeystoreSessionStore(application)
     val embyRepository: EmbyRepository = DefaultEmbyRepository(
-        client = OkHttpClient.Builder()
+        client = OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor())
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .build(),
@@ -67,7 +70,7 @@ class AppContainer(application: Application) {
     val playbackOutbox: PlaybackOutbox = PersistentPlaybackOutbox(application, embyRepository)
     private val audioReporter = EmbyAudioReporter(applicationScope, playbackOutbox)
     val feedSessionStore = FeedSessionStore(application)
-    val externalClient = OkHttpClient.Builder()
+    val externalClient = OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor())
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(45, TimeUnit.SECONDS)
             .build()
@@ -83,12 +86,22 @@ class AppContainer(application: Application) {
         }
     }
 
+    fun backgroundResourcesAllowed() = top.cylunex.shadowmedia.library.ResourceDevicePolicy.backgroundAllowed(application)
+
     fun initializeLibraryResources() {
+        top.cylunex.shadowmedia.library.LibraryResources.offlineOnly = application.getSharedPreferences("resource_policy", 0).getBoolean("offlineOnly", false)
+        val offlineMedia = top.cylunex.shadowmedia.audio.MediaOfflineStore.get(application)
+        offlineMedia.installPlaybackRoute()
+        top.cylunex.shadowmedia.library.LibraryResources.mediaOffline = offlineMedia::command
+        top.cylunex.shadowmedia.library.LibraryResources.hasOfflineMedia = offlineMedia::available
+        if (top.cylunex.shadowmedia.library.LibraryResources.offlineOnly) offlineMedia.setOfflineMode(true)
         top.cylunex.shadowmedia.library.LibraryResources.networkStorage = networkStorageRepository
         top.cylunex.shadowmedia.library.LibraryResources.audioEvent = audioReporter::progress
         top.cylunex.shadowmedia.library.LibraryResources.audioCandidateSelected = audioReporter::selected
         top.cylunex.shadowmedia.library.LibraryResources.pageManifest = catalogs::pages
-        top.cylunex.shadowmedia.library.LibraryResources.pageReader = catalogs::page
+        top.cylunex.shadowmedia.library.LibraryResources.pageReader = { asset, page, file ->
+            top.cylunex.shadowmedia.library.ResourceScheduler.process.run(top.cylunex.shadowmedia.library.ResourcePriority.FOREGROUND) { catalogs.page(asset, page, file) }
+        }
         applicationScope.launch {
             while (true) {
                 try { catalogs.flush() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { /* Keep persisted operations for reconnect. */ }
@@ -119,7 +132,7 @@ class AppContainer(application: Application) {
                 }
                 asset.providerId.startsWith("emby:") -> {
                     val session = requireNotNull(sessionStore.loadAll().firstOrNull { "emby:${it.serverId}:${it.userId}" == asset.providerId }) { "Emby 账号已移除" }
-                    embyRepository.audioPlan(session, asset.itemId).candidates
+                    if (asset.kind in setOf("MUSIC", "AUDIOBOOK", "PODCAST")) embyRepository.audioPlan(session, asset.itemId).candidates else embyRepository.playbackPlan(session, asset.itemId).candidates
                 }
                 else -> requireNotNull(providerRegistry.provider(asset.providerId)) { "来源不可用，请重新连接" }.resolve(top.cylunex.shadowmedia.model.UnifiedPlaybackRequest(key))
             }
@@ -161,7 +174,7 @@ class AppContainer(application: Application) {
 
     fun recordExternalHistory(entry: ExternalMediaEntry, positionMs: Long, durationMs: Long?) {
         applicationScope.launch {
-            val providerId = entry.sourceId.takeIf { it.startsWith("storage:") || it.startsWith("live:") }
+            val providerId = entry.sourceId.takeIf { entry.url.startsWith("shadow-cached:") || it.startsWith("storage:") || it.startsWith("live:") }
                 ?: "external:${entry.sourceId}"
             localMediaState.recordHistory(
                 MediaHistoryEntity(

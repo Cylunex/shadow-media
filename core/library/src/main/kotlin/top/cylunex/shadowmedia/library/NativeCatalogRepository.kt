@@ -19,7 +19,7 @@ class NativeCatalogRepository(private val context: Context, private val library:
     val store = CatalogConnectionStore(context)
     private val syncLock = Mutex()
     private val artworkScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val client = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+    private val client = OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor()).connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     fun providerId(connection: CatalogConnection) = "catalog:${connection.kind.name}:${connection.id}"
     fun connection(providerId: String) = requireNotNull(store.load().firstOrNull { providerId(it) == providerId }) { "来源已移除，请重新连接" }
     private fun api(c: CatalogConnection, vararg segments: String): HttpUrl = c.base().newBuilder().apply {

@@ -19,6 +19,7 @@ dependencies {
     implementation(project(":core:provider"))
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)
+    implementation("androidx.work:work-runtime-ktx:2.10.5")
     implementation("androidx.documentfile:documentfile:1.1.0")
     implementation("org.jsoup:jsoup:1.21.2")
     testImplementation(libs.junit)

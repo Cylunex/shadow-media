@@ -83,9 +83,13 @@ interface LibraryDao {
     fun assets(): Flow<List<LibraryAssetEntity>>
     @Query("SELECT * FROM library_assets WHERE id = :id")
     suspend fun asset(id: String): LibraryAssetEntity?
+    @Query("SELECT * FROM library_assets WHERE providerId = :providerId AND itemId = :itemId LIMIT 1")
+    suspend fun assetForKey(providerId: String, itemId: String): LibraryAssetEntity?
     @Query("SELECT * FROM library_assets WHERE id IN (:ids)")
     suspend fun assetsByIds(ids: List<String>): List<LibraryAssetEntity>
     @Upsert suspend fun putAsset(asset: LibraryAssetEntity)
+    @Query("UPDATE library_assets SET localUri = '' WHERE id = :id AND localUri = :expectedUri")
+    suspend fun clearLocalCopy(id: String, expectedUri: String)
     @Query("UPDATE library_assets SET favorite = :favorite WHERE id = :id")
     suspend fun favorite(id: String, favorite: Boolean)
     @Query("UPDATE library_assets SET coverPath = :path WHERE id = :id AND coverPath = ''")
@@ -126,7 +130,7 @@ interface LibraryDao {
             resetProgress(asset.id)
             removeAssetOperations(asset.id)
         }
-        putAsset(asset)
+        putAsset(asset.copy(favorite = old?.favorite ?: asset.favorite))
     }
     @Transaction suspend fun removeFromShelf(id: String) {
         removeAssetOperations(id)

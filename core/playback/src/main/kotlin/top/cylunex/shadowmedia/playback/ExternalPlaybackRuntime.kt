@@ -37,7 +37,7 @@ class ExternalPlaybackRuntime(
 ) : Closeable {
     private val audible: top.cylunex.shadowmedia.model.PlaybackCoordinator.Participant = top.cylunex.shadowmedia.model.PlaybackCoordinator.process.participant { exoPlayer.pause() }
     private val errorState = MutableStateFlow<String?>(null)
-    private val client = OkHttpClient.Builder()
+    private val client = OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor())
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .followRedirects(true)
@@ -97,9 +97,12 @@ class RoutingDataSource(
         listeners += transferListener
         http.addTransferListener(transferListener)
     }
+    companion object { var offlineFactory: DataSource.Factory? = null }
 
     override fun open(dataSpec: DataSpec): Long {
-        val delegate = if (dataSpec.uri.scheme == "shadow-smb") {
+        val delegate = if (dataSpec.uri.scheme == "shadow-cached") {
+            requireNotNull(offlineFactory) { "离线播放服务尚未初始化" }.createDataSource().also { value -> listeners.forEach(value::addTransferListener) }
+        } else if (dataSpec.uri.scheme == "shadow-smb") {
             val repository = networkStorageRepository ?: throw java.io.IOException("SMB 播放服务未初始化")
             SmbDataSource(repository).also { source -> listeners.forEach(source::addTransferListener) }
         } else http

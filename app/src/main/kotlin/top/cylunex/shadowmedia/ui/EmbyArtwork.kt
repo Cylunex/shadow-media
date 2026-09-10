@@ -37,7 +37,7 @@ fun rememberEmbyImageLoader(session: EmbySession?, clientIdentity: ClientIdentit
     val imageClient = remember(session, clientIdentity) {
         session?.let {
             val policy = PlaybackHeaderPolicy(it.serverUrl.toHttpUrl(), it, clientIdentity)
-            OkHttpClient.Builder()
+            OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor())
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .addNetworkInterceptor(Interceptor { chain ->

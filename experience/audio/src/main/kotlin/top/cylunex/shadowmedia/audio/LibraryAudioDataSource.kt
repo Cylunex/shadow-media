@@ -25,6 +25,13 @@ internal class LibraryAudioDataSource(private val context: Context, private val 
         val asset = runBlocking(Dispatchers.IO) { library.dao.asset(requireNotNull(dataSpec.uri.host)) } ?: throw IOException("书库条目已移除")
         if (dataSpec.uri.getQueryParameter("revision") != asset.revision) throw IOException("音频版本已变化，请重新打开")
         val entryId = dataSpec.uri.getQueryParameter("entry") ?: throw IOException("音频队列条目标识缺失")
+        val cached = runBlocking(Dispatchers.IO) { MediaOfflineStore.get(context).cached(asset) }
+        if (cached != null) {
+            delegate = cached; listeners.forEach(cached::addTransferListener)
+            return cached.open(dataSpec)
+        }
+        if (asset.localUri.isNotBlank()) return DefaultDataSource.Factory(context).createDataSource().also { delegate = it; listeners.forEach(it::addTransferListener) }.open(dataSpec.buildUpon().setUri(asset.localUri).build())
+        if (LibraryResources.offlineOnly) throw IOException("仅离线模式：此音频没有完整离线副本")
         var lastError: IOException? = null
         for (attempt in 0 until 18) {
             val candidate = runBlocking(Dispatchers.IO) { candidates.current(asset, entryId) }
@@ -56,5 +63,5 @@ internal class LibraryAudioDataSource(private val context: Context, private val 
     override fun getUri(): Uri? = delegate?.uri
     override fun getResponseHeaders(): Map<String, List<String>> = delegate?.responseHeaders.orEmpty()
     override fun close() { delegate?.close(); delegate = null }
-    companion object { private val baseClient = OkHttpClient() }
+    companion object { private val baseClient = OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor()).build() }
 }

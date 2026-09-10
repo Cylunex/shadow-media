@@ -96,7 +96,7 @@ class PlaybackRuntime(
     private val diagnosticsState = MutableStateFlow(diagnostics())
     private val tracksState = MutableStateFlow(PlaybackTracksState())
     private val embyOrigin = session.serverUrl.toHttpUrl()
-    private val playbackClient = OkHttpClient.Builder()
+    private val playbackClient = OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor())
         .dispatcher(
             Dispatcher().apply {
                 maxRequests = 6

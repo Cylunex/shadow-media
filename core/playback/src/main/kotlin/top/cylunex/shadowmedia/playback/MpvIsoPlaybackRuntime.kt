@@ -598,7 +598,7 @@ private class SmbIsoRandomAccessSource(
 }
 
 private fun embyIsoClient(session: EmbySession, clientIdentity: ClientIdentity): OkHttpClient =
-    OkHttpClient.Builder()
+    OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor())
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(45, TimeUnit.SECONDS)
         .followRedirects(true)
@@ -612,7 +612,7 @@ private fun embyIsoClient(session: EmbySession, clientIdentity: ClientIdentity):
 
 private fun externalIsoClient(credentialOrigin: String?): OkHttpClient {
     val origin = credentialOrigin?.toHttpUrlOrNull()
-    return OkHttpClient.Builder()
+    return OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor())
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(45, TimeUnit.SECONDS)
         .followRedirects(true)
