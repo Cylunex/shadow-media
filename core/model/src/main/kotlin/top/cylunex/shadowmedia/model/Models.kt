@@ -327,6 +327,7 @@ enum class FeatureId(val defaultEnabled: Boolean) {
     SEMANTIC_SEARCH(false),
     WATCH_PARTY(false),
     LABS(false),
+    FEED_PRELOAD(false),
 }
 
 enum class IntegrationKind {

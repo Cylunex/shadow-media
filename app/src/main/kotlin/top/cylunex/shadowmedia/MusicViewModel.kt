@@ -1,4 +1,6 @@
 package top.cylunex.shadowmedia
+import top.cylunex.shadowmedia.network.ResourceScheduler
+import top.cylunex.shadowmedia.network.ResourcePriority
 
 import android.net.Uri
 import androidx.lifecycle.ViewModel
@@ -91,7 +93,7 @@ class MusicViewModel(private val container: AppContainer) : ViewModel() {
         val snapshots = container.music.snapshots
         snapshots.begin(scopeId, generation)
         try {
-            top.cylunex.shadowmedia.library.ResourceScheduler.process.run(top.cylunex.shadowmedia.library.ResourcePriority.INDEX) {
+            top.cylunex.shadowmedia.network.ResourceScheduler.process.run(top.cylunex.shadowmedia.network.ResourcePriority.INDEX) {
                 var token: String? = null
                 val visited = mutableSetOf<String?>()
                 val ids = mutableSetOf<String>()

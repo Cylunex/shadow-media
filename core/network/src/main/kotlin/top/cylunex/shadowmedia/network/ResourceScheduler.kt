@@ -1,4 +1,4 @@
-package top.cylunex.shadowmedia.library
+package top.cylunex.shadowmedia.network
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex

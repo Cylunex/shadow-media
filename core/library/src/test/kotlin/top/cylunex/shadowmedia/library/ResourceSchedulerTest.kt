@@ -1,4 +1,6 @@
 package top.cylunex.shadowmedia.library
+import top.cylunex.shadowmedia.network.ResourceScheduler
+import top.cylunex.shadowmedia.network.ResourcePriority
 
 import kotlinx.coroutines.*
 import org.junit.Assert.*

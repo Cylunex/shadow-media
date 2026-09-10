@@ -49,6 +49,7 @@ import top.cylunex.shadowmedia.ui.ShadowGlassPanel
 internal fun SettingsScreen(viewModel: MainViewModel) {
     BackHandler(onBack = viewModel::back)
     val flags by viewModel.featureFlags.collectAsStateWithLifecycle()
+    val preload = androidx.compose.ui.platform.LocalContext.current.getSharedPreferences("feed_preload_metrics", android.content.Context.MODE_PRIVATE)
     LazyColumn(
         modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
         contentPadding = PaddingValues(bottom = 36.dp),
@@ -99,6 +100,13 @@ internal fun SettingsScreen(viewModel: MainViewModel) {
                 color = MaterialTheme.colorScheme.primary,
                 style = MaterialTheme.typography.labelLarge,
             )
+        }
+        if (preload.contains("bytes")) item {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+                Text("最近一次 Feed 实验", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
+                Text("预载 ${preload.getLong("bytes", 0) / 1024} KiB · 丢弃 ${preload.getLong("discardedBytes", 0) / 1024} KiB · 命中 ${preload.getInt("hits", 0)} 次 · 失败 ${preload.getInt("failures", 0)} 次")
+                Text("峰值 PSS ${preload.getInt("peakPssKb", 0) / 1024} MiB；首帧与缓冲详见播放质量记录。")
+            }
         }
         items(FeatureId.entries, key = FeatureId::name) { feature ->
             FeatureToggle(
@@ -156,6 +164,7 @@ private fun FeatureId.title(): String = when (this) {
     FeatureId.MEDIA_MOMENTS -> "媒体时刻"
     FeatureId.SEMANTIC_SEARCH -> "语义搜索"
     FeatureId.WATCH_PARTY -> "一起看"
+    FeatureId.FEED_PRELOAD -> "Feed 预加载实验"
     FeatureId.LABS -> "实验室"
 }
 
@@ -169,6 +178,7 @@ private fun FeatureId.description(): String = when (this) {
     FeatureId.MEDIA_MOMENTS -> "保存时间点、备注和片段引用"
     FeatureId.SEMANTIC_SEARCH -> "通过字幕和索引定位具体场景"
     FeatureId.WATCH_PARTY -> "多人会话、同步控制和漂移修正"
+    FeatureId.FEED_PRELOAD -> "仅不限流量网络：停稳后预载下一条约 3 秒；默认关闭"
     FeatureId.LABS -> "尚未稳定的前沿交互能力"
 }
 
@@ -182,5 +192,6 @@ private fun FeatureId.icon(): ImageVector = when (this) {
     FeatureId.MEDIA_MOMENTS -> Icons.Rounded.MovieFilter
     FeatureId.SEMANTIC_SEARCH -> Icons.Rounded.Explore
     FeatureId.WATCH_PARTY -> Icons.Rounded.Forum
+    FeatureId.FEED_PRELOAD -> Icons.Rounded.MovieFilter
     FeatureId.LABS -> Icons.Rounded.Science
 }

@@ -1,4 +1,6 @@
 package top.cylunex.shadowmedia
+import top.cylunex.shadowmedia.network.ResourceScheduler
+import top.cylunex.shadowmedia.network.ResourcePriority
 
 import android.app.Application
 import android.content.Context
@@ -39,7 +41,7 @@ import top.cylunex.shadowmedia.model.MediaItem
 
 class ShadowMediaApplication : Application(), coil3.SingletonImageLoader.Factory {
     override fun newImageLoader(context: android.content.Context): coil3.ImageLoader = coil3.ImageLoader.Builder(context)
-        .components { add(coil3.network.okhttp.OkHttpNetworkFetcherFactory(callFactory = { okhttp3.OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor()).build() })) }.build()
+        .components { add(coil3.network.okhttp.OkHttpNetworkFetcherFactory(callFactory = { okhttp3.OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor()).addInterceptor(top.cylunex.shadowmedia.network.ResourceBudgetInterceptor { top.cylunex.shadowmedia.network.ResourcePriority.VISIBLE }).build() })) }.build()
     val container: AppContainer by lazy { AppContainer(this) }
     override fun onCreate() { super.onCreate(); container.initializeLibraryResources() }
 }
@@ -109,7 +111,7 @@ class AppContainer(private val application: Application) {
         top.cylunex.shadowmedia.library.LibraryResources.audioCandidateSelected = audioReporter::selected
         top.cylunex.shadowmedia.library.LibraryResources.pageManifest = catalogs::pages
         top.cylunex.shadowmedia.library.LibraryResources.pageReader = { asset, page, file ->
-            top.cylunex.shadowmedia.library.ResourceScheduler.process.run(top.cylunex.shadowmedia.library.ResourcePriority.FOREGROUND) { catalogs.page(asset, page, file) }
+            catalogs.page(asset, page, file)
         }
         applicationScope.launch {
             while (true) {

@@ -755,6 +755,7 @@ private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: 
         pageCount = { state.items.size },
     )
     val scope = rememberCoroutineScope()
+    val feedPreload = rememberFeedPreloading(state, viewModel, container, pagerState.isScrollInProgress)
 
     LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.settledPage }
@@ -783,6 +784,7 @@ private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: 
         }
         FeedPage(
             item = item,
+            feedPreload = feedPreload,
             page = page,
             pageCount = state.items.size,
             plan = plan,
@@ -806,6 +808,7 @@ private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: 
 @Composable
 private fun FeedPage(
     item: MediaItem,
+    feedPreload: top.cylunex.shadowmedia.playback.FeedPreloadPool?,
     page: Int,
     pageCount: Int,
     plan: PlaybackPlan?,
@@ -858,6 +861,7 @@ private fun FeedPage(
                 )
             } else {
                 ActivePlayer(
+                    feedPreload = feedPreload,
                     state = state,
                     item = item,
                     plan = plan,
@@ -1280,6 +1284,7 @@ private fun IsoPlaybackControls(
 
 @Composable
 private fun ActivePlayer(
+    feedPreload: top.cylunex.shadowmedia.playback.FeedPreloadPool?,
     state: MainUiState,
     item: MediaItem,
     plan: PlaybackPlan,
@@ -1292,9 +1297,10 @@ private fun ActivePlayer(
     val session = requireNotNull(state.session)
     val context = androidx.compose.ui.platform.LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val runtime = remember(plan) {
+    val runtime = remember(plan, feedPreload) {
         PlaybackRuntime(
             context = context,
+            feedPreload = feedPreload,
             session = session,
             plan = plan,
             playbackOutbox = container.playbackOutbox,

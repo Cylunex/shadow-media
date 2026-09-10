@@ -5,8 +5,8 @@ package top.cylunex.shadowmedia
 import android.content.Intent
 import android.content.res.Configuration
 import top.cylunex.shadowmedia.library.LibraryResources
-import top.cylunex.shadowmedia.library.ResourceScheduler
-import top.cylunex.shadowmedia.library.ResourcePriority
+import top.cylunex.shadowmedia.network.ResourceScheduler
+import top.cylunex.shadowmedia.network.ResourcePriority
 import top.cylunex.shadowmedia.audio.embeddedLyrics
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult

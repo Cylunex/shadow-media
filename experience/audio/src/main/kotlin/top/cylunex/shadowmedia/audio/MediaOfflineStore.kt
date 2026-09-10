@@ -1,5 +1,7 @@
 @file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 package top.cylunex.shadowmedia.audio
+import top.cylunex.shadowmedia.network.ResourceScheduler
+import top.cylunex.shadowmedia.network.ResourcePriority
 
 import android.app.Notification
 import android.app.NotificationChannel

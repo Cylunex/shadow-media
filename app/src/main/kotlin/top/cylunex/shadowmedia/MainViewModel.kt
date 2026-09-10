@@ -194,6 +194,7 @@ class MainViewModel(
     private val prepareAccounts: suspend () -> Unit = {},
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
+    var feedPreloader: top.cylunex.shadowmedia.playback.FeedPreloadPool? = null
     private var playbackRequest: Job? = null
     private var contentRequest: Job? = null
     private var favoriteObservation: Job? = null
@@ -1234,7 +1235,8 @@ class MainViewModel(
         playbackRequest = viewModelScope.launch {
             try {
                 if (tryOfflineVideo(MediaKey(session.providerId, item.id), startPositionMs)) return@launch
-                val plan = repository.playbackPlan(session, item.id)
+                val prepared = if (state.value.feedMode && refreshAttempts == 0) feedPreloader?.preparedPlan(session, item.id) else null
+                val plan = prepared ?: repository.playbackPlan(session, item.id)
                 ensureActive()
                 if (state.value.session == session && state.value.screen == Screen.PLAYER && state.value.selectedItem?.id == item.id) {
                     playbackOwnership.remember(plan, session)

@@ -74,6 +74,7 @@ class PlaybackRuntime(
     private val mediaTitle: String = "Shadow Media",
     private val telemetrySink: PlaybackTelemetrySink = PlaybackTelemetrySink.NONE,
     private val onTerminalError: (positionMs: Long, message: String) -> Unit = { _, _ -> },
+    private val feedPreload: FeedPreloadPool? = null,
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val reporter = OrderedPlaybackReporter(CoroutineScope(scope.coroutineContext + Dispatchers.IO)) { playbackOutbox.submit(session, it) }
@@ -123,7 +124,7 @@ class PlaybackRuntime(
 
     val diagnostics: StateFlow<PlaybackDiagnostics> = diagnosticsState.asStateFlow()
     val tracks: StateFlow<PlaybackTracksState> = tracksState.asStateFlow()
-    private val exoPlayer = ExoPlayer.Builder(context).build().apply {
+    private val exoPlayer = (feedPreload?.buildPlayer() ?: ExoPlayer.Builder(context).build()).apply {
         setAudioAttributes(AudioAttributes.DEFAULT, true)
         setHandleAudioBecomingNoisy(true)
         setWakeMode(C.WAKE_MODE_LOCAL)
@@ -189,7 +190,7 @@ class PlaybackRuntime(
         reporter.completion.invokeOnCompletion { scope.cancel() }
     }
 
-    private fun mediaSource(candidate: PlaybackCandidate) =
+    private fun mediaSource(candidate: PlaybackCandidate) = feedPreload?.source(plan, candidate) ?:
         DefaultMediaSourceFactory(
             OkHttpDataSource.Factory(playbackClient)
                 .setUserAgent("Shadow Media")

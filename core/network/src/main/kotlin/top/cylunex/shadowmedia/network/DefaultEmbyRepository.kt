@@ -1,7 +1,7 @@
 package top.cylunex.shadowmedia.network
 
 import java.io.IOException
-import kotlinx.coroutines.async
+import kotlinx.coroutines.*
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -30,6 +30,12 @@ class DefaultEmbyRepository(
     private val clientIdentity: ClientIdentity,
     private val json: Json = Json { ignoreUnknownKeys = true; explicitNulls = false },
 ) : EmbyRepository {
+    private val apiClient = client.newBuilder().addNetworkInterceptor { chain ->
+        val origin = chain.call().request().url
+        val target = chain.request().url
+        if (origin.scheme != target.scheme || origin.host != target.host || origin.port != target.port) throw IOException("Emby 接口发生跨域重定向")
+        chain.proceed(chain.request())
+    }.build()
     override suspend fun login(request: LoginRequest): EmbySession {
         val server = ServerAddressPolicy.validate(request.serverUrl, request.allowInsecureHttp)
             .getOrElse { throw IllegalArgumentException(it.message, it) }
@@ -81,7 +87,7 @@ class DefaultEmbyRepository(
             pageItemCount = page.items.size
             startIndex += pageItemCount
             totalRecordCount = page.totalRecordCount
-        } while (pageItemCount > 0 && startIndex < totalRecordCount)
+        } while (pageItemCount > 0 && startIndex < totalRecordCount && startIndex < 2000)
 
         return allItems.distinctBy(BaseItemDto::id).map { it.toModel() }
     }
@@ -421,19 +427,27 @@ class DefaultEmbyRepository(
             .header("X-Emby-Authorization", clientIdentity.authorizationHeader(session))
             .header("X-Emby-Token", session.accessToken)
 
-    private suspend inline fun <reified T> executeJson(request: Request): T = withContext(Dispatchers.IO) {
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw response.toApiException()
-            val payload = response.body.string()
-            if (payload.isBlank()) throw EmbyApiException("服务端返回了空响应")
-            json.decodeFromString<T>(payload)
-        }
+    private suspend inline fun <reified T> executeJson(request: Request): T = execute(request) { response ->
+        if (!response.isSuccessful) throw response.toApiException()
+        val source = response.body.source()
+        if (source.request(8L * 1024 * 1024 + 1)) throw EmbyApiException("目录响应超过容量")
+        val payload = source.readUtf8()
+        if (payload.isBlank()) throw EmbyApiException("服务端返回了空响应")
+        json.decodeFromString<T>(payload)
     }
 
-    private suspend fun executeEmpty(request: Request) = withContext(Dispatchers.IO) {
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw response.toApiException()
+    private suspend fun executeEmpty(request: Request) = execute(request) { response ->
+        if (!response.isSuccessful) throw response.toApiException()
+    }
+
+    private suspend inline fun <T> execute(request: Request, crossinline read: (okhttp3.Response) -> T): T = coroutineScope {
+        val call = apiClient.newCall(request)
+        val cancellation = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
+            try { awaitCancellation() } finally { call.cancel() }
         }
+        try { withContext(Dispatchers.IO) { call.execute().use { read(it) } } }
+        catch (e: Exception) { currentCoroutineContext().ensureActive(); throw e }
+        finally { cancellation.cancel() }
     }
 
     private fun okhttp3.Response.toApiException(): EmbyApiException {

@@ -6,7 +6,8 @@ plugins {
 android {
     namespace = "top.cylunex.shadowmedia.reading"
     compileSdk = 36
-    defaultConfig { minSdk = 26 }
+    defaultConfig { minSdk = 26; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("fixtures/reading"))
     buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -17,6 +18,7 @@ android {
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 dependencies {
     api(project(":core:library"))
+    implementation(project(":core:network"))
     implementation("org.readium.kotlin-toolkit:readium-shared:3.3.0")
     implementation("org.readium.kotlin-toolkit:readium-streamer:3.3.0")
     implementation("org.readium.kotlin-toolkit:readium-navigator:3.3.0")
@@ -31,4 +33,6 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     testImplementation(libs.junit)
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test:runner:1.7.0")
 }
