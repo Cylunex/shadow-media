@@ -1,4 +1,4 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 package top.cylunex.shadowmedia
 
 import androidx.activity.compose.BackHandler
@@ -19,7 +19,7 @@ import kotlinx.coroutines.*
 import top.cylunex.shadowmedia.database.LibraryAssetEntity
 import top.cylunex.shadowmedia.library.*
 
-@Composable internal fun CatalogSourcesScreen(repository: NativeCatalogRepository, onBack: () -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onQueue: (List<LibraryAssetEntity>) -> Unit) {
+@Composable internal fun CatalogSourcesScreen(repository: NativeCatalogRepository, onBack: () -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onQueue: (List<LibraryAssetEntity>) -> Unit, onConnectionsChanged: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     var connections by remember { mutableStateOf<List<CatalogConnection>>(emptyList()) }
     var connection by remember { mutableStateOf<CatalogConnection?>(null) }
@@ -66,17 +66,17 @@ import top.cylunex.shadowmedia.library.*
     }
     BackHandler(onBack = ::back)
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        TopAppBar(title = { Text(connection?.name ?: "图书与有声书服务", maxLines = 1) }, navigationIcon = { IconButton(onClick = ::back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") } }, actions = {
+        TopAppBar(title = { Text(connection?.name ?: "图书与音乐服务", maxLines = 1) }, navigationIcon = { IconButton(onClick = ::back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") } }, actions = {
             if (connection == null) IconButton(onClick = { editing = null; editorVisible = true }) { Icon(Icons.Rounded.Add, "添加来源") }
         })
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         error?.let { Text(it, Modifier.padding(20.dp), color = MaterialTheme.colorScheme.error) }
         LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (connection == null) {
-                item { Text("连接你自己的 OPDS、Komga 或 Audiobookshelf。凭据使用 Android Keystore 加密保存在本机。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                item { Text("连接自己的 OPDS、Komga、Audiobookshelf、Jellyfin 或 OpenSubsonic。凭据使用 Android Keystore 加密保存在本机。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 items(connections, key = { it.id }) { c ->
                     Card { Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (c.kind == CatalogKind.AUDIOBOOKSHELF) Icons.Rounded.Headphones else Icons.AutoMirrored.Rounded.MenuBook, null, tint = MaterialTheme.colorScheme.primary)
+                        Icon(if ((c.kind == CatalogKind.AUDIOBOOKSHELF || c.kind.isNativeMusic())) Icons.Rounded.Headphones else Icons.AutoMirrored.Rounded.MenuBook, null, tint = MaterialTheme.colorScheme.primary)
                         TextButton(onClick = { nodes = emptyList(); load(c) }, Modifier.weight(1f)) { Column { Text(c.name, style = MaterialTheme.typography.titleMedium); Text(c.kind.name, style = MaterialTheme.typography.bodySmall) } }
                         IconButton(onClick = { editing = c; editorVisible = true }) { Icon(Icons.Rounded.Edit, "编辑连接") }
                         IconButton(onClick = { remove = c }) { Icon(Icons.Rounded.DeleteOutline, "删除连接") }
@@ -105,7 +105,7 @@ import top.cylunex.shadowmedia.library.*
                         } else opening = entry
                     }) {
                         Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            Icon(if (entry.navigation != null) Icons.Rounded.FolderOpen else if (entry.format in setOf("m4b", "mp3", "m4a", "flac")) Icons.Rounded.Headphones else Icons.AutoMirrored.Rounded.MenuBook, null, tint = MaterialTheme.colorScheme.primary)
+                            Icon(if (entry.navigation != null) Icons.Rounded.FolderOpen else if (entry.format in setOf("m4b", "mp3", "m4a", "flac", "audio")) Icons.Rounded.Headphones else Icons.AutoMirrored.Rounded.MenuBook, null, tint = MaterialTheme.colorScheme.primary)
                             Column(Modifier.weight(1f)) { Text(entry.title, style = MaterialTheme.typography.titleMedium); Text(entry.author.ifBlank { entry.format.uppercase() }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                             Icon(Icons.Rounded.ChevronRight, null)
                         }
@@ -117,10 +117,10 @@ import top.cylunex.shadowmedia.library.*
         }
     }
     if (editorVisible) CatalogEditor(editing, onDismiss = { editorVisible = false }, onSave = { c ->
-        try { repository.store.replace(editing, c); editorVisible = false; refresh() } catch (e: Exception) { error = e.message }
+        try { repository.store.replace(editing, c); editorVisible = false; refresh(); onConnectionsChanged() } catch (e: Exception) { error = e.message }
     })
-    remove?.let { c -> AlertDialog(onDismissRequest = { remove = null }, title = { Text("删除 ${c.name} 的连接？") }, text = { Text("移除本机凭据，保留已经下载的书籍和本地进度，不删除服务器内容。未同步进度将保留在本机。") }, confirmButton = { TextButton(onClick = { try { repository.store.remove(c.id); refresh() } catch (e: Exception) { error = e.message }; remove = null }) { Text("删除连接") } }, dismissButton = { TextButton(onClick = { remove = null }) { Text("取消") } }) }
-    opening?.let { entry -> AlertDialog(onDismissRequest = { opening = null }, title = { Text(entry.title) }, text = { Text(if (entry.format == "komga") "按页读取漫画，不下载整本。阅读进度会排队同步到此 Komga 账号。" else if (connection?.kind == CatalogKind.AUDIOBOOKSHELF) "加入书架并流式播放，按轨道保存位置；播放进度会排队同步到此账号。" else "将资源加入书架。电子书需要下载本机副本后阅读，最多 1 GiB；不支持 DRM 借阅或购买流程。") }, confirmButton = { TextButton(onClick = {
+    remove?.let { c -> AlertDialog(onDismissRequest = { remove = null }, title = { Text("删除 ${c.name} 的连接？") }, text = { Text("移除本机凭据，保留已经下载的书籍和本地进度，不删除服务器内容。未同步进度将保留在本机。") }, confirmButton = { TextButton(onClick = { try { repository.store.remove(c.id); refresh(); onConnectionsChanged() } catch (e: Exception) { error = e.message }; remove = null }) { Text("删除连接") } }, dismissButton = { TextButton(onClick = { remove = null }) { Text("取消") } }) }
+    opening?.let { entry -> AlertDialog(onDismissRequest = { opening = null }, title = { Text(entry.title) }, text = { Text(if (entry.format == "komga") "按页读取漫画，不下载整本。阅读进度会排队同步到此 Komga 账号。" else if (connection?.kind == CatalogKind.AUDIOBOOKSHELF) "加入书架并流式播放，按轨道保存位置；播放进度会排队同步到此账号。" else if (connection?.kind?.isNativeMusic() == true) "加入音乐库并流式播放，歌曲也可从音乐页加入队列和保存离线副本。" else "将资源加入书架。电子书需要下载本机副本后阅读，最多 1 GiB；不支持 DRM 借阅或购买流程。") }, confirmButton = { TextButton(onClick = {
         opening = null; val c = connection ?: return@TextButton
         runOperation { loading = true; try { val asset = repository.add(c, entry); ensureActive(); onOpen(asset) } catch (e: CancellationException) { throw e } catch (e: Exception) { error = e.message } finally { loading = false } }
     }) { Text("加入并打开") } }, dismissButton = { TextButton(onClick = { opening = null }) { Text("取消") } }) }
@@ -137,15 +137,15 @@ import top.cylunex.shadowmedia.library.*
     var error by remember { mutableStateOf<String?>(null) }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         LazyColumn(Modifier.imePadding(), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item { Text("${if (existing == null) "添加" else "编辑"}图书来源", style = MaterialTheme.typography.titleLarge) }
-            item { Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { CatalogKind.entries.forEach { value -> FilterChip(kind == value, { if (existing == null) kind = value }, { Text(if (value == CatalogKind.AUDIOBOOKSHELF) "ABS" else value.name) }) } } }
+            item { Text("${if (existing == null) "添加" else "编辑"}媒体来源", style = MaterialTheme.typography.titleLarge) }
+            item { FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { CatalogKind.entries.forEach { value -> FilterChip(kind == value, { if (existing == null) kind = value }, { Text(if (value == CatalogKind.AUDIOBOOKSHELF) "ABS" else value.name) }) } } }
             item { OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("名称") }) }
             item { OutlinedTextField(url, { url = it }, Modifier.fillMaxWidth(), label = { Text(if (kind == CatalogKind.OPDS) "OPDS 目录地址" else "服务根地址") }, placeholder = { Text("https://example.com/") }) }
             if (kind != CatalogKind.AUDIOBOOKSHELF) {
                 item { OutlinedTextField(username, { username = it }, Modifier.fillMaxWidth(), label = { Text("用户名（可选）") }) }
                 item { OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), label = { Text("密码") }, visualTransformation = PasswordVisualTransformation()) }
             }
-            item { OutlinedTextField(token, { token = it }, Modifier.fillMaxWidth(), label = { Text(if (kind == CatalogKind.AUDIOBOOKSHELF) "Audiobookshelf API Token" else "API Key / Bearer Token（可选）") }, visualTransformation = PasswordVisualTransformation()) }
+            item { OutlinedTextField(token, { token = it }, Modifier.fillMaxWidth(), label = { Text(if (kind == CatalogKind.AUDIOBOOKSHELF) "Audiobookshelf API Token" else if (kind == CatalogKind.JELLYFIN) "用户访问令牌（或填写用户名和密码）" else "API Key / Bearer Token（可选）") }, visualTransformation = PasswordVisualTransformation()) }
             item { Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(allowHttp, { allowHttp = it }); Text("允许 HTTP 明文传输（含凭据）") } }
             if (existing != null) item { Text("修改地址或凭据会建立新的账号作用域。旧书架与进度保留在本机，不会自动发给新账号；仅改名称不影响同步。", style = MaterialTheme.typography.bodySmall) }
             error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }

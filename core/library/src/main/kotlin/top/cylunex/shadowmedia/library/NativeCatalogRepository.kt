@@ -18,6 +18,16 @@ import top.cylunex.shadowmedia.model.*
 class NativeCatalogRepository(private val context: Context, private val library: LibraryRepository) {
     val store = CatalogConnectionStore(context)
     private val syncLock = Mutex()
+    private val nativeMusic = java.util.concurrent.ConcurrentHashMap<String, NativeMusicProvider>()
+    fun musicProvider(c: CatalogConnection): NativeMusicProvider {
+        require(c.kind.isNativeMusic())
+        return nativeMusic.compute(c.id) { _, old -> if (old?.connection == c) old else NativeMusicProvider(c) }!!
+    }
+    fun musicProviders(): List<NativeMusicProvider> {
+        val connections = store.load().filter { it.kind.isNativeMusic() }
+        nativeMusic.keys.retainAll(connections.map { it.id }.toSet())
+        return connections.map(::musicProvider)
+    }
     private val artworkScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val client = OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor()).connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     fun providerId(connection: CatalogConnection) = "catalog:${connection.kind.name}:${connection.id}"
@@ -60,6 +70,15 @@ class NativeCatalogRepository(private val context: Context, private val library:
     private fun JSONArray?.objects() = this?.let { (0 until length()).mapNotNull { optJSONObject(it) } }.orEmpty()
 
     suspend fun browse(c: CatalogConnection, node: String? = null, next: String? = null, query: String = ""): CatalogPage = when (c.kind) {
+        CatalogKind.JELLYFIN, CatalogKind.OPENSUBSONIC -> {
+            val provider = musicProvider(c)
+            val page = if (query.isNotBlank()) provider.search(top.cylunex.shadowmedia.provider.ProviderSearchRequest(query, pageToken = next))
+                else provider.browse(top.cylunex.shadowmedia.provider.ProviderBrowseRequest(node?.let { MediaKey(provider.descriptor.id, it) }, pageToken = next))
+            CatalogPage(c.name, page.items.map { item ->
+                val folder = contentKind(item.type) in setOf(ContentKind.FOLDER, ContentKind.SERIES)
+                CatalogEntry(item.key.itemId, item.title, item.subtitle.orEmpty(), format = if (folder) "" else "audio", navigation = item.key.itemId.takeIf { folder })
+            }, page.nextPageToken)
+        }
         CatalogKind.OPDS -> {
             val url = (next ?: node ?: c.url).toHttpUrl()
             OpdsCatalog.parse(request(c, url), url.toString())
@@ -114,6 +133,10 @@ class NativeCatalogRepository(private val context: Context, private val library:
     }
 
     suspend fun add(c: CatalogConnection, entry: CatalogEntry, metadata: JSONObject? = null, artwork: Boolean = true): LibraryAssetEntity {
+        if (c.kind.isNativeMusic()) {
+            val item = musicProvider(c).detail(MediaKey(providerId(c), entry.locator)).item
+            return MusicRepository(context, library).importRemote(item)
+        }
         val kind = if (entry.format == "komga") ContentKind.COMIC else contentKindForFile("file.${entry.format}")
         require(kind in setOf(ContentKind.BOOK, ContentKind.COMIC, ContentKind.AUDIOBOOK)) { "尚不支持这个文件格式" }
         val asset = library.addRemote(UnifiedMediaItem(MediaKey(providerId(c), entry.locator), entry.title, kind.name, subtitle = entry.author), entry.format)
@@ -195,6 +218,7 @@ class NativeCatalogRepository(private val context: Context, private val library:
     suspend fun resolve(asset: LibraryAssetEntity): PlaybackCandidate {
         val c = connection(asset.providerId)
         return when (c.kind) {
+            CatalogKind.JELLYFIN, CatalogKind.OPENSUBSONIC -> musicProvider(c).resolve(UnifiedPlaybackRequest(MediaKey(providerId(c), asset.itemId))).first()
             CatalogKind.OPDS -> {
                 val (catalog, id) = OpdsCatalog.decodeLocator(asset.itemId)
                 val entry = browse(c, catalog).entries.firstOrNull { it.id == id && it.format == asset.format } ?: error("目录条目已变更，请重新加入")

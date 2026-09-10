@@ -8,7 +8,7 @@ enum class AudioMode { AUDIOBOOK, MUSIC, PODCAST }
 fun ContentKind.isAudio() = this in setOf(ContentKind.AUDIOBOOK, ContentKind.MUSIC, ContentKind.PODCAST)
 
 fun contentKind(type: String): ContentKind = when (type.lowercase()) {
-    "movie", "video", "strm" -> ContentKind.MOVIE
+    "movie", "video", "musicvideo", "strm" -> ContentKind.MOVIE
     "series", "boxset" -> ContentKind.SERIES
     "episode" -> ContentKind.EPISODE
     "livechannel", "livestream" -> ContentKind.LIVE_CHANNEL
@@ -17,7 +17,7 @@ fun contentKind(type: String): ContentKind = when (type.lowercase()) {
     "audiobook", "audio", "m4b", "mp3" -> ContentKind.AUDIOBOOK
     "music", "song" -> ContentKind.MUSIC
     "podcast", "podcastepisode" -> ContentKind.PODCAST
-    "folder", "collectionfolder", "musicalbum", "musicartist", "playlist" -> ContentKind.FOLDER
+    "folder", "season", "collectionfolder", "musicalbum", "musicartist", "playlist" -> ContentKind.FOLDER
     else -> ContentKind.UNKNOWN
 }
 

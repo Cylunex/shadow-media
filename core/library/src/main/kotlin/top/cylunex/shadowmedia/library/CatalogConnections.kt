@@ -15,7 +15,8 @@ import org.json.JSONObject
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
-enum class CatalogKind { OPDS, KOMGA, AUDIOBOOKSHELF }
+enum class CatalogKind { OPDS, KOMGA, AUDIOBOOKSHELF, JELLYFIN, OPENSUBSONIC }
+fun CatalogKind.isNativeMusic() = this == CatalogKind.JELLYFIN || this == CatalogKind.OPENSUBSONIC
 data class CatalogConnection(val id: String = UUID.randomUUID().toString(), val name: String, val kind: CatalogKind,
     val url: String, val username: String = "", val password: String = "", val token: String = "", val allowHttp: Boolean = false) {
     fun base(): HttpUrl = url.trim().toHttpUrl().also {

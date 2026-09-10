@@ -67,7 +67,7 @@ class MusicRepository(private val context: Context, private val library: Library
             library.dao.asset(asset.id)?.let { library.dao.putAsset(it.copy(kind = "MUSIC", title = item.title, author = tags.artist)) }
             dao.putTrack(MusicTrackEntity(asset.id, album = tags.album, artist = tags.artist,
                 albumArtist = tags.albumArtist, disc = tags.disc, track = tags.track,
-                durationMs = item.durationMs ?: 0).scoped(asset.providerId, tags.albumId))
+                durationMs = item.durationMs ?: 0, lyrics = dao.track(asset.id)?.lyrics.orEmpty()).scoped(asset.providerId, tags.albumId))
         }
         return asset.copy(kind = "MUSIC")
     }

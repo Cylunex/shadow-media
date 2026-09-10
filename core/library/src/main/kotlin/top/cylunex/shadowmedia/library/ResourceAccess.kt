@@ -18,6 +18,7 @@ object LibraryResources {
         set(value) { top.cylunex.shadowmedia.model.NetworkPolicy.offlineOnly = value }
     var mediaOffline: (suspend (top.cylunex.shadowmedia.database.ResourceTaskEntity, String) -> Unit)? = null
     var hasOfflineMedia: (suspend (LibraryAssetEntity) -> Boolean)? = null
+    var lyricsResolver: (suspend (LibraryAssetEntity) -> String?)? = null
     var resolver: (suspend (LibraryAssetEntity) -> PlaybackCandidate)? = null
     var networkStorage: NetworkStorageRepository? = null
     var pageManifest: (suspend (LibraryAssetEntity) -> List<String>)? = null

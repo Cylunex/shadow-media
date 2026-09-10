@@ -25,20 +25,29 @@
 - 进程资源预算接入离线媒体、图书、音乐索引、音频解析和漫画当前页，保留前台请求名额。
 - 增加实际 Android MigrationTestHelper，从 v1–v6 每个历史 schema 种入各表数据并验证迁移、外键与重复打开；另有目录快照和任务代次的数据库竞态测试。测试源已编译，设备执行尚未进行。
 
+## 第三批：原生来源、歌词与系统导航
+
+- 新增 Jellyfin/OpenSubsonic 原生 Provider，复用已加密的连接存储、来源管理、音乐索引、队列、离线资源和聚合搜索；账号变更使用新的连接作用域。
+- Jellyfin 使用原生路径、MediaBrowser Authorization、用户认证和 PlaybackInfo，提供直放/转码候选。OpenSubsonic 使用 API Key 或每次请求独立 salt/token，支持专辑/歌曲分页、搜索和原始/转码候选。
+- 原生 API 请求拒绝跨 origin 重定向；测试验证反向代理子路径、认证头、分页尾页与无需媒体预探测的候选链。
+- 歌词优先级接入为内嵌、同目录/本机、服务端。支持 ID3 USLT、毫秒时间戳的 SYLT、Vorbis 标签、静态/LRC、Jellyfin 和 OpenSubsonic songLyrics 扩展；不支持的歌词正常降级。
+- 章节控制跨越物理轨道，上一轨在准备好后定位到最后章节；系统媒体库补齐目录 getItem、播客节点、搜索计数与结果一致性、旧 Service action 兼容。
+- 修复视频离线入口漏传 OfflineRepository、原生视频历史标识加错前缀，以及一个 Emby 账号失败阻止其他音乐来源显示的问题。
+
 ## 仍需继续实现
 
 - R1：历史迁移测试的设备执行；旧视频/阅读/音频继续状态只读聚合；更完整的账号/profile 作用域演进。
-- R3：内嵌与服务端歌词优先级、远程歌单写回与检查点，音质能力的独立评估。
+- R3：远程歌单写回与检查点，音质能力的独立评估。
 - R4：将快照覆盖扩展到其他来源页面、用户状态与个人收录分离、可见封面与相邻内容的预算接入；真实设备中断续传/仅离线验证。
 - R5：固定阅读样本、PDF 文本重排映射、统一继续视图/手工作品关联、带默认关闭开关的 Feed 预加载实验。
-- R6：Jellyfin/OpenSubsonic 原生来源与协议契约测试；Kavita/RSS/可选运行时按设计完成评估。
+- R6：原生来源的真实服务器验证；Kavita/RSS/可选运行时按设计完成评估。
 - R7：设备 instrumentation、Macrobenchmark/Baseline Profile、可访问性与依赖许可门禁。
 
 ## 已有验证证据
 
 - v6→v7 主机 SQLite 迁移通过同等字段、索引、外键及历史样本校验。
 - v5→v6 主机 SQLite 实际执行迁移 SQL，与 Room 导出 schema 的字段、索引、外键一致，保留全部旧表样本数据。
-- `test lintDebug` 通过：136 个独立测试（Debug 117 + 纯 JVM 19），包括 Release 变体共 253 次执行，0 失败/错误/跳过；Lint 0 错误，92 条模块报告警告（含重复）。
+- `test lintDebug` 通过：145 个独立测试（Debug 123 + 纯 JVM 22），包括 Release 变体共 268 次执行，0 失败/错误/跳过；Lint 0 错误，94 条模块报告警告（含重复）。
 - 未构建/安装 APK，未运行设备或真实服务器验收，未推送。
 
 ## 一手接口依据
@@ -47,3 +56,7 @@
 - [MediaLibraryService 回调](https://developer.android.com/reference/androidx/media3/session/MediaLibraryService.MediaLibrarySession.Callback)：本地媒体树与搜索协议。
 - [Readium 3.3.0](https://github.com/readium/kotlin-toolkit/releases/tag/3.3.0) 及 [迁移指南](https://github.com/readium/kotlin-toolkit/blob/3.3.0/docs/migration-guide.md)：引擎升级边界，文件 URL 显式提供 isDirectory。
 - [Audiobookshelf API](https://api.audiobookshelf.org/)：全书章节与轨道 startOffset/duration 的坐标关系。
+
+- [Jellyfin 12](https://jellyfin.org/posts/jellyfin-release-12.0/) 与 [原生认证要求](https://github.com/jellyfin/jellyfin/pull/13306)：Authorization/MediaBrowser 与原生路径。
+- [OpenSubsonic API](https://opensubsonic.netlify.app/docs/api-reference/) 与 [歌曲歌词](https://opensubsonic.netlify.app/docs/endpoints/getlyricsbysongid/)：独立认证参数与扩展探测。
+- [ID3v2.4 帧格式](https://id3.org/id3v2.4.0-frames)：USLT、SYLT 描述符边界和毫秒时间戳。

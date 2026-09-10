@@ -94,6 +94,11 @@ class AppContainer(private val application: Application) {
         offlineMedia.installPlaybackRoute()
         top.cylunex.shadowmedia.library.LibraryResources.mediaOffline = offlineMedia::command
         top.cylunex.shadowmedia.library.LibraryResources.hasOfflineMedia = offlineMedia::available
+        top.cylunex.shadowmedia.library.LibraryResources.lyricsResolver = { asset ->
+            if (asset.providerId.startsWith("catalog:JELLYFIN:") || asset.providerId.startsWith("catalog:OPENSUBSONIC:")) {
+                catalogs.musicProvider(catalogs.connection(asset.providerId)).lyrics(asset.itemId)
+            } else null
+        }
         if (top.cylunex.shadowmedia.library.LibraryResources.offlineOnly) offlineMedia.setOfflineMode(true)
         top.cylunex.shadowmedia.library.LibraryResources.networkStorage = networkStorageRepository
         top.cylunex.shadowmedia.library.LibraryResources.audioEvent = audioReporter::progress
@@ -139,7 +144,9 @@ class AppContainer(private val application: Application) {
             requireNotNull(candidates.firstOrNull()) { "来源没有返回资源" }
         }
         top.cylunex.shadowmedia.library.LibraryResources.audioResolver = { asset, entryId ->
-            if (asset.providerId.startsWith("emby:")) {
+            if (asset.providerId.startsWith("catalog:JELLYFIN:") || asset.providerId.startsWith("catalog:OPENSUBSONIC:")) {
+                catalogs.musicProvider(catalogs.connection(asset.providerId)).resolve(top.cylunex.shadowmedia.model.UnifiedPlaybackRequest(top.cylunex.shadowmedia.model.MediaKey(asset.providerId, asset.itemId)))
+            } else if (asset.providerId.startsWith("emby:")) {
                 val session = requireNotNull(sessionStore.loadAll().firstOrNull { "emby:${it.serverId}:${it.userId}" == asset.providerId }) { "Emby 账号已移除" }
                 val plan = embyRepository.audioPlan(session, asset.itemId)
                 require(plan.candidates.isNotEmpty()) { "来源没有返回资源" }
@@ -174,7 +181,7 @@ class AppContainer(private val application: Application) {
 
     fun recordExternalHistory(entry: ExternalMediaEntry, positionMs: Long, durationMs: Long?) {
         applicationScope.launch {
-            val providerId = entry.sourceId.takeIf { entry.url.startsWith("shadow-cached:") || it.startsWith("storage:") || it.startsWith("live:") }
+            val providerId = entry.sourceId.takeIf { entry.url.startsWith("shadow-cached:") || it.startsWith("catalog:") || it.startsWith("emby:") || it.startsWith("storage:") || it.startsWith("live:") }
                 ?: "external:${entry.sourceId}"
             localMediaState.recordHistory(
                 MediaHistoryEntity(

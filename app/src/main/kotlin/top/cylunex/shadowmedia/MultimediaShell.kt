@@ -4,6 +4,10 @@ package top.cylunex.shadowmedia
 
 import android.content.Intent
 import android.content.res.Configuration
+import top.cylunex.shadowmedia.library.LibraryResources
+import top.cylunex.shadowmedia.library.ResourceScheduler
+import top.cylunex.shadowmedia.library.ResourcePriority
+import top.cylunex.shadowmedia.audio.embeddedLyrics
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -192,7 +196,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                         if (asset.kind in setOf("MOVIE", "EPISODE")) viewModel.playOfflineAsset(asset) else open(asset)
                     })
                     tab == 3 && musicTab && state.screen == Screen.HOME && !catalogScreen -> MusicScreen(container, controller, onPlaying = { audioExpanded = true })
-                    catalogScreen -> CatalogSourcesScreen(container.catalogs, onBack = { catalogScreen = false }, onOpen = ::open, onQueue = { tracks ->
+                    catalogScreen -> CatalogSourcesScreen(container.catalogs, onConnectionsChanged = viewModel::refreshProviderConnections, onBack = { catalogScreen = false }, onOpen = ::open, onQueue = { tracks ->
                         val control = controller
                         if (control != null && tracks.isNotEmpty()) scope.launch {
                             try {
@@ -359,7 +363,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
         item { SourceTile("网络存储", "OpenList / WebDAV / SMB · ${state.networkStorages.size} 个连接", Icons.Rounded.FolderOpen, viewModel::showNetworkStorages) }
         item { SourceTile("影视与直播订阅", "${state.externalSources.size} 个订阅 · 导入、更新与诊断", Icons.Rounded.LiveTv, viewModel::showSources) }
         item { SourceTile("本地书籍与音频", "系统文件选择器 · 不需要全盘存储权限", Icons.Rounded.FileOpen, onImport) }
-        item { SourceTile("图书与有声书服务", "OPDS / Komga / Audiobookshelf", Icons.AutoMirrored.Rounded.MenuBook, onCatalogs) }
+        item { SourceTile("图书与音乐服务", "OPDS / Komga / ABS / Jellyfin / OpenSubsonic", Icons.AutoMirrored.Rounded.MenuBook, onCatalogs) }
         item { SourceTile("聚合搜索", "搜索已连接的内容服务", Icons.Rounded.Search, viewModel::showDiscover) }
         item { SourceTile("设置与诊断", "功能开关、播放记录与问题排查", Icons.Rounded.Tune, viewModel::showSettings) }
         item { Text(if (pendingSync > 0) "待发送进度：$pendingSync 条 · 应用打开时自动重试，已移除账号的记录保留在本机" else "当前没有待发送的进度记录", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -495,9 +499,9 @@ private fun audioTime(value: Long): String { val seconds = value.coerceAtLeast(0
             } else TextButton(onClick = { panel = "书签" }) { Text("查看所有书签") }
         } }
         if (currentChapter != null) item { Row {
-            TextButton(onClick = { controller?.seekTo(state.chapters.lastOrNull { it.startMs < currentChapter.startMs }?.startMs ?: 0) }) { Text("上一章") }
+            TextButton(onClick = { controller?.let { AudiobookController.chapter(it, false) } }) { Text("上一章") }
             Text("本章剩余 ${audioTime((currentChapter.endMs ?: state.duration) - state.position)}", Modifier.padding(12.dp))
-            TextButton(enabled = state.chapters.any { it.startMs > currentChapter.startMs }, onClick = { state.chapters.firstOrNull { it.startMs > currentChapter.startMs }?.let { controller?.seekTo(it.startMs) } }) { Text("下一章") }
+            TextButton(enabled = state.chapters.any { it.startMs > currentChapter.startMs } || controller?.hasNextMediaItem() == true, onClick = { controller?.let { AudiobookController.chapter(it, true) } }) { Text("下一章") }
         } }
     }
     if (panel != null) ModalBottomSheet(onDismissRequest = { panel = null }) {
@@ -507,7 +511,24 @@ private fun audioTime(value: Long): String { val seconds = value.coerceAtLeast(0
                 "歌词" -> {
                     val context = LocalContext.current
                     var lyrics by remember(state.id) { mutableStateOf("") }
-                    LaunchedEffect(state.id) { lyrics = state.id?.let { ShadowMediaDatabase.create(context).musicDao().track(it)?.lyrics }.orEmpty() }
+                    var lyricSource by remember(state.id) { mutableStateOf("") }
+                    LaunchedEffect(state.id, controller?.currentTracks) {
+                        val id = state.id ?: return@LaunchedEffect
+                        val dao = ShadowMediaDatabase.create(context).musicDao()
+                        val embedded = controller?.embeddedLyrics()
+                        lyrics = embedded ?: dao.track(id)?.lyrics.orEmpty()
+                        lyricSource = if (embedded != null) "内嵌歌词" else if (lyrics.isNotBlank()) "本机歌词" else ""
+                        if (lyrics.isBlank() && !LibraryResources.offlineOnly) {
+                            try {
+                                val asset = library.dao.asset(id) ?: return@LaunchedEffect
+                                val remote = ResourceScheduler.process.run(ResourcePriority.VISIBLE) { LibraryResources.lyricsResolver?.invoke(asset) }
+                                if (!remote.isNullOrBlank() && remote.length <= 512 * 1024) {
+                                    dao.fillLyrics(id, remote); lyrics = remote; lyricSource = "服务端歌词"
+                                }
+                            } catch (e: CancellationException) { throw e } catch (_: Exception) { /* Lyrics must not interrupt playback. */ }
+                        }
+                    }
+                    if (lyricSource.isNotBlank()) Text(lyricSource, style = MaterialTheme.typography.labelSmall)
                     AudioLyricsPanel(lyrics, state.position) { controller?.seekTo(it) }
                 }
                 "章节" -> LazyColumn(Modifier.heightIn(max = 480.dp)) { items(state.chapters, key = { it.startMs }) { chapter ->

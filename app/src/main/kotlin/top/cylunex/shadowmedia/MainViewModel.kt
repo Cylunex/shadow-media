@@ -190,6 +190,7 @@ class MainViewModel(
     private val networkStorageStore: NetworkStorageStore,
     private val library: top.cylunex.shadowmedia.library.LibraryRepository? = null,
     private val offline: top.cylunex.shadowmedia.library.OfflineRepository? = null,
+    private val nativeProviders: () -> List<top.cylunex.shadowmedia.provider.MediaProvider> = { emptyList() },
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     private var playbackRequest: Job? = null
@@ -814,6 +815,9 @@ class MainViewModel(
     }
 
     fun playUnifiedItem(item: UnifiedMediaItem) {
+        if (top.cylunex.shadowmedia.model.contentKind(item.type) in setOf(top.cylunex.shadowmedia.model.ContentKind.FOLDER, top.cylunex.shadowmedia.model.ContentKind.SERIES)) {
+            openUnifiedItem(item); return
+        }
         cancelContentRequests()
         contentRequest = viewModelScope.launch {
             if (!tryOfflineVideo(item.key, item.progressMs)) playUnifiedOnline(item)
@@ -1433,9 +1437,12 @@ class MainViewModel(
         update { copy(externalSources = externalSourceStore.loadAll()) }
     }
 
+    fun refreshProviderConnections() = syncProviders()
+
     private fun syncProviders() {
         val storedNetworkConnections = networkStorageStore.loadAll()
         val providers = buildList {
+            addAll(nativeProviders())
             library?.let { add(top.cylunex.shadowmedia.library.LibraryMediaProvider(it)) }
             sessionStore.loadAll().distinctBy { it.serverId to it.userId }.forEach { add(EmbyMediaProvider(it, repository)) }
             storedNetworkConnections.forEach { connection ->
@@ -1742,7 +1749,9 @@ class MainViewModel(
                         container.integrationStore,
                         container.networkStorageRepository,
                         container.networkStorageStore,
-                        container.library,
+                        library = container.library,
+                        offline = container.offline,
+                        nativeProviders = container.catalogs::musicProviders,
                     ) as T
             }
     }

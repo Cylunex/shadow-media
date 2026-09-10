@@ -39,6 +39,7 @@ class AudiobookService : MediaLibraryService() {
     private var sleepDeadline = 0L
     private var stopAfterTrack = false
     private var chapterStop: Pair<String, Long>? = null
+    private var jumpToLastChapter: String? = null
     private var mode = AudioMode.AUDIOBOOK
     private val candidates = AudioCandidateSessions()
     private lateinit var listening: ListeningTracker
@@ -92,6 +93,7 @@ class AudiobookService : MediaLibraryService() {
                     AudioDiagnostics.method.value = ""
                     AudioDiagnostics.format.value = ""
                     listening.sample(this@apply, transition = true)
+                    if (jumpToLastChapter != null && jumpToLastChapter != mediaItem?.entryId()) jumpToLastChapter = null
                     if (chapterStop != null && chapterStop?.first != mediaItem?.entryId()) { pause(); clearSleep() }
                     if (!applyingQueue) {
                         val speed = if (mediaItem?.audioMode() == AudioMode.MUSIC) 1f else mediaItem?.mediaId?.let { getSharedPreferences("audio_preferences", MODE_PRIVATE).getFloat("speed:$it", 1f) } ?: 1f
@@ -126,6 +128,11 @@ class AudiobookService : MediaLibraryService() {
                     AudioDiagnostics.format.value = audioFormat?.let { format ->
                         listOfNotNull(format.sampleMimeType, format.codecs, format.sampleRate.takeIf { it > 0 }?.let { "$it Hz" }, format.channelCount.takeIf { it > 0 }?.let { "$it 声道" }).joinToString(" · ")
                     }.orEmpty()
+                    val jump = jumpToLastChapter
+                    if (jump != null && currentMediaItem?.entryId() == jump && playbackState == Player.STATE_READY) {
+                        jumpToLastChapter = null
+                        seekTo(audioChapters().lastOrNull()?.startMs ?: 0)
+                    }
                     listening.sample(player); persistQueue()
                 }
             })
@@ -339,7 +346,7 @@ class AudiobookService : MediaLibraryService() {
             LibraryResult.ofItemList(tree.children(parentId, page, pageSize.coerceIn(1, 200)), params)
         }
         override fun onSearch(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, params: LibraryParams?): ListenableFuture<LibraryResult<Void>> = future {
-            val count = library.dao.searchCount("MUSIC", "%" + query.replace("%", "\\%").replace("_", "\\_") + "%")
+            val count = ShadowMediaDatabase.create(this@AudiobookService).musicDao().searchCount("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
             session.notifySearchResultChanged(browser, query, count, params)
             LibraryResult.ofVoid(params)
         }
@@ -349,9 +356,26 @@ class AudiobookService : MediaLibraryService() {
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
             if (controller.packageName != packageName && !controller.isTrusted) return MediaSession.ConnectionResult.reject()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session, controller)
-                .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(SessionCommand(SLEEP, Bundle.EMPTY)).add(SessionCommand(SWITCH_MODE, Bundle.EMPTY)).build()).build()
+                .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(SessionCommand(SLEEP, Bundle.EMPTY)).add(SessionCommand(SWITCH_MODE, Bundle.EMPTY)).add(SessionCommand(CHAPTER, Bundle.EMPTY)).build()).build()
         }
         override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, customCommand: SessionCommand, args: Bundle): ListenableFuture<SessionResult> {
+            if (customCommand.customAction == CHAPTER) {
+                val next = args.getBoolean("next")
+                val chapters = player.audioChapters()
+                val position = player.currentPosition
+                val current = chapters.chapterAt(position)
+                val target = if (next) chapters.firstOrNull { it.startMs > (current?.startMs ?: position) }
+                    else chapters.lastOrNull { it.startMs < position - 3000 }
+                chapterStop = null; jumpToLastChapter = null
+                if (target != null) player.seekTo(target.startMs)
+                else if (next && player.hasNextMediaItem()) player.seekToNextMediaItem()
+                else if (!next && player.hasPreviousMediaItem()) {
+                    val index = player.previousMediaItemIndex
+                    jumpToLastChapter = player.getMediaItemAt(index).entryId()
+                    player.seekTo(index, 0)
+                } else if (!next) player.seekTo(0)
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
             if (customCommand.customAction == SWITCH_MODE) {
                 val target = runCatching { AudioMode.valueOf(args.getString("mode").orEmpty()) }.getOrNull()
                     ?: return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
@@ -424,6 +448,7 @@ class AudiobookService : MediaLibraryService() {
     }
     companion object {
         const val MODE = "shadow.audio.mode"
+        const val CHAPTER = "shadow.audio.chapter"
         const val SWITCH_MODE = "shadow.audio.switchMode"
         const val SLEEP = "shadow.audio.sleep"
         internal const val ENTRY_ID = "shadow.audio.entry"
@@ -467,6 +492,9 @@ object AudiobookController {
         val items = ids.map { MediaItem.Builder().setMediaId(it).build() }
         if (next) controller.addMediaItems((controller.currentMediaItemIndex + 1).coerceIn(0, controller.mediaItemCount), items)
         else controller.addMediaItems(items)
+    }
+    fun chapter(controller: MediaController, next: Boolean) {
+        controller.sendCustomCommand(SessionCommand(AudiobookService.CHAPTER, Bundle.EMPTY), Bundle().apply { putBoolean("next", next) })
     }
     fun sleep(controller: MediaController, minutes: Int) {
         controller.sendCustomCommand(SessionCommand(AudiobookService.SLEEP, Bundle.EMPTY), Bundle().apply { putInt("minutes", minutes) })

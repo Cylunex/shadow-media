@@ -187,6 +187,7 @@ enum class ProviderKind {
     EMBY,
     OPENLIST,
     JELLYFIN,
+    OPENSUBSONIC,
     PLEX,
     LIVE_PLAYLIST,
     XTREAM,

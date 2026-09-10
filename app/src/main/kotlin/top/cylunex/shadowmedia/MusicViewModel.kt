@@ -70,16 +70,21 @@ class MusicViewModel(private val container: AppContainer) : ViewModel() {
     }
     fun loadSources() = work {
         val result = mutableListOf<MusicSource>()
+        var failed = 0
         for (session in container.sessionStore.loadAll()) {
-            for (library in container.embyRepository.libraries(session).filter { it.collectionType.equals("music", true) }) {
-                result += MusicSource("emby:${session.serverId}:${session.userId}", library.id, "${session.userName} · ${library.name}")
-            }
+            try {
+                for (library in container.embyRepository.libraries(session).filter { it.collectionType.equals("music", true) }) {
+                    result += MusicSource("emby:${session.serverId}:${session.userId}", library.id, "${session.userName} · ${library.name}")
+                }
+            } catch (e: CancellationException) { throw e } catch (_: Exception) { failed++ }
         }
+        if (failed > 0) message.value = "$failed 个 Emby 账号暂时无法读取，其他来源仍可使用"
+        container.catalogs.musicProviders().forEach { provider -> result += MusicSource(provider.descriptor.id, "songs", provider.descriptor.name) }
         sources.value = result
-        if (result.isEmpty()) message.value = "请先在来源中连接含音乐库的 Emby 账号"
+        if (result.isEmpty()) message.value = "请先在来源中连接 Emby、Jellyfin 或 OpenSubsonic 音乐库"
     }
     fun refresh(source: MusicSource) = work {
-        val provider = container.providerRegistry.provider(source.providerId) ?: error("来源已断开，请重新连接")
+        val provider = container.providerRegistry.provider(source.providerId) ?: container.catalogs.musicProviders().firstOrNull { it.descriptor.id == source.providerId } ?: error("来源已断开，请重新连接")
         val scopeId = scopedContentId(source.providerId, source.parentId)
         val generation = UUID.randomUUID().toString()
         val snapshots = container.music.snapshots
