@@ -156,7 +156,9 @@ fun LegacyMediaRoot(viewModel: MainViewModel, container: AppContainer) {
         )
     }
     val imageLoader = rememberEmbyImageLoader(state.session, container.clientIdentity)
-    CompositionLocalProvider(LocalEmbyImageLoader provides imageLoader) {
+    val videoControls = remember { VideoControlState() }
+    DisposableEffect(Unit) { onDispose { (rootContext.findActivity() as? MainActivity)?.setPlaybackActive(false) } }
+    CompositionLocalProvider(LocalEmbyImageLoader provides imageLoader, LocalVideoControlState provides videoControls) {
         ShadowBackdrop(Modifier.fillMaxSize()) {
             AnimatedContent(
                 targetState = state.screen,
@@ -220,14 +222,29 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
     val runtime = remember(entry.id, entry.url, entry.startPositionMs) {
         ExternalPlaybackRuntime(context.applicationContext, entry, container.networkStorageRepository)
     }
+    val videoControls = LocalVideoControlState.current
+    val inPip = (context.findActivity() as? MainActivity)?.inPictureInPicture == true
     val playbackError by runtime.error.collectAsStateWithLifecycle()
+    LaunchedEffect(runtime) {
+        while (true) {
+            kotlinx.coroutines.delay(5000)
+            container.recordExternalHistory(entry, runtime.player.currentPosition.coerceAtLeast(0L), runtime.player.duration.takeIf { it > 0 })
+        }
+    }
     val focusRequester = remember(runtime) { FocusRequester() }
     LaunchedEffect(runtime) { runCatching { focusRequester.requestFocus() } }
     DisposableEffect(runtime, lifecycleOwner) {
+        var resumeAfterBackground = false
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_STOP -> runtime.player.pause()
-                Lifecycle.Event.ON_START -> runtime.player.play()
+                Lifecycle.Event.ON_STOP -> {
+                    resumeAfterBackground = runtime.player.playWhenReady
+                    runtime.player.pause()
+                    container.recordExternalHistory(entry, runtime.player.currentPosition.coerceAtLeast(0L), runtime.player.duration.takeIf { it > 0 })
+                }
+                Lifecycle.Event.ON_START -> if (resumeAfterBackground && !videoControls.sleepExpired) {
+                    runtime.player.play(); resumeAfterBackground = false
+                }
                 else -> Unit
             }
         }
@@ -247,6 +264,7 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
         Modifier.fillMaxSize().background(Color.Black)
             .focusRequester(focusRequester)
             .onPreviewKeyEvent { event ->
+                if (videoControls.locked) return@onPreviewKeyEvent false
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 when (event.key) {
                     Key.DirectionLeft -> {
@@ -270,8 +288,9 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
             }
             .focusable()
     ) {
-        Player(player = runtime.player, modifier = Modifier.fillMaxSize())
-        Row(
+        Player(player = runtime.player, modifier = Modifier.fillMaxSize(), showControls = !videoControls.locked && !inPip)
+        VideoSubtitles(runtime.player)
+        if (!inPip && !videoControls.locked) Row(
             modifier = Modifier.align(Alignment.TopCenter)
                 .fillMaxWidth()
                 .background(Color.Black.copy(alpha = 0.58f))
@@ -307,6 +326,7 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
                 }
             }
         }
+        VideoPlayerFeatures(runtime.player, onSubtitle = runtime::addSubtitle)
     }
 }
 
@@ -763,12 +783,15 @@ private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: 
             .collect(viewModel::playAt)
     }
 
+    val videoControls = LocalVideoControlState.current
     VerticalPager(
         state = pagerState,
+        userScrollEnabled = !videoControls.locked,
         key = { state.items[it].id },
         beyondViewportPageCount = 1,
         modifier = Modifier.fillMaxSize().background(Color.Black).onPreviewKeyEvent { event ->
             if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            if (videoControls.locked) return@onPreviewKeyEvent false
             val target = when (event.key) {
                 Key.DirectionDown, Key.PageDown -> (pagerState.currentPage + 1).coerceAtMost(state.items.lastIndex)
                 Key.DirectionUp, Key.PageUp -> (pagerState.currentPage - 1).coerceAtLeast(0)
@@ -876,7 +899,7 @@ private fun FeedPage(
             FeedPlaceholder(isLoading, errorMessage, onRetry)
         }
 
-        PlayerTopBar(
+        if (!LocalVideoControlState.current.locked && (androidx.compose.ui.platform.LocalContext.current.findActivity() as? MainActivity)?.inPictureInPicture != true) PlayerTopBar(
             page = page,
             pageCount = pageCount,
             onBack = onBack,
@@ -1296,6 +1319,8 @@ private fun ActivePlayer(
 ) {
     val session = requireNotNull(state.session)
     val context = androidx.compose.ui.platform.LocalContext.current
+    val videoControls = LocalVideoControlState.current
+    val inPip = (context.findActivity() as? MainActivity)?.inPictureInPicture == true
     val lifecycleOwner = LocalLifecycleOwner.current
     val runtime = remember(plan, feedPreload) {
         PlaybackRuntime(
@@ -1326,7 +1351,7 @@ private fun ActivePlayer(
                     resumeAfterBackground = runtime.player.playWhenReady
                     runtime.player.pause()
                 }
-                Lifecycle.Event.ON_START -> if (resumeAfterBackground) {
+                Lifecycle.Event.ON_START -> if (resumeAfterBackground && !videoControls.sleepExpired) {
                     runtime.player.play()
                     resumeAfterBackground = false
                 }
@@ -1345,6 +1370,7 @@ private fun ActivePlayer(
         Modifier.fillMaxSize()
             .focusRequester(focusRequester)
             .onPreviewKeyEvent { event ->
+                if (videoControls.locked) return@onPreviewKeyEvent false
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 when (event.key) {
                     Key.DirectionLeft -> {
@@ -1365,8 +1391,9 @@ private fun ActivePlayer(
             .focusable()
     ) {
         Player(player = runtime.player, modifier = Modifier.fillMaxSize())
+        VideoSubtitles(runtime.player)
 
-        FilledTonalButton(
+        if (!inPip && !videoControls.locked) FilledTonalButton(
             onClick = { showDiagnostics = !showDiagnostics },
             modifier = Modifier.statusBarsPadding().padding(top = 68.dp, start = 12.dp),
             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
@@ -1376,7 +1403,7 @@ private fun ActivePlayer(
             Text(if (showDiagnostics) "收起诊断" else "播放诊断")
         }
 
-        if (showDiagnostics || diagnostics.lastError != null) {
+        if (!inPip && (showDiagnostics || diagnostics.lastError != null)) {
             Card(
                 Modifier.fillMaxWidth().statusBarsPadding()
                     .padding(start = 16.dp, end = 16.dp, top = 124.dp),
@@ -1428,7 +1455,7 @@ private fun ActivePlayer(
             }
         }
 
-        PlaybackControls(
+        if (!inPip && !videoControls.locked) PlaybackControls(
             item = item,
             runtime = runtime,
             segments = state.mediaSegments,
@@ -1436,6 +1463,8 @@ private fun ActivePlayer(
             onSaveSegment = { type, startMs, endMs -> onSaveSegment(item, type, startMs, endMs) },
             modifier = Modifier.align(Alignment.BottomCenter),
         )
+        VideoPlayerFeatures(runtime.player, position = { runtime.currentPositionMs },
+            duration = { runtime.durationMs }, canSeek = { runtime.isSeekSupported }, seek = runtime::seekTo)
     }
 }
 

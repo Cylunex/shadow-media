@@ -650,7 +650,18 @@ private class NetworkStorageMediaProvider(
             val resolved = backend.resolve(withFileDetails(nested))
             return listOf(resolved.toCandidate(targetPath.substringAfterLast('.', "").equals("iso", true)))
         }
-        return listOf(backend.resolve(withFileDetails(file)).toCandidate(file.extension() == "iso"))
+        val candidate = backend.resolve(withFileDetails(file)).toCandidate(file.extension() == "iso")
+        // Optional sidecars must never prevent the video itself from opening.
+        val subtitles = try {
+            backend.list(parentPath(file.path)).filter {
+                !it.isDirectory && top.cylunex.shadowmedia.model.isCompanionSubtitle(file.name, it.name)
+            }.take(16).map { sidecar ->
+                val resolved = backend.resolve(sidecar)
+                top.cylunex.shadowmedia.model.ExternalSubtitle(resolved.url,
+                    requireNotNull(top.cylunex.shadowmedia.model.subtitleMimeType(sidecar.name)), sidecar.name)
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { emptyList() }
+        return listOf(candidate.copy(subtitles = subtitles))
     }
 
     private suspend fun toItem(file: RemoteFile, siblings: List<RemoteFile>): UnifiedMediaItem {

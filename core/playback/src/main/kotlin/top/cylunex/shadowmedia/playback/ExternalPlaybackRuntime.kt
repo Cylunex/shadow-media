@@ -4,8 +4,13 @@ import android.content.Context
 import android.net.Uri
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaMetadata
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.session.MediaSession
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.Tracks
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Player
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.datasource.BaseDataSource
@@ -49,6 +54,17 @@ class ExternalPlaybackRuntime(
             chain.proceed(scoped)
         }
         .build()
+    private val httpFactory = OkHttpDataSource.Factory(client)
+        .setUserAgent("Shadow Media")
+        .setDefaultRequestProperties(entry.requestHeaders)
+    private val dataSourceFactory = DataSource.Factory {
+        DefaultDataSource(context, RoutingDataSource(httpFactory.createDataSource(), networkStorageRepository))
+    }
+    private val sourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+    private var mediaItem = MediaItem.Builder().setUri(entry.url).setMediaId(entry.id)
+        .setMediaMetadata(MediaMetadata.Builder().setTitle(entry.title).build())
+        .setSubtitleConfigurations(entry.subtitles.mapIndexed { index, subtitle -> subtitle.configuration(index == 0) }).build()
+    private var pendingSubtitle: top.cylunex.shadowmedia.model.ExternalSubtitle? = null
     private val exoPlayer = ExoPlayer.Builder(context).build().apply {
         setAudioAttributes(AudioAttributes.DEFAULT, true)
         setHandleAudioBecomingNoisy(true)
@@ -56,30 +72,64 @@ class ExternalPlaybackRuntime(
         repeatMode = Player.REPEAT_MODE_OFF
         addListener(object : Player.Listener {
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) { if (playWhenReady) audible.claim() else audible.abandon() }
+            override fun onTracksChanged(tracks: Tracks) {
+                val requested = pendingSubtitle ?: return
+                for (group in tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }) {
+                    val index = (0 until group.length).firstOrNull {
+                        group.isTrackSupported(it) && group.getTrackFormat(it).label == requested.label
+                    } ?: continue
+                    pendingSubtitle = null
+                    trackSelectionParameters = trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                        .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(index))).build()
+                    break
+                }
+            }
             override fun onPlayerError(error: PlaybackException) {
-                errorState.value = error.cause?.message ?: error.message
+                if (mediaItem.localConfiguration?.subtitleConfigurations?.isNotEmpty() == true) {
+                    // Sidecars are optional: retry the same video once without them if loading/parsing fails.
+                    val position = currentPosition.coerceAtLeast(0)
+                    val playing = playWhenReady
+                    pendingSubtitle = null
+                    mediaItem = mediaItem.buildUpon().setSubtitleConfigurations(emptyList()).build()
+                    setMediaSource(sourceFactory.createMediaSource(mediaItem), position)
+                    prepare()
+                    playWhenReady = playing
+                } else errorState.value = error.cause?.message ?: error.message
             }
         })
-        val httpFactory = OkHttpDataSource.Factory(client)
-            .setUserAgent("Shadow Media")
-            .setDefaultRequestProperties(entry.requestHeaders)
-        val dataSourceFactory = DataSource.Factory {
-            RoutingDataSource(httpFactory.createDataSource(), networkStorageRepository)
-        }
-        setMediaSource(
-            DefaultMediaSourceFactory(dataSourceFactory)
-                .createMediaSource(MediaItem.fromUri(entry.url))
-        )
+        setMediaSource(sourceFactory.createMediaSource(mediaItem))
         if (entry.startPositionMs > 0) seekTo(entry.startPositionMs)
         prepare()
         playWhenReady = true
     }
 
+    private val mediaSession = MediaSession.Builder(context, exoPlayer).setId("external-video-${java.util.UUID.randomUUID()}").build()
+
     val player: Player = exoPlayer
     val error: StateFlow<String?> = errorState.asStateFlow()
 
+    fun addSubtitle(subtitle: top.cylunex.shadowmedia.model.ExternalSubtitle) {
+        val position = exoPlayer.currentPosition
+        val playing = exoPlayer.playWhenReady
+        pendingSubtitle = subtitle
+        errorState.value = null
+        mediaItem = mediaItem.buildUpon().setSubtitleConfigurations(
+            mediaItem.localConfiguration?.subtitleConfigurations.orEmpty().filterNot { it.uri.toString() == subtitle.uri } + subtitle.configuration(true)
+        ).build()
+        exoPlayer.setMediaSource(sourceFactory.createMediaSource(mediaItem), position)
+        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false).clearOverridesOfType(C.TRACK_TYPE_TEXT).build()
+        exoPlayer.prepare()
+        exoPlayer.playWhenReady = playing
+    }
+
+    private fun top.cylunex.shadowmedia.model.ExternalSubtitle.configuration(default: Boolean) =
+        MediaItem.SubtitleConfiguration.Builder(Uri.parse(uri)).setMimeType(mimeType).setLabel(label)
+            .setSelectionFlags(if (default) C.SELECTION_FLAG_DEFAULT else 0).build()
+
     override fun close() {
         audible.close()
+        mediaSession.release()
         exoPlayer.release()
         client.dispatcher.executorService.shutdown()
         client.connectionPool.evictAll()

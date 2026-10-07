@@ -79,6 +79,7 @@ dependencies {
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
     implementation(libs.media3.ui.compose.material3)
+    implementation("androidx.media3:media3-ui:${libs.versions.media3.get()}")
     implementation(libs.paging.compose)
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
 

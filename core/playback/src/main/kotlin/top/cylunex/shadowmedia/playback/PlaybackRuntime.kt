@@ -132,7 +132,7 @@ class PlaybackRuntime(
     }
     val player: Player = exoPlayer
     private val audible = top.cylunex.shadowmedia.model.PlaybackCoordinator.process.participant { exoPlayer.pause() }
-    private val mediaSession = MediaSession.Builder(context, exoPlayer).build()
+    private val mediaSession = MediaSession.Builder(context, exoPlayer).setId("video-$telemetryId").build()
     val currentPositionMs: Long
         get() = (positionOffsetMs + player.currentPosition).coerceAtLeast(0L)
     val durationMs: Long

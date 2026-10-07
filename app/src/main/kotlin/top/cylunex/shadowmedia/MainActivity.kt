@@ -1,6 +1,8 @@
 package top.cylunex.shadowmedia
 
 import android.os.Bundle
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import android.app.PictureInPictureParams
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -14,6 +16,13 @@ import top.cylunex.shadowmedia.ui.theme.ShadowMediaTheme
 
 class MainActivity : ComponentActivity() {
     private var playbackActive = false
+    var inPictureInPicture by androidx.compose.runtime.mutableStateOf(false)
+        private set
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        inPictureInPicture = isInPictureInPictureMode
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

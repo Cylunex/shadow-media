@@ -142,6 +142,7 @@ data class ExternalMediaEntry(
     val credentialOrigin: String? = null,
     val startPositionMs: Long = 0,
     val isDiscImage: Boolean = false,
+    val subtitles: List<ExternalSubtitle> = emptyList(),
 )
 
 data class LiveChannel(
@@ -412,6 +413,7 @@ data class PlaybackCandidate(
     val requiredHeaders: Map<String, String>,
     val credentialOrigin: String? = null,
     val isDiscImage: Boolean = false,
+    val subtitles: List<ExternalSubtitle> = emptyList(),
     /** Candidate-specific source used when PlaybackInfo exposes multiple versions. */
     val mediaSourceId: String? = null,
 )

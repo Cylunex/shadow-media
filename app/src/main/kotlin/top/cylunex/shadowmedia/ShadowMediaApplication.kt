@@ -48,6 +48,7 @@ open class ShadowMediaApplication : Application(), coil3.SingletonImageLoader.Fa
 
 class AppContainer(private val application: Application) {
     val library = top.cylunex.shadowmedia.library.LibraryRepository(application)
+    val localVideos = top.cylunex.shadowmedia.library.LocalVideoRepository(application)
     val offline = top.cylunex.shadowmedia.library.OfflineRepository(application, library)
     val music = top.cylunex.shadowmedia.library.MusicRepository(application, library)
     val catalogs = top.cylunex.shadowmedia.library.NativeCatalogRepository(application, library)
@@ -192,7 +193,7 @@ class AppContainer(private val application: Application) {
 
     fun recordExternalHistory(entry: ExternalMediaEntry, positionMs: Long, durationMs: Long?) {
         applicationScope.launch {
-            val providerId = entry.sourceId.takeIf { entry.url.startsWith("shadow-cached:") || it.startsWith("catalog:") || it.startsWith("emby:") || it.startsWith("storage:") || it.startsWith("live:") }
+            val providerId = entry.sourceId.takeIf { entry.url.startsWith("shadow-cached:") || it == "local-video" || it.startsWith("catalog:") || it.startsWith("emby:") || it.startsWith("storage:") || it.startsWith("live:") }
                 ?: "external:${entry.sourceId}"
             localMediaState.recordHistory(
                 MediaHistoryEntity(

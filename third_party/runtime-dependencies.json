@@ -1355,6 +1355,18 @@
       "embeddedNotices": []
     },
     {
+      "coordinate": "androidx.media3:media3-ui:1.11.0",
+      "artifact": "media3-ui-1.11.0.aar",
+      "sha256": "bbd94f6d0e504931235d87275c3c5bf4f0a48e0008d8d12efc79f96fc8a3011f",
+      "licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "embeddedNotices": []
+    },
+    {
       "coordinate": "androidx.media:media:1.7.0",
       "artifact": "media-1.7.0.aar",
       "sha256": "81a199ee87c6d3d59fb35f7dbec71b3f1d507128611099b6ac3a4b1c5a0bf1f9",

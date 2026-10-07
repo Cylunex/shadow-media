@@ -238,6 +238,8 @@ androidx.media3:media3-ui-compose-material3:1.11.0
   The Apache Software License, Version 2.0: http://www.apache.org/licenses/LICENSE-2.0.txt
 androidx.media3:media3-ui-compose:1.11.0
   The Apache Software License, Version 2.0: http://www.apache.org/licenses/LICENSE-2.0.txt
+androidx.media3:media3-ui:1.11.0
+  The Apache Software License, Version 2.0: http://www.apache.org/licenses/LICENSE-2.0.txt
 androidx.media:media:1.7.0
   The Apache Software License, Version 2.0: http://www.apache.org/licenses/LICENSE-2.0.txt
 androidx.navigationevent:navigationevent-android:1.0.2

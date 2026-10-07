@@ -934,6 +934,7 @@ class MainViewModel(
                                     group = provider.descriptor.name,
                                     logoUrl = item.posterUrl,
                                     requestHeaders = candidate.requiredHeaders,
+                                    subtitles = candidate.subtitles,
                                     credentialOrigin = candidate.credentialOrigin,
                                     startPositionMs = item.progressMs,
                                     isDiscImage = candidate.isDiscImage || item.key.itemId.substringBefore('|')
@@ -1864,7 +1865,7 @@ class MainViewModel(
                         container.networkStorageStore,
                         library = container.library,
                         offline = container.offline,
-                        nativeProviders = container.catalogs::musicProviders,
+                        nativeProviders = { container.catalogs.musicProviders() + container.localVideos },
                         prepareAccounts = { container.accountScopesReady.await() },
                     ) as T
             }

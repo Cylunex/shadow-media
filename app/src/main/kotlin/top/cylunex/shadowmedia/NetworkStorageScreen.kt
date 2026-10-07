@@ -35,7 +35,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -54,6 +56,18 @@ import top.cylunex.shadowmedia.ui.withoutEmoji
 @Composable
 internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) {
     BackHandler(onBack = viewModel::back)
+    val context = LocalContext.current
+    var discoveryRun by remember { mutableIntStateOf(0) }
+    var discovering by remember { mutableStateOf(true) }
+    var discovered by remember { mutableStateOf(emptyList<LanServer>()) }
+    var discoveryError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(discoveryRun) {
+        discovering = true; discovered = emptyList(); discoveryError = null
+        try { withTimeoutOrNull(15_000) { discoverLanServers(context.applicationContext).collect { discovered = it } } }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (_: Exception) { discoveryError = "局域网发现不可用，请手动填写服务地址" }
+        finally { discovering = false }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
         contentPadding = PaddingValues(bottom = 40.dp),
@@ -86,6 +100,24 @@ internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) 
                         )
                     }
                 }
+            }
+        }
+        item {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("局域网服务", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                    androidx.compose.material3.TextButton(enabled = !discovering, onClick = { discoveryRun++ }) { Text(if (discovering) "正在发现" else "重新发现") }
+                }
+                Text(discoveryError ?: "自动发现广播 WebDAV / HTTP(S) 的设备；未开启服务广播的 NAS 可手动添加。HTTP 服务需要填写实际 DAV 路径。", style = MaterialTheme.typography.bodySmall)
+                discovered.forEach { server ->
+                    androidx.compose.material3.TextButton(onClick = {
+                        viewModel.updateNetworkStorageKind(NetworkStorageKind.WEBDAV)
+                        viewModel.updateNetworkStorageName(server.name)
+                        viewModel.updateNetworkStorageAddress(server.address)
+                        viewModel.updateNetworkStorageAllowInsecure(server.address.startsWith("http:"))
+                    }) { Text("${server.name} · ${if (server.webdav) "WebDAV" else "HTTP 服务"} · ${server.address}") }
+                }
+                if (!discovering && discovered.isEmpty()) Text("没有发现服务，请确认手机和服务器连接同一局域网。", style = MaterialTheme.typography.bodySmall)
             }
         }
         item {

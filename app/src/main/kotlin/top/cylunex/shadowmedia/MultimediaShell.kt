@@ -86,6 +86,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             block()
         }
     }
+    var localVideoScreen by rememberSaveable { mutableStateOf(false) }
     var continueScreen by rememberSaveable { mutableStateOf(false) }
     var workAsset by remember { mutableStateOf<LibraryAssetEntity?>(null) }
     var offlineScreen by rememberSaveable { mutableStateOf(false) }
@@ -169,7 +170,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             }
         }
     }
-    fun select(index: Int) { tab = index; audioExpanded = false; catalogScreen = false; offlineScreen = false; continueScreen = false; viewModel.showHome() }
+    fun select(index: Int) { localVideoScreen = false; tab = index; audioExpanded = false; catalogScreen = false; offlineScreen = false; continueScreen = false; viewModel.showHome() }
     if (playerScreen) { LegacyMediaRoot(viewModel, container); return }
     BackHandler(enabled = audioExpanded) { audioExpanded = false }
     Scaffold(bottomBar = {
@@ -195,6 +196,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                 }
                 when {
                     audioExpanded -> AudioNowPlaying(controller, container.library, onBack = { audioExpanded = false })
+                    localVideoScreen && !continueScreen -> LocalVideosScreen(container, viewModel, onBack = { localVideoScreen = false }, onContinue = { continueScreen = true })
                     continueScreen -> ContinueScreen(container, onBack = { continueScreen = false }, onOpen = ::open, onLegacy = viewModel::continueLegacy)
                     offlineScreen -> OfflineScreen(container, onBack = { offlineScreen = false }, onOpen = { asset ->
                         if (asset.kind in setOf("MOVIE", "EPISODE")) viewModel.playOfflineAsset(asset) else open(asset)
@@ -227,7 +229,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                             }
                             container.library.remove(item.id)
                         } })
-                    tab == 4 && state.screen == Screen.HOME -> SourcesHub(state, viewModel, pendingSync, onImport = { importer.launch(arrayOf("*/*")) }, onCatalogs = { catalogScreen = true }, onOffline = { offlineScreen = true }, onContinue = { continueScreen = true })
+                    tab == 4 && state.screen == Screen.HOME -> SourcesHub(state, viewModel, pendingSync, onImport = { importer.launch(arrayOf("*/*")) }, onCatalogs = { catalogScreen = true }, onOffline = { offlineScreen = true }, onContinue = { continueScreen = true }, onVideos = { localVideoScreen = true })
                     tab == 1 && state.screen == Screen.HOME -> LiveLanding(state, container, viewModel)
                     else -> LegacyMediaRoot(viewModel, container)
                 }
@@ -359,7 +361,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     }
 }
 
-@Composable private fun SourcesHub(state: MainUiState, viewModel: MainViewModel, pendingSync: Int, onImport: () -> Unit, onCatalogs: () -> Unit, onOffline: () -> Unit, onContinue: () -> Unit) {
+@Composable private fun SourcesHub(state: MainUiState, viewModel: MainViewModel, pendingSync: Int, onImport: () -> Unit, onCatalogs: () -> Unit, onOffline: () -> Unit, onContinue: () -> Unit, onVideos: () -> Unit) {
     val context = LocalContext.current
     val appearance = remember { context.getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE) }
     var theme by remember { mutableStateOf(appearance.getString("theme", "深色")) }
@@ -370,6 +372,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
         item { SourceTile("Emby 媒体服务", "${state.savedSessions.size} 个已保存账号", Icons.Rounded.Dns, viewModel::showServers) }
         item { SourceTile("网络存储", "OpenList / WebDAV / SMB · ${state.networkStorages.size} 个连接", Icons.Rounded.FolderOpen, viewModel::showNetworkStorages) }
         item { SourceTile("影视与直播订阅", "${state.externalSources.size} 个订阅 · 导入、更新与诊断", Icons.Rounded.LiveTv, viewModel::showSources) }
+        item { SourceTile("本机视频与链接", "手机视频 / 文件夹 / m3u8 · 继续观看", Icons.Rounded.VideoLibrary, onVideos) }
         item { SourceTile("本地书籍与音频", "系统文件选择器 · 不需要全盘存储权限", Icons.Rounded.FileOpen, onImport) }
         item { SourceTile("图书与音乐服务", "OPDS / Komga / ABS / Jellyfin / OpenSubsonic", Icons.AutoMirrored.Rounded.MenuBook, onCatalogs) }
         item { SourceTile("聚合搜索", "搜索已连接的内容服务", Icons.Rounded.Search, viewModel::showDiscover) }
