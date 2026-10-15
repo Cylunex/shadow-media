@@ -21,12 +21,17 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import java.io.Closeable
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.OkHttpClient
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import top.cylunex.shadowmedia.model.ExternalMediaEntry
+import top.cylunex.shadowmedia.model.NetworkPolicy
 import top.cylunex.shadowmedia.network.NetworkReadHandle
 import top.cylunex.shadowmedia.network.NetworkStorageRepository
 
@@ -39,7 +44,11 @@ class ExternalPlaybackRuntime(
     context: Context,
     entry: ExternalMediaEntry,
     networkStorageRepository: NetworkStorageRepository? = null,
+    startPlayWhenReady: Boolean = true,
 ) : Closeable {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var released = false
+    private val networkMedia = entry.url.substringBefore(':').lowercase() in setOf("http", "https", "shadow-smb")
     private val audible: top.cylunex.shadowmedia.model.PlaybackCoordinator.Participant = top.cylunex.shadowmedia.model.PlaybackCoordinator.process.participant { exoPlayer.pause() }
     private val errorState = MutableStateFlow<String?>(null)
     private val client = OkHttpClient.Builder().addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor())
@@ -70,38 +79,61 @@ class ExternalPlaybackRuntime(
         setHandleAudioBecomingNoisy(true)
         setWakeMode(C.WAKE_MODE_LOCAL)
         repeatMode = Player.REPEAT_MODE_OFF
-        addListener(object : Player.Listener {
-            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) { if (playWhenReady) audible.claim() else audible.abandon() }
-            override fun onTracksChanged(tracks: Tracks) {
-                val requested = pendingSubtitle ?: return
-                for (group in tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }) {
-                    val index = (0 until group.length).firstOrNull {
-                        group.isTrackSupported(it) && group.getTrackFormat(it).label == requested.label
-                    } ?: continue
-                    pendingSubtitle = null
-                    trackSelectionParameters = trackSelectionParameters.buildUpon()
-                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                        .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(index))).build()
-                    break
+    }
+    private val recoveryController = PlaybackRecovery(scope, { !networkMedia || !NetworkPolicy.offlineOnly }) {
+        prepareCurrent()
+    }
+    private val networkMonitor = if (networkMedia) PlaybackNetworkMonitor(context, recoveryController::setNetworkAvailable) else null
+    val recovery: StateFlow<PlaybackRecoveryState> = recoveryController.state
+
+    init {
+        recoveryController.setPlayWhenReady(startPlayWhenReady)
+        exoPlayer.apply {
+            addListener(object : Player.Listener {
+                override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                    if (playWhenReady) audible.claim() else audible.abandon()
+                    recoveryController.setPlayWhenReady(playWhenReady)
                 }
-            }
-            override fun onPlayerError(error: PlaybackException) {
-                if (mediaItem.localConfiguration?.subtitleConfigurations?.isNotEmpty() == true) {
-                    // Sidecars are optional: retry the same video once without them if loading/parsing fails.
-                    val position = currentPosition.coerceAtLeast(0)
-                    val playing = playWhenReady
-                    pendingSubtitle = null
-                    mediaItem = mediaItem.buildUpon().setSubtitleConfigurations(emptyList()).build()
-                    setMediaSource(sourceFactory.createMediaSource(mediaItem), position)
-                    prepare()
-                    playWhenReady = playing
-                } else errorState.value = error.cause?.message ?: error.message
-            }
-        })
-        setMediaSource(sourceFactory.createMediaSource(mediaItem))
-        if (entry.startPositionMs > 0) seekTo(entry.startPositionMs)
-        prepare()
-        playWhenReady = true
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_READY) {
+                        errorState.value = null
+                        recoveryController.ready()
+                    }
+                }
+                override fun onTracksChanged(tracks: Tracks) {
+                    val requested = pendingSubtitle ?: return
+                    for (group in tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }) {
+                        val index = (0 until group.length).firstOrNull {
+                            group.isTrackSupported(it) && group.getTrackFormat(it).label == requested.label
+                        } ?: continue
+                        pendingSubtitle = null
+                        trackSelectionParameters = trackSelectionParameters.buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(index))).build()
+                        break
+                    }
+                }
+                override fun onPlayerError(error: PlaybackException) {
+                    if (released) return
+                    val failure = classifyPlaybackFailure(error, networkMedia && NetworkPolicy.offlineOnly)
+                    if (networkMedia && recoveryController.recover(failure)) return
+                    if (isExternalSubtitleFailure(error, mediaItem)) {
+                        // Only a failure attributable to a sidecar may discard optional subtitles.
+                        val position = currentPosition.coerceAtLeast(0)
+                        val playing = playWhenReady
+                        pendingSubtitle = null
+                        mediaItem = mediaItem.buildUpon().setSubtitleConfigurations(emptyList()).build()
+                        setMediaSource(sourceFactory.createMediaSource(mediaItem), position)
+                        prepare()
+                        playWhenReady = playing
+                    } else errorState.value = failure.message
+                }
+            })
+            setMediaSource(sourceFactory.createMediaSource(mediaItem))
+            if (entry.startPositionMs > 0) seekTo(entry.startPositionMs)
+            prepare()
+            playWhenReady = startPlayWhenReady
+        }
     }
 
     private val mediaSession = MediaSession.Builder(context, exoPlayer).setId("external-video-${java.util.UUID.randomUUID()}").build()
@@ -109,7 +141,25 @@ class ExternalPlaybackRuntime(
     val player: Player = exoPlayer
     val error: StateFlow<String?> = errorState.asStateFlow()
 
+    fun setForeground(active: Boolean) = recoveryController.setForeground(active)
+
+    fun retry() {
+        if (!released && recoveryController.manualRetry()) prepareCurrent()
+    }
+
+    private fun prepareCurrent() {
+        if (released) return
+        val position = if (exoPlayer.isCurrentMediaItemLive) C.TIME_UNSET else exoPlayer.currentPosition.coerceAtLeast(0L)
+        val playing = exoPlayer.playWhenReady
+        errorState.value = null
+        exoPlayer.setMediaSource(sourceFactory.createMediaSource(mediaItem), position)
+        exoPlayer.prepare()
+        exoPlayer.playWhenReady = playing
+    }
+
     fun addSubtitle(subtitle: top.cylunex.shadowmedia.model.ExternalSubtitle) {
+        if (released) return
+        recoveryController.ready()
         val position = exoPlayer.currentPosition
         val playing = exoPlayer.playWhenReady
         pendingSubtitle = subtitle
@@ -125,9 +175,15 @@ class ExternalPlaybackRuntime(
 
     private fun top.cylunex.shadowmedia.model.ExternalSubtitle.configuration(default: Boolean) =
         MediaItem.SubtitleConfiguration.Builder(Uri.parse(uri)).setMimeType(mimeType).setLabel(label)
+            .setId("shadow-sidecar-${java.util.UUID.randomUUID()}")
             .setSelectionFlags(if (default) C.SELECTION_FLAG_DEFAULT else 0).build()
 
     override fun close() {
+        if (released) return
+        released = true
+        recoveryController.close()
+        networkMonitor?.close()
+        scope.cancel()
         audible.close()
         mediaSession.release()
         exoPlayer.release()

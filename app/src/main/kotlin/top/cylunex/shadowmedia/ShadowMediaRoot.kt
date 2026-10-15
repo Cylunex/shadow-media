@@ -220,11 +220,13 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
     val context = androidx.compose.ui.platform.LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val runtime = remember(entry.id, entry.url, entry.startPositionMs) {
-        ExternalPlaybackRuntime(context.applicationContext, entry, container.networkStorageRepository)
+        ExternalPlaybackRuntime(context.applicationContext, entry, container.networkStorageRepository,
+            startPlayWhenReady = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
     }
     val videoControls = LocalVideoControlState.current
     val inPip = (context.findActivity() as? MainActivity)?.inPictureInPicture == true
     val playbackError by runtime.error.collectAsStateWithLifecycle()
+    val recovery by runtime.recovery.collectAsStateWithLifecycle()
     LaunchedEffect(runtime) {
         while (true) {
             kotlinx.coroutines.delay(5000)
@@ -235,15 +237,19 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
     LaunchedEffect(runtime) { runCatching { focusRequester.requestFocus() } }
     DisposableEffect(runtime, lifecycleOwner) {
         var resumeAfterBackground = false
+        runtime.setForeground(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
+                    runtime.setForeground(false)
                     resumeAfterBackground = runtime.player.playWhenReady
                     runtime.player.pause()
                     container.recordExternalHistory(entry, runtime.player.currentPosition.coerceAtLeast(0L), runtime.player.duration.takeIf { it > 0 })
                 }
-                Lifecycle.Event.ON_START -> if (resumeAfterBackground && !videoControls.sleepExpired) {
-                    runtime.player.play(); resumeAfterBackground = false
+                Lifecycle.Event.ON_START -> {
+                    runtime.setForeground(true)
+                    if (resumeAfterBackground && !videoControls.sleepExpired) runtime.player.play()
+                    resumeAfterBackground = false
                 }
                 else -> Unit
             }
@@ -310,22 +316,10 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
                 )
             }
         }
-        playbackError?.let { message ->
-            Card(
-                modifier = Modifier.align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = Color(0xE81B1114),
-                    contentColor = Color.White,
-                ),
-            ) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("播放失败", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                    Text(message, color = Color.White.copy(alpha = 0.84f), style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        }
+        if (!inPip && !videoControls.locked) PlaybackRecoveryNotice(
+            state = recovery, error = playbackError, onRetry = runtime::retry,
+            modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 76.dp, start = 16.dp, end = 16.dp),
+        )
         VideoPlayerFeatures(runtime.player, onSubtitle = runtime::addSubtitle)
     }
 }
@@ -818,6 +812,7 @@ private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: 
             container = container,
             onBack = viewModel::back,
             onRetry = viewModel::retryPlayback,
+            onRetryCurrent = viewModel::retryPlayback,
             onTerminalError = viewModel::recoverPlayback,
             onExternalPlaybackStarted = viewModel::externalPlaybackStarted,
             onExternalPlaybackStopped = viewModel::externalPlaybackStopped,
@@ -842,6 +837,7 @@ private fun FeedPage(
     container: AppContainer,
     onBack: () -> Unit,
     onRetry: () -> Unit,
+    onRetryCurrent: (Long, Boolean) -> Unit,
     onTerminalError: (Long, String) -> Unit,
     onExternalPlaybackStarted: (PlaybackPlan, Long) -> Unit,
     onExternalPlaybackStopped: (PlaybackPlan, Long) -> Unit,
@@ -889,7 +885,7 @@ private fun FeedPage(
                     item = item,
                     plan = plan,
                     container = container,
-                    onRetry = onRetry,
+                    onRetryCurrent = onRetryCurrent,
                     onTerminalError = onTerminalError,
                     onSaveMoment = onSaveMoment,
                     onSaveSegment = onSaveSegment,
@@ -1312,7 +1308,7 @@ private fun ActivePlayer(
     item: MediaItem,
     plan: PlaybackPlan,
     container: AppContainer,
-    onRetry: () -> Unit,
+    onRetryCurrent: (Long, Boolean) -> Unit,
     onTerminalError: (Long, String) -> Unit,
     onSaveMoment: (MediaItem, Long) -> Unit,
     onSaveSegment: (MediaItem, SegmentType, Long, Long) -> Unit,
@@ -1331,12 +1327,14 @@ private fun ActivePlayer(
             playbackOutbox = container.playbackOutbox,
             clientIdentity = container.clientIdentity,
             startPositionMs = state.playbackStartPositionMs,
+            startPlayWhenReady = state.playbackPlayWhenReady && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
             mediaTitle = item.name,
             telemetrySink = container.playbackTelemetry,
             onTerminalError = onTerminalError,
         )
     }
     val diagnostics by runtime.diagnostics.collectAsStateWithLifecycle()
+    val recovery by runtime.recovery.collectAsStateWithLifecycle()
     val pendingReports by container.playbackOutbox.pendingCount.collectAsStateWithLifecycle()
     var showDiagnostics by remember(runtime) { mutableStateOf(false) }
     val focusRequester = remember(runtime) { FocusRequester() }
@@ -1345,14 +1343,17 @@ private fun ActivePlayer(
 
     DisposableEffect(runtime, lifecycleOwner) {
         var resumeAfterBackground = false
+        runtime.setForeground(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
+                    runtime.setForeground(false)
                     resumeAfterBackground = runtime.player.playWhenReady
                     runtime.player.pause()
                 }
-                Lifecycle.Event.ON_START -> if (resumeAfterBackground && !videoControls.sleepExpired) {
-                    runtime.player.play()
+                Lifecycle.Event.ON_START -> {
+                    runtime.setForeground(true)
+                    if (resumeAfterBackground && !videoControls.sleepExpired) runtime.player.play()
                     resumeAfterBackground = false
                 }
                 else -> Unit
@@ -1403,7 +1404,11 @@ private fun ActivePlayer(
             Text(if (showDiagnostics) "收起诊断" else "播放诊断")
         }
 
-        if (!inPip && (showDiagnostics || diagnostics.lastError != null)) {
+        if (!inPip && !videoControls.locked && !showDiagnostics) PlaybackRecoveryNotice(
+            state = recovery, onRetry = runtime::retry,
+            modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 124.dp, start = 16.dp, end = 16.dp),
+        )
+        if (!inPip && !videoControls.locked && (showDiagnostics || (diagnostics.lastError != null && recovery.message == null))) {
             Card(
                 Modifier.fillMaxWidth().statusBarsPadding()
                     .padding(start = 16.dp, end = 16.dp, top = 124.dp),
@@ -1447,9 +1452,13 @@ private fun ActivePlayer(
                             "TC ${diagnostics.supportsTranscoding.asFlag()}",
                         color = Color.White.copy(alpha = 0.74f),
                     )
+                    recovery.message?.let {
+                        Text(it)
+                        TextButton(onClick = runtime::retry) { Text("从当前位置重试") }
+                    }
                     diagnostics.lastError?.let {
                         Text(it, color = MaterialTheme.colorScheme.error)
-                        OutlinedButton(onClick = onRetry) { Text("重新解析播放地址") }
+                        OutlinedButton(onClick = { onRetryCurrent(runtime.currentPositionMs, runtime.player.playWhenReady) }) { Text("重新解析播放地址") }
                     }
                 }
             }

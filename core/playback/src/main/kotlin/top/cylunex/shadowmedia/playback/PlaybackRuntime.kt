@@ -37,6 +37,7 @@ import top.cylunex.shadowmedia.model.PlayMethod
 import top.cylunex.shadowmedia.model.PlaybackCandidate
 import top.cylunex.shadowmedia.model.PlaybackEvent
 import top.cylunex.shadowmedia.model.PlaybackPlan
+import top.cylunex.shadowmedia.model.NetworkPolicy
 import top.cylunex.shadowmedia.model.embyTicksToMilliseconds
 import top.cylunex.shadowmedia.model.millisecondsToEmbyTicks
 import top.cylunex.shadowmedia.network.ClientIdentity
@@ -72,6 +73,7 @@ class PlaybackRuntime(
     clientIdentity: ClientIdentity,
     startPositionMs: Long,
     private val mediaTitle: String = "Shadow Media",
+    private val startPlayWhenReady: Boolean = true,
     private val telemetrySink: PlaybackTelemetrySink = PlaybackTelemetrySink.NONE,
     private val onTerminalError: (positionMs: Long, message: String) -> Unit = { _, _ -> },
     private val feedPreload: FeedPreloadPool? = null,
@@ -83,6 +85,8 @@ class PlaybackRuntime(
     private var started = false
     private var progressJob: Job? = null
     private var released = false
+    private var foreground = true
+    private var allowPreloadedSource = true
     private val telemetryId = UUID.randomUUID().toString()
     private val telemetryStartedAtEpochMs = System.currentTimeMillis()
     private val telemetryStartedElapsedMs = SystemClock.elapsedRealtime()
@@ -133,6 +137,11 @@ class PlaybackRuntime(
     val player: Player = exoPlayer
     private val audible = top.cylunex.shadowmedia.model.PlaybackCoordinator.process.participant { exoPlayer.pause() }
     private val mediaSession = MediaSession.Builder(context, exoPlayer).setId("video-$telemetryId").build()
+    private val recoveryController = PlaybackRecovery(scope, { !NetworkPolicy.offlineOnly }) {
+        prepareCandidate(currentCandidate(), currentPositionMs, player.playWhenReady)
+    }
+    private val networkMonitor = PlaybackNetworkMonitor(context, recoveryController::setNetworkAvailable)
+    val recovery: StateFlow<PlaybackRecoveryState> = recoveryController.state
     val currentPositionMs: Long
         get() = (positionOffsetMs + player.currentPosition).coerceAtLeast(0L)
     val durationMs: Long
@@ -146,7 +155,21 @@ class PlaybackRuntime(
     init {
         exoPlayer.addListener(PlayerListener())
         telemetrySink.record(telemetrySnapshot(completed = false))
-        prepareCandidate(plan.primary, startPositionMs.coerceAtLeast(0L), playWhenReady = true)
+        recoveryController.setPlayWhenReady(startPlayWhenReady)
+        prepareCandidate(plan.primary, startPositionMs.coerceAtLeast(0L), playWhenReady = startPlayWhenReady)
+    }
+
+    fun setForeground(active: Boolean) {
+        foreground = active
+        recoveryController.setForeground(active)
+    }
+
+    fun retry() {
+        if (released || !recoveryController.manualRetry()) return
+        terminalFailure = false
+        allowPreloadedSource = false
+        diagnosticsState.value = diagnosticsState.value.copy(lastError = null)
+        prepareCandidate(currentCandidate(), currentPositionMs, player.playWhenReady)
     }
 
     fun nextAudioTrack() = cycleTrack(C.TRACK_TYPE_AUDIO)
@@ -173,6 +196,8 @@ class PlaybackRuntime(
     override fun close() {
         if (released) return
         released = true
+        recoveryController.close()
+        networkMonitor.close()
         progressJob?.cancel()
         val finalPosition = currentPositionMs.millisecondsToEmbyTicks()
         val paused = !player.isPlaying
@@ -190,7 +215,7 @@ class PlaybackRuntime(
         reporter.completion.invokeOnCompletion { scope.cancel() }
     }
 
-    private fun mediaSource(candidate: PlaybackCandidate) = feedPreload?.source(plan, candidate) ?:
+    private fun mediaSource(candidate: PlaybackCandidate) = (if (allowPreloadedSource) feedPreload?.source(plan, candidate) else null) ?:
         DefaultMediaSourceFactory(
             OkHttpDataSource.Factory(playbackClient)
                 .setUserAgent("Shadow Media")
@@ -207,6 +232,7 @@ class PlaybackRuntime(
         absolutePositionMs: Long,
         playWhenReady: Boolean,
     ) {
+        if (released) return
         if (candidate.method == PlayMethod.TRANSCODE) {
             positionOffsetMs = absolutePositionMs
             val url = candidate.url.toHttpUrl().newBuilder()
@@ -267,19 +293,19 @@ class PlaybackRuntime(
     private fun tryFallback(error: PlaybackException): Boolean {
         val next = candidateIndex + 1
         if (next >= plan.candidates.size || released) {
-            val message = error.message ?: error.errorCodeName
+            val message = classifyPlaybackFailure(error, NetworkPolicy.offlineOnly).message
             telemetryErrorCode = error.errorCodeName
             telemetryErrorMessage = message
             terminalFailure = true
             telemetrySink.record(telemetrySnapshot(completed = false, terminal = true))
             diagnosticsState.value = diagnostics(message)
-            if (!released) onTerminalError(currentPositionMs, message)
+            if (!released && foreground && player.playWhenReady) onTerminalError(currentPositionMs, message)
             return false
         }
         val absolutePosition = currentPositionMs
         candidateIndex = next
         telemetryErrorCode = error.errorCodeName
-        telemetryErrorMessage = error.message ?: error.errorCodeName
+        telemetryErrorMessage = classifyPlaybackFailure(error, NetworkPolicy.offlineOnly).message
         telemetrySink.record(telemetrySnapshot(completed = false))
         diagnosticsState.value = diagnostics("上一播放地址失败，已切换回退链路：${error.errorCodeName}")
         prepareCandidate(currentCandidate(), absolutePosition, playWhenReady = player.playWhenReady)
@@ -404,6 +430,10 @@ class PlaybackRuntime(
 
     private inner class PlayerListener : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_READY) {
+                recoveryController.ready()
+                diagnosticsState.value = diagnosticsState.value.copy(lastError = null)
+            }
             if (playbackState == Player.STATE_BUFFERING && bufferingStartedElapsedMs == null) {
                 bufferingCount++
                 bufferingStartedElapsedMs = SystemClock.elapsedRealtime()
@@ -419,11 +449,16 @@ class PlaybackRuntime(
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             if (playWhenReady) audible.claim() else audible.abandon()
+            recoveryController.setPlayWhenReady(playWhenReady)
             if (!started || released) return
             reportCurrent(if (playWhenReady) PlaybackEvent.UNPAUSE else PlaybackEvent.PAUSE)
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            if (released) return
+            // A failed preloaded source may retain its fatal load error; reopen via the scoped client.
+            allowPreloadedSource = false
+            if (recoveryController.recover(classifyPlaybackFailure(error, NetworkPolicy.offlineOnly))) return
             tryFallback(error)
         }
 

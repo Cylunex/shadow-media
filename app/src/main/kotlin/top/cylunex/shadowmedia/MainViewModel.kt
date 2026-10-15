@@ -164,6 +164,7 @@ data class MainUiState(
     val currentIndex: Int = 0,
     val playbackPlan: PlaybackPlan? = null,
     val playbackStartPositionMs: Long = 0,
+    val playbackPlayWhenReady: Boolean = true,
     val playbackRefreshAttempts: Int = 0,
     val pendingDeleteItem: MediaItem? = null,
     val pendingRemoveSession: EmbySession? = null,
@@ -1174,10 +1175,14 @@ class MainViewModel(
     }
 
     fun retryPlayback() {
+        retryPlayback(state.value.playbackStartPositionMs, state.value.playbackPlayWhenReady)
+    }
+
+    fun retryPlayback(positionMs: Long, playWhenReady: Boolean) {
         val snapshot = state.value
         val session = snapshot.session ?: return
         val item = snapshot.items.getOrNull(snapshot.currentIndex) ?: return
-        resolvePlayback(session, item, snapshot.currentIndex, snapshot.playbackStartPositionMs, 0)
+        resolvePlayback(session, item, snapshot.currentIndex, positionMs.coerceAtLeast(0L), 0, playWhenReady)
     }
 
     fun recoverPlayback(positionMs: Long, message: String) {
@@ -1249,6 +1254,7 @@ class MainViewModel(
         index: Int,
         startPositionMs: Long,
         refreshAttempts: Int,
+        playWhenReady: Boolean = true,
     ) {
         contentRequest?.cancel()
         playbackRequest?.cancel()
@@ -1259,6 +1265,7 @@ class MainViewModel(
                 currentIndex = index,
                 playbackPlan = null,
                 playbackStartPositionMs = startPositionMs,
+                playbackPlayWhenReady = playWhenReady,
                 playbackRefreshAttempts = refreshAttempts,
                 mediaSegments = emptyList(),
                 isLoading = true,
