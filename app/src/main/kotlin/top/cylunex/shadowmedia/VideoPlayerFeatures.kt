@@ -20,6 +20,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import top.cylunex.shadowmedia.playback.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -52,8 +54,13 @@ internal fun VideoPlayerFeatures(
     canSeek: () -> Boolean = { player.isCurrentMediaItemSeekable },
     seek: (Long) -> Unit = player::seekTo,
     onSubtitle: ((ExternalSubtitle) -> Unit)? = null,
+    preferenceKey: String? = null,
+    onDecoderChange: ((VideoDecoderMode) -> Unit)? = null,
+    onCast: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    val preferences = remember(context) { VideoPreferenceStore.get(context) }
+    val settings by preferences.settings.collectAsStateWithLifecycle()
     val activity = context.videoActivity()
     val state = LocalVideoControlState.current
     val audio = remember { context.getSystemService(AudioManager::class.java) }
@@ -95,6 +102,7 @@ internal fun VideoPlayerFeatures(
     val subtitlePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             try {
+                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
                     if (it.moveToFirst()) it.getString(0) else null
                 }.orEmpty()
@@ -181,9 +189,10 @@ internal fun VideoPlayerFeatures(
         // Lock consumes the whole frame. Otherwise reserve space for the existing controls.
         Box(Modifier.fillMaxSize().then(if (state.locked) Modifier else Modifier.padding(top = minOf(maxHeight * .15f, 120.dp), bottom = minOf(maxHeight * .25f, 240.dp)))
             .pointerInteropFilter { detector.touch(it) })
-        Row(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp).background(Color.Black.copy(alpha = .6f))) {
+        Row(Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(end = 8.dp, bottom = 132.dp).background(Color.Black.copy(alpha = .6f))) {
             TextButton(onClick = { state.locked = !state.locked }) { Text(if (state.locked) "解锁" else "锁定", color = Color.White) }
             if (!state.locked) {
+                if (onCast != null) TextButton(onClick = onCast) { Text("投屏", color = Color.White) }
                 TextButton(onClick = { panel = "设置" }) { Text(if (remaining > 0) "${(remaining + 59_999) / 60_000} 分钟" else "播放设置", color = Color.White) }
                 TextButton(onClick = {
                     if (activity?.packageManager?.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE) == true) {
@@ -196,6 +205,24 @@ internal fun VideoPlayerFeatures(
     }
     if (panel != null) AlertDialog(onDismissRequest = { panel = null }, title = { Text("播放设置") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState())) {
+            Text("解码器")
+            Row { VideoDecoderMode.entries.forEach { mode -> TextButton(onClick = { if (onDecoderChange != null) onDecoderChange(mode) else preferences.update { it.copy(decoder = mode) } }) { Text((if (settings.decoder == mode) "✓ " else "") + when (mode) { VideoDecoderMode.AUTO -> "自动"; VideoDecoderMode.HARDWARE -> "硬件"; VideoDecoderMode.SOFTWARE -> "软件" }) } } }
+            Text("软件模式使用设备提供的软件解码器；没有兼容解码器时可切回自动。", style = MaterialTheme.typography.bodySmall)
+            Row { Text("直播自动切换线路", Modifier.weight(1f)); Switch(settings.autoSwitchLines, { value -> preferences.update { it.copy(autoSwitchLines = value) } }) }
+            Text("自动重试次数")
+            FlowRow { (0..5).forEach { limit -> TextButton(onClick = { preferences.update { it.copy(retries = limit) } }) { Text((if (settings.retries == limit) "✓ " else "") + limit) } } }
+            Text("默认音轨 / 字幕语言")
+            for (audioLanguage in listOf(true, false)) FlowRow {
+                listOf("" to "默认", "zh" to "中文", "en" to "英语", "ja" to "日语").forEach { (language, label) -> TextButton(onClick = {
+                    preferences.update { if (audioLanguage) it.copy(audioLanguage = language) else it.copy(subtitleLanguage = language) }
+                    preferences.applyLanguages(player)
+                }) { Text((if ((if (audioLanguage) settings.audioLanguage else settings.subtitleLanguage) == language) "✓ " else "") + label) } }
+            }
+            Text("字幕大小 ${(settings.subtitleScale * 100).toInt()}%")
+            Slider(settings.subtitleScale, { value -> preferences.update { it.copy(subtitleScale = value) } }, valueRange = .5f..2f)
+            Row { Text("字幕背景", Modifier.weight(1f)); Switch(settings.subtitleBackground, { value -> preferences.update { it.copy(subtitleBackground = value) } }) }
+            Text("字幕距底部 ${(settings.subtitleBottomPadding * 100).toInt()}%")
+            Slider(settings.subtitleBottomPadding, { value -> preferences.update { it.copy(subtitleBottomPadding = value) } }, valueRange = 0f..0.4f)
             Text("睡眠定时")
             Row { listOf(0, 15, 30, 60).forEach { minutes -> TextButton(onClick = { state.sleepExpired = false; deadline = if (minutes == 0) 0 else SystemClock.elapsedRealtime() + minutes * 60_000L; panel = null }) { Text(if (minutes == 0) "关闭" else "$minutes 分") } } }
             Text("播放速度")
@@ -205,12 +232,14 @@ internal fun VideoPlayerFeatures(
             for ((type, title) in listOf(C.TRACK_TYPE_AUDIO to "音轨", C.TRACK_TYPE_TEXT to "字幕")) {
                 Text(title)
                 if (type == C.TRACK_TYPE_TEXT) TextButton(onClick = {
+                    preferenceKey?.let { preferences.saveTrack(it, type, null) }
                     player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().clearOverridesOfType(type).setTrackTypeDisabled(type, true).build()
                 }) { Text("关闭字幕") }
                 tracks.filter { it.type == type }.forEach { group ->
                     for (index in 0 until group.length) if (group.isTrackSupported(index)) {
                         val format = group.getTrackFormat(index)
                         TextButton(onClick = {
+                            preferenceKey?.let { preferences.saveTrack(it, type, format) }
                             player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().clearOverridesOfType(type).setTrackTypeDisabled(type, false)
                                 .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(index))).build()
                             panel = null

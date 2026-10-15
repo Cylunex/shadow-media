@@ -15,20 +15,22 @@ data class PlaybackRecoveryState(
     val phase: PlaybackRecoveryPhase = PlaybackRecoveryPhase.NONE,
     val failure: PlaybackFailure? = null,
     val attempt: Int = 0,
+    val attemptLimit: Int = 2,
 ) {
     val message: String? get() = when (phase) {
         PlaybackRecoveryPhase.NONE -> null
         PlaybackRecoveryPhase.WAITING_FOR_NETWORK -> "网络已断开，连接恢复后继续播放"
         PlaybackRecoveryPhase.WAITING_FOR_PLAY -> "已暂停恢复，继续播放后重试"
-        PlaybackRecoveryPhase.RETRYING -> "正在恢复播放（$attempt/2）…"
+        PlaybackRecoveryPhase.RETRYING -> "正在恢复播放（$attempt/$attemptLimit）…"
         PlaybackRecoveryPhase.FAILED -> failure?.message
     }
 }
 
 /** Main-thread confined. Budget survives READY and candidate changes to prevent retry loops. */
-internal class PlaybackRecovery(
+class PlaybackRecovery(
     private val scope: CoroutineScope,
     private val networkAllowed: () -> Boolean,
+    private val maxAttempts: () -> Int = { 2 },
     private val retry: () -> Unit,
 ) : Closeable {
     private val mutableState = MutableStateFlow(PlaybackRecoveryState())
@@ -48,7 +50,7 @@ internal class PlaybackRecovery(
             fail(offlineFailure())
             return true
         }
-        if (!failure.canAutoRetry || attempts >= MAX_ATTEMPTS) {
+        if (!failure.canAutoRetry || attempts >= maxAttempts().coerceIn(0, 5)) {
             fail(failure)
             return false
         }
@@ -98,17 +100,19 @@ internal class PlaybackRecovery(
         job = null
         val failure = pending ?: return
         if (closed) return
+        if (attempts >= maxAttempts().coerceIn(0, 5)) { fail(failure); return }
         if (!networkAllowed()) { fail(offlineFailure()); return }
         val phase = when {
             !foreground || !playWhenReady -> PlaybackRecoveryPhase.WAITING_FOR_PLAY
             !networkAvailable -> PlaybackRecoveryPhase.WAITING_FOR_NETWORK
             else -> PlaybackRecoveryPhase.RETRYING
         }
-        mutableState.value = PlaybackRecoveryState(phase, failure, attempts + 1)
+        mutableState.value = PlaybackRecoveryState(phase, failure, attempts + 1, maxAttempts())
         if (phase != PlaybackRecoveryPhase.RETRYING) return
         job = scope.launch {
             delay(if (attempts == 0) 1_000L else 3_000L)
             job = null
+            if (attempts >= maxAttempts().coerceIn(0, 5)) { fail(failure); return@launch }
             if (!networkAllowed()) { fail(offlineFailure()); return@launch }
             pending = null
             attempts++
@@ -118,11 +122,10 @@ internal class PlaybackRecovery(
 
     private fun fail(failure: PlaybackFailure) {
         cancelPending()
-        mutableState.value = PlaybackRecoveryState(PlaybackRecoveryPhase.FAILED, failure, attempts)
+        mutableState.value = PlaybackRecoveryState(PlaybackRecoveryPhase.FAILED, failure, attempts, maxAttempts())
     }
 
     private fun cancelPending() { job?.cancel(); job = null; pending = null }
     override fun close() { closed = true; cancelPending() }
     private fun offlineFailure() = PlaybackFailure(PlaybackFailureKind.OFFLINE, "仅离线模式已开启，请关闭后重试网络视频")
-    private companion object { const val MAX_ATTEMPTS = 2 }
 }

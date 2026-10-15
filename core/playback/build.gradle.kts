@@ -35,5 +35,7 @@ dependencies {
     implementation(libs.media3.datasource.okhttp)
     implementation(libs.media3.session)
     testImplementation(libs.junit)
+    testImplementation("org.robolectric:robolectric:4.17")
+    testImplementation("com.squareup.okhttp3:mockwebserver:5.1.0")
     testImplementation(libs.kotlinx.coroutines.test)
 }

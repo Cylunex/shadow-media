@@ -17,8 +17,17 @@ data class PlaybackFailure(
     val canAutoRetry: Boolean = false,
 )
 
-internal fun classifyPlaybackFailure(error: PlaybackException, offlineOnly: Boolean): PlaybackFailure {
+fun classifyPlaybackFailure(error: PlaybackException, offlineOnly: Boolean): PlaybackFailure {
+    if (offlineOnly) return PlaybackFailure(PlaybackFailureKind.OFFLINE, "仅离线模式已开启，请关闭后重试网络视频")
     val causes = generateSequence<Throwable>(error) { it.cause }.take(16).toList()
+    causes.filterIsInstance<top.cylunex.shadowmedia.network.NetworkStorageFailureException>().firstOrNull()?.let { failure ->
+        return when (failure.kind) {
+            top.cylunex.shadowmedia.network.NetworkStorageFailure.TRANSPORT -> PlaybackFailure(PlaybackFailureKind.NETWORK, "网络存储连接已中断", true)
+            top.cylunex.shadowmedia.network.NetworkStorageFailure.ACCESS -> PlaybackFailure(PlaybackFailureKind.ACCESS, "网络存储访问被拒绝，请检查账号和共享权限")
+            top.cylunex.shadowmedia.network.NetworkStorageFailure.MISSING -> PlaybackFailure(PlaybackFailureKind.MISSING, "网络存储文件已移除，请刷新目录")
+            top.cylunex.shadowmedia.network.NetworkStorageFailure.OTHER -> PlaybackFailure(PlaybackFailureKind.UNKNOWN, "网络存储读取失败，请检查连接或文件状态")
+        }
+    }
     val http = causes.filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()
     return classifyPlaybackFailure(error.errorCode, offlineOnly, http?.responseCode,
         causes.any { it is SSLException }, causes.any { it is SocketTimeoutException })

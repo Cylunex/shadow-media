@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import top.cylunex.shadowmedia.playback.*
+import top.cylunex.shadowmedia.model.isMixedVideoLibrary
 import top.cylunex.shadowmedia.model.EmbySession
 import top.cylunex.shadowmedia.model.BrowseRequest
 import top.cylunex.shadowmedia.model.ExternalSourceSummary
@@ -119,6 +121,7 @@ data class MainUiState(
     val isLoadingGuide: Boolean = false,
     val liveGuideMessage: String? = null,
     val selectedExternalEntry: ExternalMediaEntry? = null,
+    val externalAttemptedLines: Set<String> = emptySet(),
     val externalPlayerReturnScreen: Screen = Screen.EXTERNAL_ITEMS,
     val providerDescriptors: List<ProviderDescriptor> = emptyList(),
     val discoverQuery: String = "",
@@ -162,9 +165,11 @@ data class MainUiState(
     val insightMessage: String? = null,
     val selectedItem: MediaItem? = null,
     val currentIndex: Int = 0,
+    val wallFolders: List<MediaItem> = emptyList(),
     val playbackPlan: PlaybackPlan? = null,
     val playbackStartPositionMs: Long = 0,
     val playbackPlayWhenReady: Boolean = true,
+    val playbackResolutionRecovery: PlaybackRecoveryState = PlaybackRecoveryState(),
     val playbackRefreshAttempts: Int = 0,
     val pendingDeleteItem: MediaItem? = null,
     val pendingRemoveSession: EmbySession? = null,
@@ -194,9 +199,21 @@ class MainViewModel(
     private val offline: top.cylunex.shadowmedia.library.OfflineRepository? = null,
     private val nativeProviders: () -> List<top.cylunex.shadowmedia.provider.MediaProvider> = { emptyList() },
     private val prepareAccounts: suspend () -> Unit = {},
+    private val lineHealth: top.cylunex.shadowmedia.library.LiveLineHealthStore? = null,
+    private val autoSwitchLines: () -> Boolean = { true },
+    private val playbackNetwork: StateFlow<Boolean> = MutableStateFlow(true),
+    private val retryLimit: () -> Int = { 2 },
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     var feedPreloader: top.cylunex.shadowmedia.playback.FeedPreloadPool? = null
+    private var resolutionRetry: (() -> Unit)? = null
+    private val resolutionRecovery = PlaybackRecovery(viewModelScope, { !top.cylunex.shadowmedia.model.NetworkPolicy.offlineOnly }, retryLimit) { resolutionRetry?.invoke() }
+    fun setResolutionForeground(active: Boolean) = resolutionRecovery.setForeground(active)
+    fun toggleResolutionPause() {
+        val playing = !state.value.playbackPlayWhenReady
+        update { copy(playbackPlayWhenReady = playing) }
+        resolutionRecovery.setPlayWhenReady(playing)
+    }
     private var playbackRequest: Job? = null
     private var contentRequest: Job? = null
     private var unifiedPageRequest = 0L
@@ -226,6 +243,8 @@ class MainViewModel(
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     init {
+        viewModelScope.launch { playbackNetwork.collect(resolutionRecovery::setNetworkAvailable) }
+        viewModelScope.launch { resolutionRecovery.state.collect { value -> update { copy(playbackResolutionRecovery = value) } } }
         viewModelScope.launch {
         prepareAccounts()
         val saved = sessionStore.loadAll()
@@ -868,16 +887,16 @@ class MainViewModel(
         }
     }
 
-    fun playUnifiedItem(item: UnifiedMediaItem) {
+    fun playUnifiedItem(item: UnifiedMediaItem, queueEntryId: String? = null, playWhenReady: Boolean = true) {
         if (top.cylunex.shadowmedia.model.contentKind(item.type) in setOf(top.cylunex.shadowmedia.model.ContentKind.FOLDER, top.cylunex.shadowmedia.model.ContentKind.SERIES)) {
             openUnifiedItem(item); return
         }
         cancelContentRequests()
         contentRequest = viewModelScope.launch {
-            if (!tryOfflineVideo(item.key, item.progressMs)) playUnifiedOnline(item)
+            if (!tryOfflineVideo(item.key, item.progressMs)) playUnifiedOnline(item, queueEntryId, playWhenReady)
         }
     }
-    private fun playUnifiedOnline(item: UnifiedMediaItem) {
+    private fun playUnifiedOnline(item: UnifiedMediaItem, queueEntryId: String? = null, playWhenReady: Boolean = true) {
         cancelContentRequests()
         if (top.cylunex.shadowmedia.model.contentKind(item.type) in setOf(
                 top.cylunex.shadowmedia.model.ContentKind.BOOK, top.cylunex.shadowmedia.model.ContentKind.COMIC, top.cylunex.shadowmedia.model.ContentKind.AUDIOBOOK, top.cylunex.shadowmedia.model.ContentKind.MUSIC, top.cylunex.shadowmedia.model.ContentKind.PODCAST)) {
@@ -926,8 +945,9 @@ class MainViewModel(
                         update {
                             copy(
                                 screen = Screen.EXTERNAL_PLAYER,
-                                externalPlayerReturnScreen = screen,
+                                externalPlayerReturnScreen = if (screen == Screen.EXTERNAL_PLAYER) externalPlayerReturnScreen else screen,
                                 selectedExternalEntry = ExternalMediaEntry(
+                                    queueEntryId = queueEntryId, playWhenReady = playWhenReady,
                                     id = item.key.itemId,
                                     sourceId = item.key.providerId,
                                     title = item.title,
@@ -964,6 +984,7 @@ class MainViewModel(
         update {
             copy(
                 selectedLibrary = library,
+                wallFolders = emptyList(),
                 screen = Screen.ITEMS,
                 wallItems = emptyList(),
                 wallSearch = "",
@@ -1052,7 +1073,8 @@ class MainViewModel(
         if (snapshot.screen != Screen.ITEMS) return
         contentRequest?.cancel()
         if (reset) wallPagination.reset(BrowseRequest(
-            parentId = library.id, includeItemTypes = library.wallItemTypes(), searchTerm = snapshot.wallSearch,
+            parentId = snapshot.wallFolders.lastOrNull()?.id ?: library.id, includeItemTypes = library.wallItemTypes(),
+            recursive = !library.isMixedVideoLibrary || snapshot.wallSearch.isNotBlank(), searchTerm = snapshot.wallSearch,
             sort = snapshot.wallSort, descending = snapshot.wallSort != MediaSort.NAME,
             filter = snapshot.wallFilter, limit = WALL_PAGE_SIZE,
         ))
@@ -1091,11 +1113,16 @@ class MainViewModel(
     }
 
     fun openCatalogItem(item: MediaItem) {
+        if (item.isFolder && !item.type.equals("Series", true) && !item.type.equals("BoxSet", true)) {
+            update { copy(wallFolders = wallFolders + item, wallSearch = "", wallFilter = MediaFilter.ALL) }
+            loadWall(reset = true)
+            return
+        }
         if (item.type.equals("Series", ignoreCase = true) || item.type.equals("BoxSet", ignoreCase = true)) {
             loadDetail(item)
         } else {
             val playable = state.value.wallItems.filterNot {
-                it.type.equals("Series", true) || it.type.equals("BoxSet", true)
+                it.isFolder || it.type.equals("Series", true) || it.type.equals("BoxSet", true)
             }
             val index = playable.indexOfFirst { it.id == item.id }
             if (index >= 0) {
@@ -1255,7 +1282,16 @@ class MainViewModel(
         startPositionMs: Long,
         refreshAttempts: Int,
         playWhenReady: Boolean = true,
+        resolutionRetrying: Boolean = false,
     ) {
+        if (!resolutionRetrying) {
+            resolutionRecovery.manualRetry()
+            resolutionRetry = {
+                if (state.value.session == session && state.value.screen == Screen.PLAYER && state.value.selectedItem?.id == item.id)
+                    resolvePlayback(session, item, index, startPositionMs, refreshAttempts, state.value.playbackPlayWhenReady, resolutionRetrying = true)
+            }
+        }
+        resolutionRecovery.setPlayWhenReady(playWhenReady)
         contentRequest?.cancel()
         playbackRequest?.cancel()
         update {
@@ -1284,13 +1320,18 @@ class MainViewModel(
                 val plan = prepared ?: repository.playbackPlan(session, item.id)
                 ensureActive()
                 if (state.value.session == session && state.value.screen == Screen.PLAYER && state.value.selectedItem?.id == item.id) {
+                    resolutionRecovery.ready()
                     playbackOwnership.remember(plan, session)
                     update { copy(playbackPlan = plan, isLoading = false, errorMessage = null) }
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                if (state.value.session == session && state.value.screen == Screen.PLAYER && state.value.selectedItem?.id == item.id) showError(error)
+                if (state.value.session == session && state.value.screen == Screen.PLAYER && state.value.selectedItem?.id == item.id) {
+                    val failure = classifyPlaybackResolutionFailure(error, top.cylunex.shadowmedia.model.NetworkPolicy.offlineOnly)
+                    resolutionRecovery.recover(failure)
+                    update { copy(isLoading = false, errorMessage = failure.message) }
+                }
             }
         }
     }
@@ -1514,9 +1555,49 @@ class MainViewModel(
         }
     }
     private fun showOfflineVideo(asset: top.cylunex.shadowmedia.database.LibraryAssetEntity, positionMs: Long) = update {
-        copy(screen = Screen.EXTERNAL_PLAYER, externalPlayerReturnScreen = if (screen == Screen.PLAYER) playerReturnScreen else screen,
+        copy(screen = Screen.EXTERNAL_PLAYER, externalPlayerReturnScreen = when (screen) { Screen.PLAYER -> playerReturnScreen; Screen.EXTERNAL_PLAYER -> externalPlayerReturnScreen; else -> screen },
             selectedExternalEntry = ExternalMediaEntry(id = asset.itemId, sourceId = asset.providerId, title = asset.title,
                 startPositionMs = positionMs, url = "shadow-cached://${asset.id}/resource.${asset.format}"), isLoading = false, errorMessage = null)
+    }
+
+    fun externalPlaybackFailed(entryId: String, positionMs: Long, playing: Boolean) {
+        val snapshot = state.value
+        val entry = snapshot.selectedExternalEntry?.takeIf { it.id == entryId } ?: return
+        lineHealth?.record(entry, false)
+        val channel = snapshot.liveChannels.firstOrNull { channel -> channel.streams.any { it.id == entry.id && it.sourceId == entry.sourceId } }
+        val attempted = snapshot.externalAttemptedLines + top.cylunex.shadowmedia.model.liveLineKey(entry)
+        val next = if (autoSwitchLines() && channel != null) top.cylunex.shadowmedia.model.chooseLiveLine(channel.streams, attempted,
+            { lineHealth?.health(it) ?: top.cylunex.shadowmedia.model.LiveLineHealth() }, System.currentTimeMillis()) else null
+        if (next != null) {
+            update { copy(selectedExternalEntry = next.copy(playWhenReady = playing, playbackRevision = entry.playbackRevision + 1),
+                externalAttemptedLines = attempted, errorMessage = null) }
+        } else refreshExternalPlayback(positionMs, playing, automatic = true)
+    }
+    fun externalPlaybackHealthy(entry: ExternalMediaEntry) { lineHealth?.record(entry, true) }
+    fun liveLineDescription(entry: ExternalMediaEntry): String {
+        val value = lineHealth?.health(entry) ?: return ""
+        return if (value.failures + value.successes == 0) "未测试" else "成功 ${value.successes} · 失败 ${value.failures}"
+    }
+
+    fun refreshExternalPlayback(positionMs: Long, playWhenReady: Boolean, automatic: Boolean = false) {
+        val entry = state.value.selectedExternalEntry ?: return
+        if (automatic && entry.refreshAttempts >= 1) return
+        val provider = providerRegistry.provider(entry.sourceId) ?: providerRegistry.provider("external:${entry.sourceId}") ?: return
+        playbackRequest?.cancel()
+        playbackRequest = viewModelScope.launch {
+            try {
+                val candidates = provider.resolve(UnifiedPlaybackRequest(MediaKey(provider.descriptor.id, entry.id), positionMs))
+                ensureActive()
+                val candidate = requireNotNull(candidates.firstOrNull()) { "来源没有返回播放线路" }
+                if (state.value.screen == Screen.EXTERNAL_PLAYER && state.value.selectedExternalEntry == entry) update {
+                    copy(selectedExternalEntry = entry.copy(url = candidate.url, requestHeaders = candidate.requiredHeaders,
+                        credentialOrigin = candidate.credentialOrigin, subtitles = candidate.subtitles, startPositionMs = positionMs,
+                        playWhenReady = playWhenReady, playbackRevision = entry.playbackRevision + 1,
+                        refreshAttempts = if (automatic) entry.refreshAttempts + 1 else 0), errorMessage = null)
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { if (state.value.selectedExternalEntry == entry) update { copy(errorMessage = "重新解析来源失败，请检查连接或手动切换线路") } }
+        }
     }
 
     fun playExternalEntry(entry: ExternalMediaEntry) = navigate {
@@ -1524,6 +1605,7 @@ class MainViewModel(
             screen = Screen.EXTERNAL_PLAYER,
             externalPlayerReturnScreen = Screen.EXTERNAL_ITEMS,
             selectedExternalEntry = entry,
+            externalAttemptedLines = emptySet(),
             errorMessage = null,
         )
     }
@@ -1736,7 +1818,10 @@ class MainViewModel(
                     update { copy(screen = providerDetailReturnScreen, selectedUnifiedDetail = null, errorMessage = null) }
                 }
             }
-            Screen.ITEMS -> update {
+            Screen.ITEMS -> if (state.value.wallFolders.isNotEmpty()) {
+                update { copy(wallFolders = wallFolders.dropLast(1), wallSearch = "") }
+                loadWall(reset = true)
+            } else update {
                 copy(
                     screen = Screen.LIBRARIES,
                     selectedLibrary = null,
@@ -1832,6 +1917,7 @@ class MainViewModel(
     private fun update(transform: MainUiState.() -> MainUiState) = mutableState.update(transform)
 
     private fun cancelContentRequests() {
+        resolutionRecovery.ready(); resolutionRetry = null
         unifiedPageRequest++
         contentRequest?.cancel()
         playbackRequest?.cancel()
@@ -1874,6 +1960,10 @@ class MainViewModel(
                         offline = container.offline,
                         nativeProviders = { container.catalogs.musicProviders() + container.localVideos },
                         prepareAccounts = { container.accountScopesReady.await() },
+                        lineHealth = container.lineHealth,
+                        autoSwitchLines = { container.videoPreferences.settings.value.autoSwitchLines },
+                        playbackNetwork = container.playbackNetwork,
+                        retryLimit = { container.videoPreferences.settings.value.retries },
                     ) as T
             }
     }
@@ -1893,7 +1983,7 @@ private fun MediaLibrary.wallItemTypes(): Set<String> = when (collectionType?.lo
     "movies" -> setOf("Movie")
     "boxsets" -> setOf("BoxSet")
     "music" -> setOf("MusicAlbum", "MusicVideo")
-    else -> setOf("Movie", "Episode", "Video", "Series")
+    else -> setOf("Folder", "CollectionFolder", "Movie", "Episode", "Video", "Series", "BoxSet")
 }
 
 private fun UnifiedMediaItem.toEmbyMediaItem() = MediaItem(

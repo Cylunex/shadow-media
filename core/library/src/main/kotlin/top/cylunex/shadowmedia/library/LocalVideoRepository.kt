@@ -100,7 +100,7 @@ class LocalVideoRepository(private val context: Context) : MediaProvider {
                             val subtitles = sidecars.filter { isCompanionSubtitle(file.name, it.name) }.take(16).map {
                                 ExternalSubtitle(it.document.uri.toString(), requireNotNull(subtitleMimeType(it.name)), it.name)
                             }
-                            result += record(file.document.uri, file.name, folder, subtitles)
+                            result += record(file.document.uri, file.name, folder, subtitles).put("parent", directory.uri.toString())
                         }
                     }
                 }
@@ -118,6 +118,12 @@ class LocalVideoRepository(private val context: Context) : MediaProvider {
     private fun JSONObject.item() = UnifiedMediaItem(MediaKey(descriptor.id, getString("uri")), getString("name"), "Video",
         subtitle = if (getString("group").startsWith("content:")) "已添加文件夹" else getString("group"))
     suspend fun videos(): List<UnifiedMediaItem> = withContext(Dispatchers.IO) { records().map { it.item() }.sortedBy { it.title.lowercase() } }
+    suspend fun siblings(key: MediaKey): List<UnifiedMediaItem> = withContext(Dispatchers.IO) {
+        val all = records()
+        val current = requireNotNull(all.find { it.getString("uri") == key.itemId })
+        all.filter { it.getString("group") == current.getString("group") && it.optString("parent") == current.optString("parent") }
+            .map { it.item() }.sortedWith(compareBy({ it.title.lowercase() }, { it.key.stableId }))
+    }
     override suspend fun home() = listOf(ProviderSection("videos", "本机视频", videos().take(60)))
     override suspend fun browse(request: ProviderBrowseRequest): UnifiedMediaPage = page(videos(), request.pageToken, request.pageSize)
     override suspend fun search(request: ProviderSearchRequest) = page(videos().filter { it.title.contains(request.query, true) }, request.pageToken, request.pageSize)

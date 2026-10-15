@@ -45,9 +45,13 @@ class ExternalPlaybackRuntime(
     entry: ExternalMediaEntry,
     networkStorageRepository: NetworkStorageRepository? = null,
     startPlayWhenReady: Boolean = true,
+    private val onTerminalError: (Long, Boolean) -> Unit = { _, _ -> },
 ) : Closeable {
+    private val preferences = VideoPreferenceStore.get(context)
+    private val preferenceKey = "${entry.sourceId}:${entry.id}"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var released = false
+    private var foreground = true
     private val networkMedia = entry.url.substringBefore(':').lowercase() in setOf("http", "https", "shadow-smb")
     private val audible: top.cylunex.shadowmedia.model.PlaybackCoordinator.Participant = top.cylunex.shadowmedia.model.PlaybackCoordinator.process.participant { exoPlayer.pause() }
     private val errorState = MutableStateFlow<String?>(null)
@@ -72,21 +76,22 @@ class ExternalPlaybackRuntime(
     private val sourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
     private var mediaItem = MediaItem.Builder().setUri(entry.url).setMediaId(entry.id)
         .setMediaMetadata(MediaMetadata.Builder().setTitle(entry.title).build())
-        .setSubtitleConfigurations(entry.subtitles.mapIndexed { index, subtitle -> subtitle.configuration(index == 0) }).build()
+        .setSubtitleConfigurations((entry.subtitles + listOfNotNull(preferences.subtitle(preferenceKey))).distinctBy { it.uri }.mapIndexed { index, subtitle -> subtitle.configuration(index == 0) }).build()
     private var pendingSubtitle: top.cylunex.shadowmedia.model.ExternalSubtitle? = null
-    private val exoPlayer = ExoPlayer.Builder(context).build().apply {
+    private val exoPlayer = ExoPlayer.Builder(context, videoRenderers(context, preferences.settings.value.decoder)).build().apply {
         setAudioAttributes(AudioAttributes.DEFAULT, true)
         setHandleAudioBecomingNoisy(true)
         setWakeMode(C.WAKE_MODE_LOCAL)
         repeatMode = Player.REPEAT_MODE_OFF
     }
-    private val recoveryController = PlaybackRecovery(scope, { !networkMedia || !NetworkPolicy.offlineOnly }) {
+    private val recoveryController = PlaybackRecovery(scope, { !networkMedia || !NetworkPolicy.offlineOnly }, { preferences.settings.value.retries }) {
         prepareCurrent()
     }
     private val networkMonitor = if (networkMedia) PlaybackNetworkMonitor(context, recoveryController::setNetworkAvailable) else null
     val recovery: StateFlow<PlaybackRecoveryState> = recoveryController.state
 
     init {
+        preferences.applyLanguages(exoPlayer)
         recoveryController.setPlayWhenReady(startPlayWhenReady)
         exoPlayer.apply {
             addListener(object : Player.Listener {
@@ -101,6 +106,7 @@ class ExternalPlaybackRuntime(
                     }
                 }
                 override fun onTracksChanged(tracks: Tracks) {
+                    preferences.restoreTracks(preferenceKey, exoPlayer)
                     val requested = pendingSubtitle ?: return
                     for (group in tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }) {
                         val index = (0 until group.length).firstOrNull {
@@ -126,7 +132,10 @@ class ExternalPlaybackRuntime(
                         setMediaSource(sourceFactory.createMediaSource(mediaItem), position)
                         prepare()
                         playWhenReady = playing
-                    } else errorState.value = failure.message
+                    } else {
+                        errorState.value = failure.message
+                        if (foreground && playWhenReady) onTerminalError(currentPosition.coerceAtLeast(0), playWhenReady)
+                    }
                 }
             })
             setMediaSource(sourceFactory.createMediaSource(mediaItem))
@@ -141,7 +150,7 @@ class ExternalPlaybackRuntime(
     val player: Player = exoPlayer
     val error: StateFlow<String?> = errorState.asStateFlow()
 
-    fun setForeground(active: Boolean) = recoveryController.setForeground(active)
+    fun setForeground(active: Boolean) { foreground = active; recoveryController.setForeground(active) }
 
     fun retry() {
         if (!released && recoveryController.manualRetry()) prepareCurrent()
@@ -160,6 +169,7 @@ class ExternalPlaybackRuntime(
     fun addSubtitle(subtitle: top.cylunex.shadowmedia.model.ExternalSubtitle) {
         if (released) return
         recoveryController.ready()
+        preferences.saveSubtitle(preferenceKey, subtitle)
         val position = exoPlayer.currentPosition
         val playing = exoPlayer.playWhenReady
         pendingSubtitle = subtitle

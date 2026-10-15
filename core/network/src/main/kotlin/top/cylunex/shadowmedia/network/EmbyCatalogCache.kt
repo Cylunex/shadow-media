@@ -24,7 +24,7 @@ internal fun MediaItem.snapshotDto() = BaseItemDto(id, name, type, music?.album.
     runTimeTicks = runTimeTicks, overview = overview?.take(16000), productionYear = productionYear,
     communityRating = communityRating, seriesId = seriesId, imageTags = imageTag?.let { mapOf("Primary" to it) }.orEmpty(),
     backdropImageTags = listOfNotNull(backdropImageTag), providerIds = externalIds,
-    userData = UserDataDto(playbackPositionTicks, played, favorite))
+    userData = UserDataDto(playbackPositionTicks, played, favorite), isFolder = isFolder, nextUp = nextUp)
 
 class EmbyCatalogCache(internal val dao: LibraryStateDao) {
     private val locks = Array(64) { Mutex() }
@@ -86,6 +86,16 @@ class CachedEmbyRepository(private val remote: EmbyRepository, private val cache
     override suspend fun browse(session: EmbySession, request: BrowseRequest): MediaPage {
         val (snapshot, cached) = cache.fetch(browseKey(session, request)) { remote.browse(session, request).let { EmbyCatalogSnapshot(it.items.map(MediaItem::snapshotDto), it.totalRecordCount) } }
         return MediaPage(userState.overlay(session, snapshot.items.map(BaseItemDto::toModel)), request.startIndex, snapshot.total, cached)
+    }
+    override suspend fun nextUp(session: EmbySession): List<MediaItem> {
+        val key = cache.key(session, "next-up")
+        if (NetworkPolicy.offlineOnly) return cache.read(key)?.items.orEmpty().map(BaseItemDto::toModel)
+        return try {
+            val fresh = remote.nextUp(session)
+            cache.write(key, EmbyCatalogSnapshot(fresh.map(MediaItem::snapshotDto)))
+            fresh
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { cache.read(key)?.items?.map(BaseItemDto::toModel) ?: throw e }
     }
     override suspend fun cachedChildren(session: EmbySession, parentId: String) = cache.read(cache.key(session, "children", parentId))?.items?.map(BaseItemDto::toModel)?.let { userState.overlay(session, it) }
     override suspend fun children(session: EmbySession, parentId: String) = cache.fetch(cache.key(session, "children", parentId)) { EmbyCatalogSnapshot(remote.children(session, parentId).map(MediaItem::snapshotDto)) }.first.items.map(BaseItemDto::toModel).let { userState.overlay(session, it) }

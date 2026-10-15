@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -23,6 +24,7 @@ internal fun LocalVideosScreen(container: AppContainer, viewModel: MainViewModel
     val context = LocalContext.current
     val repository = container.localVideos
     val scope = rememberCoroutineScope()
+    val queue by container.videoQueue.queue.collectAsStateWithLifecycle()
     var videos by remember { mutableStateOf(emptyList<UnifiedMediaItem>()) }
     var folders by remember { mutableStateOf(repository.folders()) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -38,7 +40,7 @@ internal fun LocalVideosScreen(container: AppContainer, viewModel: MainViewModel
             finally { videos = repository.videos(); folders = repository.folders(); busy = false }
         }
     }
-    LaunchedEffect(Unit) { videos = repository.videos(); run { repository.refresh() } }
+    LaunchedEffect(Unit) { videos = repository.videos(); container.videoQueue.restore(videos); run { repository.refresh(); container.videoQueue.restore(repository.videos()) } }
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         run {
             uris.forEach { context.contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
@@ -70,6 +72,18 @@ internal fun LocalVideosScreen(container: AppContainer, viewModel: MainViewModel
         items(folders, key = { it }) { uri -> Row { Text("已添加：${android.net.Uri.decode(uri.substringAfterLast('/'))}", Modifier.weight(1f)); TextButton(enabled = !busy, onClick = { run { repository.removeFolder(uri) } }) { Text("移除") } } }
         item { OutlinedTextField(url, { url = it }, label = { Text("视频链接 / m3u8 直播流") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Button(enabled = !busy && url.isNotBlank(), onClick = { run { val video = repository.addLink(url); url = ""; viewModel.playUnifiedItem(video) } }) { Text("播放链接") } }
+        item {
+            Row {
+                TextButton(enabled = videos.isNotEmpty(), onClick = {
+                    val selected = videos.filter { it.title.contains(query, true) }
+                    if (selected.isNotEmpty()) { val started = container.videoQueue.start(selected); viewModel.playUnifiedItem(selected.first(), started.currentEntryId) }
+                }) { Text("按当前列表连续播放") }
+                if (queue.current != null) TextButton(onClick = {
+                    val restored = container.videoQueue.activate()
+                    restored.current?.let { current -> videos.find { it.key == current.key }?.let { viewModel.playUnifiedItem(it.copy(progressMs = restored.positionMs), restored.currentEntryId) } }
+                }) { Text("恢复队列") }
+            }
+        }
         item { OutlinedTextField(query, { query = it }, label = { Text("搜索视频") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
         if (busy) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         message?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
@@ -77,9 +91,17 @@ internal fun LocalVideosScreen(container: AppContainer, viewModel: MainViewModel
             Card(onClick = {
                 scope.launch {
                     val history = container.localMediaState.history(video.key.stableId)
-                    viewModel.playUnifiedItem(video.copy(progressMs = history?.takeUnless { it.completed }?.positionMs ?: 0))
+                    val started = container.videoQueue.start(listOf(video))
+                    viewModel.playUnifiedItem(video.copy(progressMs = history?.takeUnless { it.completed }?.positionMs ?: 0), started.currentEntryId)
                 }
-            }) { Column(Modifier.fillMaxWidth().padding(16.dp)) { Text(video.title); Text(video.subtitle.orEmpty(), style = MaterialTheme.typography.bodySmall) } }
+            }) { Column(Modifier.fillMaxWidth().padding(16.dp)) { Text(video.title); Text(video.subtitle.orEmpty(), style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { container.videoQueue.append(video) }) { Text("加入队列") }
+                TextButton(onClick = { scope.launch {
+                    val siblings = repository.siblings(video.key)
+                    val index = siblings.indexOfFirst { it.key == video.key }
+                    if (index >= 0) { val started = container.videoQueue.start(siblings, index); viewModel.playUnifiedItem(video, started.currentEntryId) }
+                } }) { Text("从此项连续播放目录") }
+            } }
         }
         if (videos.isEmpty() && !busy) item { Text("选择视频、添加文件夹，或扫描手机里的视频。") }
     }

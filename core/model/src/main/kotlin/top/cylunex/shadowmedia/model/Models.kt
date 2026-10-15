@@ -40,6 +40,8 @@ data class MediaItem(
     val backdropImageTag: String? = null,
     val externalIds: Map<String, String> = emptyMap(),
     val music: MusicMetadata? = null,
+    val isFolder: Boolean = false,
+    val nextUp: Boolean = false,
 )
 
 enum class MediaSort(val wireName: String) {
@@ -67,6 +69,7 @@ data class BrowseRequest(
     val filter: MediaFilter = MediaFilter.ALL,
     val startIndex: Int = 0,
     val limit: Int = 60,
+    val recursive: Boolean = true,
 )
 
 data class MediaPage(
@@ -143,6 +146,10 @@ data class ExternalMediaEntry(
     val startPositionMs: Long = 0,
     val isDiscImage: Boolean = false,
     val subtitles: List<ExternalSubtitle> = emptyList(),
+    val queueEntryId: String? = null,
+    val playbackRevision: Long = 0,
+    val playWhenReady: Boolean = true,
+    val refreshAttempts: Int = 0,
 )
 
 data class LiveChannel(

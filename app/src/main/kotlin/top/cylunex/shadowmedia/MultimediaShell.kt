@@ -64,6 +64,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
 
 @Composable fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    LaunchedEffect(state.screen) { if (state.screen != Screen.EXTERNAL_PLAYER) container.videoQueue.deactivate() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val pendingSync by container.library.dao.pendingCount().collectAsStateWithLifecycle(0)
@@ -188,6 +189,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                 if (audioState.id != null) NavigationRailItem(selected = false, onClick = { audioExpanded = true }, icon = { Icon(Icons.Rounded.GraphicEq, "正在播放") })
             }
             Column(Modifier.weight(1f)) {
+                CastPlaybackBar(container)
                 if (tab == 3 && !audioExpanded && !catalogScreen && state.screen == Screen.HOME) {
                     Row(Modifier.statusBarsPadding().padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         FilterChip(!musicTab, onClick = { musicTab = false }, label = { Text("听书") })
@@ -498,6 +500,8 @@ private fun audioTime(value: Long): String { val seconds = value.coerceAtLeast(0
         } }
         state.error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
         item {
+            val recovery by AudioDiagnostics.playbackRecovery.collectAsStateWithLifecycle()
+            recovery.message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             val method by AudioDiagnostics.playbackMethod.collectAsStateWithLifecycle()
             val format by AudioDiagnostics.decoderInput.collectAsStateWithLifecycle()
             if (format.isNotBlank()) Text("${method.ifBlank { "本机" }} · 解码输入 $format", style = MaterialTheme.typography.bodySmall)

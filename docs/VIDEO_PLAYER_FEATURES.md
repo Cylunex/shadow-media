@@ -19,7 +19,7 @@
 | 睡眠定时 | 新增视频端关闭 / 15 / 30 / 60 分钟，使用单调时钟；到期暂停，返回前台不会因自动恢复重新播放 |
 | 锁定控制 | 新增，屏蔽触摸手势、控件及 Feed 切换，保留解锁按钮；返回键先解锁 |
 | 耳机与蓝牙按键 | Emby 已有 MediaSession、音频焦点与拔耳机暂停；本机/外部视频新增独立 MediaSession 与媒体元数据，支持系统播放、暂停与 Seek 命令 |
-| 断网恢复与原位重试 | 普通网络视频对明确的网络/临时 HTTP 错误最多自动重试两次，断网等待连接；暂停与后台暂缓恢复；本机/网络视频均可从当前位置手动重试；Emby 重新解析保留当前进度与暂停状态 |
+| 断网恢复与原位重试 | 普通网络视频对明确的网络/临时 HTTP 错误默认最多自动重试两次（播放设置可选 0～5 次），断网等待连接；暂停与后台暂缓恢复；本机/网络视频均可从当前位置手动重试；Emby 重新解析保留当前进度与暂停状态 |
 
 ## 使用范围
 
@@ -46,3 +46,19 @@
 6. 播放 m3u8 直播，进入和退出画中画；测试定时到期暂停，并确保回到前台不会自动续播。
 
 实现参考：[Android 服务发现](https://developer.android.com/develop/connectivity/wifi/use-nsd)、[部分视频授权](https://developer.android.com/about/versions/14/changes/partial-photo-video-access)、[Media3 Player](https://github.com/androidx/media/blob/1.11.0/libraries/ui_compose_material3/src/main/java/androidx/media3/ui/compose/material3/Player.kt)、[ContentFrame](https://github.com/androidx/media/blob/1.11.0/libraries/ui_compose/src/main/java/androidx/media3/ui/compose/ContentFrame.kt)。
+
+
+## 2026-10-15 追加能力
+
+「本机视频与链接」提供按当前列表或同目录连续播放、追加与恢复队列。播放页提供上下条和队列面板，
+支持排序、移除和循环；同一视频多次入队拥有独立实例。队列恢复需要原文件仍在已授权目录中，恢复操作不会自动在后台开始播放。
+
+「播放设置」新增自动/强制硬解/强制软解、网络恢复次数、直播自动换源、默认音频/字幕语言，以及字幕大小、
+背景和底部位置。强制模式需要设备提供对应解码器；没有兼容解码器时显示失败，可切回自动。手选轨道仅在同媒体的唯一语义匹配项上恢复。
+
+普通视频的「投屏」入口支持 DLNA；手机需保持与接收设备可达，作为临时媒体桥接运行。支持发现与手填设备描述地址，
+可在播放页、页面外控制条或媒体通知中暂停、继续和停止；远端支持 Seek 时可拖动位置。本机恢复播放时接回远端位置。
+接收设备须支持实际媒体编码，当前不提供手机端转码。凭据、临时地址和通知行为的详细约束见
+[研究方案第 6 节](RESEARCH_AND_PLAYBACK_RECOVERY_2026_10_15.md#6-全方案实施追加批次)。
+
+追加自动测试与真机结果见 [设备验收](VIDEO_COMPLETION_ACCEPTANCE_2026_10_15.md)；前文尚需验收清单保留未覆盖设备和真实服务项目。

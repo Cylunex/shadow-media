@@ -1074,6 +1074,7 @@ internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
                 programs = programs,
                 favorite = stableKey in state.liveFavoriteKeys,
                 onPlay = viewModel::playExternalEntry,
+                lineDescription = viewModel::liveLineDescription,
                 onFavorite = { viewModel.toggleLiveFavorite(channel) },
                 onCatchup = viewModel::playCatchup,
             )
@@ -1087,6 +1088,7 @@ private fun LiveChannelCard(
     programs: List<LiveProgram>,
     favorite: Boolean,
     onPlay: (ExternalMediaEntry) -> Unit,
+    lineDescription: (ExternalMediaEntry) -> String,
     onFavorite: () -> Unit,
     onCatchup: (ExternalMediaEntry, LiveProgram) -> Unit,
 ) {
@@ -1168,7 +1170,7 @@ private fun LiveChannelCard(
                         FilterChip(
                             selected = selectedStream == index,
                             onClick = { selectedStream = index },
-                            label = { Text("线路 ${index + 1}") },
+                            label = { Text("线路 ${index + 1} · ${lineDescription(channel.streams[index])}") },
                             leadingIcon = if (index == selectedStream) {
                                 { Icon(Icons.Rounded.SwapHoriz, null, Modifier.size(18.dp)) }
                             } else null,
@@ -1225,7 +1227,7 @@ private fun InputStream.readLimitedBytes(maxBytes: Int): ByteArray {
 private const val MAX_EXTERNAL_SOURCE_BYTES = 2 * 1024 * 1024
 private const val EXTERNAL_SOURCE_BUFFER_SIZE = 8 * 1024
 
-private fun episodeLabel(item: MediaItem): String = if (item.seriesName != null) {
+private fun episodeLabel(item: MediaItem): String = (if (item.nextUp) "下一集 · " else "") + if (item.seriesName != null) {
     "${item.seriesName} · S${item.seasonNumber ?: 0}E${item.episodeNumber ?: 0}"
 } else item.type
 

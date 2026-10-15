@@ -219,28 +219,49 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
     }
     val context = androidx.compose.ui.platform.LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val runtime = remember(entry.id, entry.url, entry.startPositionMs) {
-        ExternalPlaybackRuntime(context.applicationContext, entry, container.networkStorageRepository,
-            startPlayWhenReady = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+    val preferences = remember(context) { top.cylunex.shadowmedia.playback.VideoPreferenceStore.get(context) }
+    val videoSettings by preferences.settings.collectAsStateWithLifecycle()
+    var decoderResume by remember(entry.id, entry.url, entry.startPositionMs, entry.queueEntryId, entry.playbackRevision) { mutableStateOf<VideoRestartSnapshot?>(null) }
+    val runtime = remember(entry.id, entry.url, entry.startPositionMs, entry.queueEntryId, entry.playbackRevision, videoSettings.decoder) {
+        ExternalPlaybackRuntime(context.applicationContext,
+            entry.copy(startPositionMs = decoderResume?.positionMs ?: entry.startPositionMs), container.networkStorageRepository,
+            startPlayWhenReady = (decoderResume?.playing ?: entry.playWhenReady) && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
+            onTerminalError = { position, playing -> viewModel.externalPlaybackFailed(entry.id, position, playing) })
+            .also { it.player.setPlaybackSpeed(decoderResume?.speed ?: 1f) }
     }
     val videoControls = LocalVideoControlState.current
+    var showCast by remember { mutableStateOf(false) }
     val inPip = (context.findActivity() as? MainActivity)?.inPictureInPicture == true
     val playbackError by runtime.error.collectAsStateWithLifecycle()
     val recovery by runtime.recovery.collectAsStateWithLifecycle()
     LaunchedEffect(runtime) {
         while (true) {
             kotlinx.coroutines.delay(5000)
+            entry.queueEntryId?.let { container.videoQueue.position(it, container.castPlayback.returnedPosition(entry.sourceId, entry.id) ?: runtime.player.currentPosition) }
             container.recordExternalHistory(entry, runtime.player.currentPosition.coerceAtLeast(0L), runtime.player.duration.takeIf { it > 0 })
         }
+    }
+    DisposableEffect(runtime) {
+        val listener = object : androidx.media3.common.Player.Listener {
+            private var healthy = false
+            override fun onRenderedFirstFrame() { if (!healthy) { healthy = true; viewModel.externalPlaybackHealthy(entry) } }
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (playWhenReady) container.castPlayback.takeReturnPosition(entry.sourceId, entry.id)?.let { if (runtime.player.isCurrentMediaItemSeekable) runtime.player.seekTo(it) }
+            }
+        }
+        runtime.player.addListener(listener)
+        onDispose { runtime.player.removeListener(listener) }
     }
     val focusRequester = remember(runtime) { FocusRequester() }
     LaunchedEffect(runtime) { runCatching { focusRequester.requestFocus() } }
     DisposableEffect(runtime, lifecycleOwner) {
         var resumeAfterBackground = false
+        var backgroundAt = 0L
         runtime.setForeground(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
+                    backgroundAt = android.os.SystemClock.elapsedRealtime()
                     runtime.setForeground(false)
                     resumeAfterBackground = runtime.player.playWhenReady
                     runtime.player.pause()
@@ -248,7 +269,11 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
                 }
                 Lifecycle.Event.ON_START -> {
                     runtime.setForeground(true)
-                    if (resumeAfterBackground && !videoControls.sleepExpired) runtime.player.play()
+                    if (resumeAfterBackground && !videoControls.sleepExpired) {
+                        if (backgroundAt > 0 && android.os.SystemClock.elapsedRealtime() - backgroundAt >= 60_000L && entry.sourceId != "local-video")
+                            viewModel.refreshExternalPlayback(runtime.player.currentPosition, true)
+                        runtime.player.play()
+                    }
                     resumeAfterBackground = false
                 }
                 else -> Unit
@@ -317,10 +342,28 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
             }
         }
         if (!inPip && !videoControls.locked) PlaybackRecoveryNotice(
-            state = recovery, error = playbackError, onRetry = runtime::retry,
+            state = recovery, error = playbackError ?: state.errorMessage, onRetry = runtime::retry,
             modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 76.dp, start = 16.dp, end = 16.dp),
         )
-        VideoPlayerFeatures(runtime.player, onSubtitle = runtime::addSubtitle)
+        if (!inPip && !videoControls.locked && (playbackError != null || recovery.phase == top.cylunex.shadowmedia.playback.PlaybackRecoveryPhase.FAILED)) TextButton(
+            onClick = { viewModel.refreshExternalPlayback(runtime.player.currentPosition, runtime.player.playWhenReady) },
+            modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 170.dp),
+        ) { Text("重新解析来源") }
+        if (!inPip && !videoControls.locked) LiveLinePicker(state, viewModel, entry, Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(top = 76.dp))
+        VideoQueueControls(container, viewModel, entry, runtime.player,
+            Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(bottom = 72.dp))
+        Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) { CastPlaybackBar(container) }
+        if (showCast) CastPlaybackPanel(container, entry, runtime.player, onDismiss = { showCast = false }, prepare = {
+            val provider = container.providerRegistry.provider(entry.sourceId)
+            val candidate = provider?.resolve(top.cylunex.shadowmedia.model.UnifiedPlaybackRequest(top.cylunex.shadowmedia.model.MediaKey(provider.descriptor.id, entry.id), runtime.player.currentPosition))?.firstOrNull()
+            val resolved = if (candidate == null) entry else entry.copy(url = candidate.url, requestHeaders = candidate.requiredHeaders, credentialOrigin = candidate.credentialOrigin)
+            PreparedCastMedia(resolved, runtime.player.currentPosition, top.cylunex.shadowmedia.playback.castMimeType(resolved.url))
+        })
+        VideoPlayerFeatures(runtime.player, onSubtitle = runtime::addSubtitle, onCast = { showCast = true }, preferenceKey = "${entry.sourceId}:${entry.id}",
+            onDecoderChange = { mode ->
+                decoderResume = VideoRestartSnapshot(runtime.player.currentPosition, runtime.player.playWhenReady, runtime.player.playbackParameters.speed)
+                preferences.update { it.copy(decoder = mode) }
+            })
     }
 }
 
@@ -332,10 +375,11 @@ private fun ExternalIsoPlayerScreen(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val runtime = remember(entry.id, entry.url, entry.startPositionMs) {
-        MpvIsoPlaybackRuntime(context.applicationContext, entry, container.networkStorageRepository)
+    val runtime = remember(entry.id, entry.url, entry.startPositionMs, entry.playbackRevision) {
+        MpvIsoPlaybackRuntime(context.applicationContext, entry, container.networkStorageRepository, onTerminalError = { position, _ -> viewModel.refreshExternalPlayback(position, true, automatic = true) })
     }
     val playbackState by runtime.state.collectAsStateWithLifecycle()
+    val recovery by runtime.recovery.collectAsStateWithLifecycle()
     val diagnostics by runtime.diagnostics.collectAsStateWithLifecycle()
     val focusRequester = remember(runtime) { FocusRequester() }
     LaunchedEffect(runtime) { runCatching { focusRequester.requestFocus() } }
@@ -345,12 +389,16 @@ private fun ExternalIsoPlayerScreen(
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
+                    runtime.setForeground(false)
                     resumeAfterBackground = runtime.state.value.isPlaying
                     runtime.pause()
                 }
-                Lifecycle.Event.ON_START -> if (resumeAfterBackground) {
+                Lifecycle.Event.ON_START -> {
+                    runtime.setForeground(true)
+                    if (resumeAfterBackground) {
                     runtime.play()
                     resumeAfterBackground = false
+                    }
                 }
                 else -> Unit
             }
@@ -410,6 +458,7 @@ private fun ExternalIsoPlayerScreen(
                 )
             }
         }
+        PlaybackRecoveryNotice(recovery, runtime::retry, Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 76.dp, start = 16.dp, end = 16.dp))
         ExternalIsoControls(
             title = entry.title,
             runtime = runtime,
@@ -668,7 +717,7 @@ private fun ItemScreen(state: MainUiState, viewModel: MainViewModel) {
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             ScreenHeader(
-                title = state.selectedLibrary?.name ?: "视频",
+                title = (listOfNotNull(state.selectedLibrary?.name) + state.wallFolders.map { it.name }).joinToString(" / ").ifBlank { "视频" },
                 subtitle = "${state.wallTotalCount} 部内容 · 已加载 ${state.wallItems.size} 部",
                 actionLabel = "媒体库",
                 onAction = viewModel::back,
@@ -757,6 +806,17 @@ private fun ItemScreen(state: MainUiState, viewModel: MainViewModel) {
 
 @Composable
 private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: AppContainer) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        viewModel.setResolutionForeground(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        val observer = LifecycleEventObserver { _, event -> when (event) {
+            Lifecycle.Event.ON_START -> viewModel.setResolutionForeground(true)
+            Lifecycle.Event.ON_STOP -> viewModel.setResolutionForeground(false)
+            else -> Unit
+        } }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer); viewModel.setResolutionForeground(false) }
+    }
     BackHandler(onBack = viewModel::back)
     LaunchedEffect(state.insightMessage) {
         if (state.insightMessage != null) {
@@ -813,6 +873,7 @@ private fun FeedScreen(state: MainUiState, viewModel: MainViewModel, container: 
             onBack = viewModel::back,
             onRetry = viewModel::retryPlayback,
             onRetryCurrent = viewModel::retryPlayback,
+            onResolutionPause = viewModel::toggleResolutionPause,
             onTerminalError = viewModel::recoverPlayback,
             onExternalPlaybackStarted = viewModel::externalPlaybackStarted,
             onExternalPlaybackStopped = viewModel::externalPlaybackStopped,
@@ -838,6 +899,7 @@ private fun FeedPage(
     onBack: () -> Unit,
     onRetry: () -> Unit,
     onRetryCurrent: (Long, Boolean) -> Unit,
+    onResolutionPause: () -> Unit,
     onTerminalError: (Long, String) -> Unit,
     onExternalPlaybackStarted: (PlaybackPlan, Long) -> Unit,
     onExternalPlaybackStopped: (PlaybackPlan, Long) -> Unit,
@@ -893,6 +955,10 @@ private fun FeedPage(
             }
         } else if (isActive) {
             FeedPlaceholder(isLoading, errorMessage, onRetry)
+            Column(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 80.dp)) {
+                PlaybackRecoveryNotice(state.playbackResolutionRecovery, onRetry)
+                TextButton(onClick = onResolutionPause) { Text(if (state.playbackPlayWhenReady) "暂停自动恢复" else "继续自动恢复") }
+            }
         }
 
         if (!LocalVideoControlState.current.locked && (androidx.compose.ui.platform.LocalContext.current.findActivity() as? MainActivity)?.inPictureInPicture != true) PlayerTopBar(
@@ -999,6 +1065,7 @@ private fun IsoPlayer(
         )
     }
     val playbackState by runtime.state.collectAsStateWithLifecycle()
+    val recovery by runtime.recovery.collectAsStateWithLifecycle()
     val diagnostics by runtime.diagnostics.collectAsStateWithLifecycle()
     val pendingReports by container.playbackOutbox.pendingCount.collectAsStateWithLifecycle()
     var launchError by remember(plan) { mutableStateOf<String?>(null) }
@@ -1055,12 +1122,16 @@ private fun IsoPlayer(
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
+                    runtime.setForeground(false)
                     resumeAfterBackground = !externalPlaybackActive && runtime.state.value.isPlaying
                     runtime.pause()
                 }
-                Lifecycle.Event.ON_START -> if (resumeAfterBackground) {
+                Lifecycle.Event.ON_START -> {
+                    runtime.setForeground(true)
+                    if (resumeAfterBackground) {
                     runtime.play()
                     resumeAfterBackground = false
+                    }
                 }
                 else -> Unit
             }
@@ -1318,7 +1389,10 @@ private fun ActivePlayer(
     val videoControls = LocalVideoControlState.current
     val inPip = (context.findActivity() as? MainActivity)?.inPictureInPicture == true
     val lifecycleOwner = LocalLifecycleOwner.current
-    val runtime = remember(plan, feedPreload) {
+    val preferences = remember(context) { top.cylunex.shadowmedia.playback.VideoPreferenceStore.get(context) }
+    val videoSettings by preferences.settings.collectAsStateWithLifecycle()
+    var decoderResume by remember(plan) { mutableStateOf<VideoRestartSnapshot?>(null) }
+    val runtime = remember(plan, feedPreload, videoSettings.decoder) {
         PlaybackRuntime(
             context = context,
             feedPreload = feedPreload,
@@ -1326,34 +1400,50 @@ private fun ActivePlayer(
             plan = plan,
             playbackOutbox = container.playbackOutbox,
             clientIdentity = container.clientIdentity,
-            startPositionMs = state.playbackStartPositionMs,
-            startPlayWhenReady = state.playbackPlayWhenReady && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
+            startPositionMs = decoderResume?.positionMs ?: state.playbackStartPositionMs,
+            startPlayWhenReady = (decoderResume?.playing ?: state.playbackPlayWhenReady) && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
             mediaTitle = item.name,
             telemetrySink = container.playbackTelemetry,
             onTerminalError = onTerminalError,
-        )
+        ).also { it.player.setPlaybackSpeed(decoderResume?.speed ?: 1f) }
     }
     val diagnostics by runtime.diagnostics.collectAsStateWithLifecycle()
     val recovery by runtime.recovery.collectAsStateWithLifecycle()
     val pendingReports by container.playbackOutbox.pendingCount.collectAsStateWithLifecycle()
+    var showCast by remember { mutableStateOf(false) }
     var showDiagnostics by remember(runtime) { mutableStateOf(false) }
+    DisposableEffect(runtime) {
+        val listener = object : androidx.media3.common.Player.Listener {
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (playWhenReady) container.castPlayback.takeReturnPosition(session.providerId, item.id)?.let(runtime::seekTo)
+            }
+        }
+        runtime.player.addListener(listener)
+        onDispose { runtime.player.removeListener(listener) }
+    }
     val focusRequester = remember(runtime) { FocusRequester() }
 
     LaunchedEffect(runtime) { runCatching { focusRequester.requestFocus() } }
 
     DisposableEffect(runtime, lifecycleOwner) {
         var resumeAfterBackground = false
+        var backgroundAt = 0L
         runtime.setForeground(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
+                    backgroundAt = android.os.SystemClock.elapsedRealtime()
                     runtime.setForeground(false)
                     resumeAfterBackground = runtime.player.playWhenReady
                     runtime.player.pause()
                 }
                 Lifecycle.Event.ON_START -> {
                     runtime.setForeground(true)
-                    if (resumeAfterBackground && !videoControls.sleepExpired) runtime.player.play()
+                    if (resumeAfterBackground && !videoControls.sleepExpired) {
+                        if (backgroundAt > 0 && android.os.SystemClock.elapsedRealtime() - backgroundAt >= 60_000L)
+                            onRetryCurrent(runtime.currentPositionMs, true)
+                        else runtime.player.play()
+                    }
                     resumeAfterBackground = false
                 }
                 else -> Unit
@@ -1472,8 +1562,32 @@ private fun ActivePlayer(
             onSaveSegment = { type, startMs, endMs -> onSaveSegment(item, type, startMs, endMs) },
             modifier = Modifier.align(Alignment.BottomCenter),
         )
-        VideoPlayerFeatures(runtime.player, position = { runtime.currentPositionMs },
-            duration = { runtime.durationMs }, canSeek = { runtime.isSeekSupported }, seek = runtime::seekTo)
+        Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) { CastPlaybackBar(container) }
+        if (showCast) CastPlaybackPanel(container,
+            top.cylunex.shadowmedia.model.ExternalMediaEntry(item.id, session.providerId, item.name, plan.primary.url), runtime.player,
+            position = { runtime.currentPositionMs }, onDismiss = { showCast = false }, onTransfer = runtime::transferReportingToRemote,
+            prepare = {
+                val position = runtime.currentPositionMs
+                val remotePlan = container.embyRepository.playbackPlan(session, item.id)
+                require(container.sessionStore.loadAll().any { it == session })
+                val candidate = remotePlan.primary
+                val offset = if (candidate.method == top.cylunex.shadowmedia.model.PlayMethod.TRANSCODE) position else 0L
+                val url = if (offset > 0) candidate.url.toHttpUrl().newBuilder().setQueryParameter("StartTimeTicks", (offset * 10000).toString()).build().toString() else candidate.url
+                PreparedCastMedia(top.cylunex.shadowmedia.model.ExternalMediaEntry(item.id, session.providerId, item.name, url,
+                    requestHeaders = candidate.requiredHeaders, credentialOrigin = candidate.credentialOrigin ?: session.serverUrl), position,
+                    if (candidate.method == top.cylunex.shadowmedia.model.PlayMethod.TRANSCODE) "application/vnd.apple.mpegurl" else top.cylunex.shadowmedia.playback.castMimeType("file.${remotePlan.container ?: "mp4"}"), offset,
+                    onProgress = { event, at, paused ->
+                        if (container.sessionStore.loadAll().any { it == session }) container.playbackOutbox.submit(session,
+                            top.cylunex.shadowmedia.network.PlaybackReport(item.id, candidate.mediaSourceId ?: remotePlan.mediaSourceId, remotePlan.playSessionId,
+                                at.coerceIn(0, Long.MAX_VALUE / 10000) * 10000, paused, true, event, candidate.method))
+                    })
+            })
+        VideoPlayerFeatures(runtime.player, onCast = { showCast = true }, position = { runtime.currentPositionMs },
+            duration = { runtime.durationMs }, canSeek = { runtime.isSeekSupported }, seek = runtime::seekTo,
+            preferenceKey = "${session.providerId}:${plan.itemId}", onDecoderChange = { mode ->
+                decoderResume = VideoRestartSnapshot(runtime.currentPositionMs, runtime.player.playWhenReady, runtime.player.playbackParameters.speed)
+                preferences.update { it.copy(decoder = mode) }
+            })
     }
 }
 
@@ -1748,7 +1862,7 @@ private fun formatBytes(bytes: Long): String = when {
 
 private fun Boolean.asFlag(): String = if (this) "是" else "否"
 
-private tailrec fun Context.findActivity(): Activity? = when (this) {
+internal tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
@@ -1787,3 +1901,5 @@ private const val VLC_PACKAGE = "org.videolan.vlc"
 private const val VLC_RESULT_POSITION = "extra_position"
 private const val VLC_DOWNLOAD_URL = "https://www.videolan.org/vlc/download-android.html"
 private const val TV_SEEK_STEP_MS = 10_000L
+
+internal data class VideoRestartSnapshot(val positionMs: Long, val playing: Boolean, val speed: Float)

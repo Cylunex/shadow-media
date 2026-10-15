@@ -9,7 +9,7 @@ import android.os.Looper
 import java.io.Closeable
 
 /** Uses the app's routed network; LAN playback does not require Internet validation. */
-internal class PlaybackNetworkMonitor(context: Context, private val onAvailable: (Boolean) -> Unit) : Closeable {
+class PlaybackNetworkMonitor(context: Context, private val onAvailable: (Boolean) -> Unit) : Closeable {
     private val manager = context.applicationContext.getSystemService(ConnectivityManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
     private var current: Network? = null

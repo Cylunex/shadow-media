@@ -92,10 +92,21 @@ class DefaultEmbyRepository(
         return allItems.distinctBy(BaseItemDto::id).map { it.toModel() }
     }
 
+    override suspend fun nextUp(session: EmbySession): List<MediaItem> {
+        val url = EmbyEndpoints.endpoint(session.serverUrl, "Shows", "NextUp").newBuilder()
+            .addQueryParameter("UserId", session.userId).addQueryParameter("Limit", "40")
+            .addQueryParameter("Fields", CATALOG_FIELDS).addQueryParameter("EnableUserData", "true").build()
+        val result: QueryResultDto = executeJson(authenticatedRequest(session, url).get().build())
+        return result.items.map { it.toModel().let { item -> item.copy(nextUp = item.playbackPositionTicks <= 0) } }.filter { !it.played && !it.isFolder }
+    }
+
     override suspend fun home(
         session: EmbySession,
         libraryIds: List<String>,
     ): List<MediaSection> = coroutineScope {
+        val following = async {
+            try { nextUp(session) } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
+        }
         val continueWatching = async {
             browse(
                 session,
@@ -134,9 +145,9 @@ class DefaultEmbyRepository(
         listOf(
             MediaSection(
                 id = "continue",
-                title = "继续观看",
+                title = "继续观看与下一集",
                 kind = MediaSectionKind.CONTINUE_WATCHING,
-                items = continueWatching.await(),
+                items = top.cylunex.shadowmedia.model.mergeContinueAndNextUp(continueWatching.await(), following.await()),
             ),
             MediaSection(
                 id = "latest",
@@ -161,7 +172,7 @@ class DefaultEmbyRepository(
             .newBuilder()
             .apply {
                 request.parentId.takeIf(String::isNotBlank)?.let { addQueryParameter("ParentId", it) }
-                addQueryParameter("Recursive", "true")
+                addQueryParameter("Recursive", request.recursive.toString())
                 addQueryParameter("IncludeItemTypes", request.includeItemTypes.sorted().joinToString(","))
                 addQueryParameter("Fields", CATALOG_FIELDS)
                 addQueryParameter("EnableImages", "true")
@@ -471,7 +482,7 @@ class DefaultEmbyRepository(
             404 -> "Emby 接口不存在，请检查服务地址"
             else -> "Emby 请求失败（HTTP $code）"
         }
-        return EmbyApiException(reason)
+        return EmbyApiException(reason, httpStatus = code)
     }
 
     private fun PlayMethod.toWireName(): String = when (this) {
@@ -493,7 +504,7 @@ class DefaultEmbyRepository(
     }
 }
 
-class EmbyApiException(message: String, cause: Throwable? = null) : IOException(message, cause)
+class EmbyApiException(message: String, cause: Throwable? = null, val httpStatus: Int? = null) : IOException(message, cause)
 
 data class ClientIdentity(
     val deviceName: String,
@@ -532,6 +543,7 @@ internal fun BaseItemDto.toModel(): MediaItem = MediaItem(
         imageTag = imageTags["Primary"],
         backdropImageTag = backdropImageTags.firstOrNull(),
         externalIds = providerIds,
+        isFolder = isFolder, nextUp = nextUp,
         music = if (type.equals("Audio", true) || type.equals("MusicAlbum", true)) top.cylunex.shadowmedia.model.MusicMetadata(
             album, albumId, artists.joinToString(" / "), albumArtist, parentIndexNumber ?: 0, indexNumber ?: 0) else null,
     )

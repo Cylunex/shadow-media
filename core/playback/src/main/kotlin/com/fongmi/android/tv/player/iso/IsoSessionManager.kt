@@ -27,6 +27,7 @@ data class IsoSourceStats(
     val lastLength: Int = 0,
     val validatorPresent: Boolean = false,
     val lastError: String? = null,
+    val recoverableNetworkFailure: Boolean = false,
 )
 
 /** Random-access bytes consumed by the bundled libbluray/libdvdnav bridge. */
@@ -259,12 +260,15 @@ private class HttpRangeIsoSource(
             lastLength = (end - start + 1).toInt(),
             validatorPresent = validator != null,
             lastError = null,
+            recoverableNetworkFailure = false,
         )
     }
 
     @Synchronized
     private fun updateError(error: Throwable) {
-        mutableStats = mutableStats.copy(lastError = error.message ?: error.javaClass.simpleName)
+        mutableStats = mutableStats.copy(lastError = error.message ?: error.javaClass.simpleName,
+            recoverableNetworkFailure = if (error is IsoSourceException) error.httpCode in setOf(408, 425, 429, 500, 502, 503, 504)
+            else error is IOException && error !is javax.net.ssl.SSLException)
     }
 
     override fun stats(): IsoSourceStats = synchronized(this) { mutableStats }

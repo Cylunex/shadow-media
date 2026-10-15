@@ -19,6 +19,8 @@ internal class AudioCandidateSessions {
         AudioDiagnostics.method.value = synchronized(states) { states[entry]?.selected?.method?.name }.orEmpty()
     }
     private val states = linkedMapOf<String, State>()
+    private val generations = mutableMapOf<String, Long>()
+    fun invalidate(entry: String) = synchronized(states) { states.remove(entry); generations[entry] = (generations[entry] ?: 0) + 1 }
     private val resolutions = Array(16) { Mutex() }
     private var closed = false
     private fun resolution(entry: String) = resolutions[(entry.hashCode() and Int.MAX_VALUE) % resolutions.size]
@@ -27,11 +29,13 @@ internal class AudioCandidateSessions {
             if (closed) throw IOException("音频播放会话已关闭")
             states[entry]?.let { return@withLock it.candidates[it.index] }
         }
+        val generation = synchronized(states) { generations[entry] ?: 0 }
         val candidates = LibraryResources.resolveAudio(asset, entry, priority(entry)).take(16)
         currentCoroutineContext().ensureActive()
         require(candidates.isNotEmpty()) { "来源没有返回音频线路" }
         synchronized(states) {
             if (closed) throw IOException("音频播放会话已关闭")
+            if ((generations[entry] ?: 0) != generation) throw IOException("音频资源已重新解析")
             states[entry] = State(candidates)
             while (states.size > 16) states.remove(states.keys.first())
         }
@@ -67,7 +71,7 @@ internal class AudioCandidateSessions {
     }
     fun close() = synchronized(states) {
         closed = true
-        states.clear()
+        states.clear(); generations.clear()
         activeEntry = null
         AudioDiagnostics.method.value = ""
     }

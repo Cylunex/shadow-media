@@ -158,6 +158,28 @@ class MpvIsoPlaybackRuntime private constructor(
     private var progressJob: Job? = null
     private var isoUri: String? = null
     private var nativeSurface: Surface? = null
+    private var desiredPlaying = true
+    private var foreground = true
+    private var pausedAt = 0L
+    private val recoveryController = PlaybackRecovery(scope, { !top.cylunex.shadowmedia.model.NetworkPolicy.offlineOnly },
+        { VideoPreferenceStore.get(appContext).settings.value.retries }) { retryIso() }
+    private val networkMonitor = PlaybackNetworkMonitor(appContext, recoveryController::setNetworkAvailable)
+    val recovery = recoveryController.state
+    fun setForeground(active: Boolean) { foreground = active; recoveryController.setForeground(active) }
+    fun retry() { if (recoveryController.manualRetry()) retryIso() }
+    private fun retryIso() {
+        if (!initialized || closed.get()) return
+        val position = stateFlow.value.positionMs
+        runCatching {
+            MPVLib.command(arrayOf("stop"))
+            IsoSessionManager.closeUri(isoUri); isoUri = null
+            loaded = false
+            stateFlow.update { it.copy(error = null, isBuffering = true) }
+            diagnosticsFlow.update { it.copy(lastError = null) }
+            loadIso(position)
+        }.onFailure { fail("重新加载 ISO 失败，请重新解析来源") }
+    }
+
 
     val state: StateFlow<MpvIsoPlaybackState> = stateFlow.asStateFlow()
     val diagnostics: StateFlow<MpvIsoDiagnostics> = diagnosticsFlow.asStateFlow()
@@ -187,11 +209,18 @@ class MpvIsoPlaybackRuntime private constructor(
     private val audible = top.cylunex.shadowmedia.model.PlaybackCoordinator.process.participant { pause() }
 
     fun play() {
+        desiredPlaying = true
+        recoveryController.setPlayWhenReady(true)
         audible.claim()
+        if (pausedAt > 0 && android.os.SystemClock.elapsedRealtime() - pausedAt >= 60_000L) { pausedAt = 0; retryIso(); return }
+        pausedAt = 0
         if (initialized && !closed.get()) MPVLib.setPropertyBoolean("pause", false)
     }
 
     fun pause() {
+        desiredPlaying = false
+        pausedAt = android.os.SystemClock.elapsedRealtime()
+        recoveryController.setPlayWhenReady(false)
         audible.abandon()
         if (initialized && !closed.get()) MPVLib.setPropertyBoolean("pause", true)
     }
@@ -223,6 +252,7 @@ class MpvIsoPlaybackRuntime private constructor(
     override fun close() {
         audible.close()
         if (!closed.compareAndSet(false, true)) return
+        recoveryController.close(); networkMonitor.close()
         progressJob?.cancel()
         val finalPosition = stateFlow.value.positionMs
         val shouldReport = started && stoppedReported.compareAndSet(false, true)
@@ -293,6 +323,7 @@ class MpvIsoPlaybackRuntime private constructor(
                 refreshNativeState()
             }
             MPVLib.MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> {
+                scope.launch { recoveryController.ready() }
                 stateFlow.update { it.copy(isBuffering = false, isPlaying = !nativeBoolean("pause", false)) }
                 refreshNativeState()
                 if (!started) {
@@ -316,7 +347,13 @@ class MpvIsoPlaybackRuntime private constructor(
         val message = sanitizeError(sourceError ?: errorText ?: "ISO 原生引擎加载失败 ($error)")
         stateFlow.update { it.copy(isPlaying = false, isBuffering = false, error = message) }
         diagnosticsFlow.update { it.copy(lastError = message) }
-        onTerminalError(stateFlow.value.positionMs, message)
+        val recoverable = IsoSessionManager.stats(isoUri).recoverableNetworkFailure
+        scope.launch {
+            if (closed.get()) return@launch
+            val failure = PlaybackFailure(PlaybackFailureKind.NETWORK, message, recoverable)
+            if (recoveryController.recover(failure)) return@launch
+            if (foreground && desiredPlaying) onTerminalError(stateFlow.value.positionMs, message)
+        }
     }
 
     private fun attachNativeSurface(surface: Surface) {
@@ -381,7 +418,8 @@ class MpvIsoPlaybackRuntime private constructor(
         diagnosticsFlow.update { it.copy(nativeAbi = MPVLib.getLoadedAbi()) }
     }
 
-    private fun loadIso() {
+    private fun loadIso(positionMs: Long = startPositionMs) {
+        MPVLib.setPropertyBoolean("pause", !desiredPlaying)
         isoUri = if (sourceUrl.startsWith("shadow-smb://")) {
             val repository = networkStorageRepository ?: throw IllegalStateException("SMB ISO 数据源未初始化")
             IsoSessionManager.create(SmbIsoRandomAccessSource(sourceUrl, repository))
@@ -389,7 +427,7 @@ class MpvIsoPlaybackRuntime private constructor(
             IsoSessionManager.configure(playbackClient)
             IsoSessionManager.create(sourceUrl, sourceHeaders)
         }
-        val start = startPositionMs.takeIf { it > 0 }?.let {
+        val start = positionMs.takeIf { it > 0 }?.let {
             "start=${String.format(Locale.US, "%.3f", it / 1000.0)}"
         }
         val command = if (start == null) {
@@ -547,8 +585,14 @@ private class SmbIsoRandomAccessSource(
     override fun length(): Long {
         ensureOpen()
         if (sourceLength >= 0) return sourceLength
+        try {
         repository.openSmbResource(url, 0).use { handle ->
             sourceLength = handle.remainingLength ?: throw IOException("SMB ISO 缺少文件大小")
+        }
+        } catch (error: IOException) {
+            mutableStats = mutableStats.copy(lastError = "SMB ISO 连接失败", recoverableNetworkFailure =
+                (error as? top.cylunex.shadowmedia.network.NetworkStorageFailureException)?.kind == top.cylunex.shadowmedia.network.NetworkStorageFailure.TRANSPORT)
+            throw error
         }
         mutableStats = mutableStats.copy(totalBytes = sourceLength)
         return sourceLength
@@ -577,11 +621,13 @@ private class SmbIsoRandomAccessSource(
                     lastOffset = offset,
                     lastLength = read,
                     lastError = null,
+                    recoverableNetworkFailure = false,
                 )
             }
             read
         } catch (error: IOException) {
-            synchronized(this) { mutableStats = mutableStats.copy(lastError = error.message) }
+            synchronized(this) { mutableStats = mutableStats.copy(lastError = "SMB ISO 读取失败", recoverableNetworkFailure =
+                (error as? top.cylunex.shadowmedia.network.NetworkStorageFailureException)?.kind == top.cylunex.shadowmedia.network.NetworkStorageFailure.TRANSPORT) }
             throw error
         }
     }

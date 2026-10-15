@@ -1,0 +1,114 @@
+{
+  "av1.mp4": {
+    "bytes": 46181,
+    "sha256": "25682f04d3062a35802bfb80324334c5259b126383e167a4f21601e96bff058a",
+    "streams": [
+      {
+        "index": 0,
+        "codec_name": "av1",
+        "codec_type": "video",
+        "tags": {
+          "language": "und"
+        }
+      }
+    ]
+  },
+  "avc-aac.mp4": {
+    "bytes": 96371,
+    "sha256": "2d02f297ff8ec374858da86ad264e702a75ea1b4ab33165783291b40d9ffbdc6",
+    "streams": [
+      {
+        "index": 0,
+        "codec_name": "h264",
+        "codec_type": "video",
+        "tags": {
+          "language": "und"
+        }
+      },
+      {
+        "index": 1,
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "tags": {
+          "language": "und"
+        }
+      }
+    ]
+  },
+  "hls/index.m3u8": {
+    "bytes": 144,
+    "sha256": "02b0f1a179868f137e650052a4fd348ce7de46d382629eee83995dd460e603b2",
+    "streams": [
+      {
+        "index": 0,
+        "codec_name": "h264",
+        "codec_type": "video",
+        "tags": {}
+      },
+      {
+        "index": 1,
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "tags": {
+          "language": "und"
+        }
+      }
+    ]
+  },
+  "multi-track.mkv": {
+    "bytes": 113103,
+    "sha256": "aed41fdf6437480c0d026594416684957da120a26745a47df53047933c33ae6e",
+    "streams": [
+      {
+        "index": 0,
+        "codec_name": "h264",
+        "codec_type": "video",
+        "tags": {}
+      },
+      {
+        "index": 1,
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "tags": {
+          "language": "eng",
+          "title": "Main"
+        }
+      },
+      {
+        "index": 2,
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "tags": {
+          "language": "jpn",
+          "title": "Commentary"
+        }
+      },
+      {
+        "index": 3,
+        "codec_name": "subrip",
+        "codec_type": "subtitle",
+        "tags": {
+          "language": "zho"
+        }
+      }
+    ]
+  },
+  "vp9-opus.webm": {
+    "bytes": 78486,
+    "sha256": "b4c17d4931abf2c68f3a6f7f30517272471c826f9b29213f0530fef4c9ffff65",
+    "streams": [
+      {
+        "index": 0,
+        "codec_name": "vp9",
+        "codec_type": "video",
+        "tags": {}
+      },
+      {
+        "index": 1,
+        "codec_name": "opus",
+        "codec_type": "audio",
+        "tags": {}
+      }
+    ]
+  }
+}

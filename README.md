@@ -104,6 +104,9 @@ Audiobookshelf，多 Emby 与已导入书库可渐进搜索和继续翻页。界
 功能核对、权限范围与真机验收见 [视频播放器功能](docs/VIDEO_PLAYER_FEATURES.md)。
 普通视频新增有限重试、断网等待恢复和原位重试，近期参考项目与实现取舍见
 [播放可靠性研究与方案](docs/RESEARCH_AND_PLAYBACK_RECOVERY_2026_10_15.md)。
+本轮还加入继续观看与下一集、混合库目录、本机视频队列、解码器与字幕偏好、直播线路健康切换，
+以及带进度和通知控制的 DLNA 投屏；使用范围与验证见上述方案和
+[设备验收记录](docs/VIDEO_COMPLETION_ACCEPTANCE_2026_10_15.md)。
 
 ## 工程结构
 

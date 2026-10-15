@@ -160,4 +160,22 @@ class PlaybackRecoveryTest {
         advanceTimeBy(1_000); runCurrent()
         assertEquals(1, retries)
     }
+    @Test fun `user configured budget and disabling while delayed are respected`() = runTest {
+        var limit = 3
+        var retries = 0
+        val recovery = PlaybackRecovery(this, { true }, { limit }) { retries++ }
+        repeat(3) {
+            assertTrue(recovery.recover(networkFailure))
+            advanceTimeBy(3_001); runCurrent(); recovery.ready()
+        }
+        assertEquals(3, retries)
+        assertFalse(recovery.recover(networkFailure))
+        recovery.manualRetry()
+        recovery.recover(networkFailure)
+        limit = 0
+        advanceTimeBy(3_001); runCurrent()
+        assertEquals(3, retries)
+        assertEquals(PlaybackRecoveryPhase.FAILED, recovery.state.value.phase)
+    }
+
 }

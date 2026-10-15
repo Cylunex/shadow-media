@@ -48,6 +48,11 @@ open class ShadowMediaApplication : Application(), coil3.SingletonImageLoader.Fa
 
 class AppContainer(private val application: Application) {
     val library = top.cylunex.shadowmedia.library.LibraryRepository(application)
+    val lineHealth = top.cylunex.shadowmedia.library.LiveLineHealthStore(application)
+    val videoPreferences = top.cylunex.shadowmedia.playback.VideoPreferenceStore.get(application)
+    val playbackNetwork = kotlinx.coroutines.flow.MutableStateFlow(true)
+    private val playbackNetworkMonitor = top.cylunex.shadowmedia.playback.PlaybackNetworkMonitor(application) { playbackNetwork.value = it }
+    val videoQueue = top.cylunex.shadowmedia.library.VideoQueueStore(application)
     val localVideos = top.cylunex.shadowmedia.library.LocalVideoRepository(application)
     val offline = top.cylunex.shadowmedia.library.OfflineRepository(application, library)
     val music = top.cylunex.shadowmedia.library.MusicRepository(application, library)
@@ -92,6 +97,11 @@ class AppContainer(private val application: Application) {
             (if (history.completed) 0L else history.positionMs) to history.completed
         }
     }
+
+    val castPlayback by lazy { CastPlaybackController(application, networkStorageRepository) { entry, position, duration ->
+        recordExternalHistory(entry, position, duration, fromCast = true)
+        entry.queueEntryId?.let { videoQueue.position(it, position) }
+    } }
 
     fun backgroundResourcesAllowed() = top.cylunex.shadowmedia.library.ResourceDevicePolicy.backgroundAllowed(application)
 
@@ -175,6 +185,7 @@ class AppContainer(private val application: Application) {
 
     fun recordEmbyHistory(session: EmbySession, item: MediaItem, positionMs: Long, durationMs: Long?) {
         applicationScope.launch {
+            val effectivePosition = castPlayback.returnedPosition(session.providerId, item.id) ?: positionMs
             localMediaState.recordHistory(
                 MediaHistoryEntity(
                     stableKey = "${session.providerId}:${item.id}",
@@ -182,19 +193,20 @@ class AppContainer(private val application: Application) {
                     itemId = item.id,
                     title = item.name,
                     subtitle = item.seriesName,
-                    positionMs = positionMs,
+                    positionMs = effectivePosition,
                     durationMs = durationMs,
-                    completed = durationMs?.let { it > 0 && positionMs >= it * 0.92 } ?: false,
+                    completed = durationMs?.let { it > 0 && effectivePosition >= it * 0.92 } ?: false,
                     lastPlayedAtEpochMs = System.currentTimeMillis(),
                 )
             )
         }
     }
 
-    fun recordExternalHistory(entry: ExternalMediaEntry, positionMs: Long, durationMs: Long?) {
+    fun recordExternalHistory(entry: ExternalMediaEntry, positionMs: Long, durationMs: Long?, fromCast: Boolean = false) {
         applicationScope.launch {
             val providerId = entry.sourceId.takeIf { entry.url.startsWith("shadow-cached:") || it == "local-video" || it.startsWith("catalog:") || it.startsWith("emby:") || it.startsWith("storage:") || it.startsWith("live:") }
                 ?: "external:${entry.sourceId}"
+            val effectivePosition = (if (fromCast) null else castPlayback.returnedPosition(providerId, entry.id)) ?: positionMs
             localMediaState.recordHistory(
                 MediaHistoryEntity(
                     stableKey = "$providerId:${entry.id}",
@@ -203,9 +215,9 @@ class AppContainer(private val application: Application) {
                     title = entry.title,
                     subtitle = entry.group,
                     posterUrl = entry.logoUrl,
-                    positionMs = positionMs,
+                    positionMs = effectivePosition,
                     durationMs = durationMs,
-                    completed = durationMs?.let { it > 0 && positionMs >= it * 0.92 } ?: false,
+                    completed = durationMs?.let { it > 0 && effectivePosition >= it * 0.92 } ?: false,
                     lastPlayedAtEpochMs = System.currentTimeMillis(),
                 )
             )

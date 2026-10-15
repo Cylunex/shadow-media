@@ -137,7 +137,14 @@ class DefaultNetworkStorageRepository(
         val path = Base64.getUrlDecoder().decode(encodedPath).decodeToString()
         val length = uri.query?.substringAfter("length=", "")?.substringBefore('&')?.toLongOrNull()
         val backend = backend(connection) as? SmbBackend ?: throw IOException("SMB 后端不可用")
-        return backend.open(path, position, length)
+        try {
+            val handle = backend.open(path, position, length)
+            return object : NetworkReadHandle {
+                override val remainingLength get() = handle.remainingLength
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int = try { handle.read(buffer, offset, length) } catch (e: Exception) { throw storageFailure(e) }
+                override fun close() = handle.close()
+            }
+        } catch (e: Exception) { throw storageFailure(e) }
     }
 
     private fun backend(connection: NetworkStorageConnection): NetworkBackend =
@@ -448,15 +455,17 @@ private class SmbBackend(override val connection: NetworkStorageConnection) : Ne
     fun open(path: String, position: Long, knownLength: Long?): NetworkReadHandle {
         check(!top.cylunex.shadowmedia.model.NetworkPolicy.offlineOnly) { "仅离线模式已开启" }
         val endpoint = connection.smbEndpoint()
-        val client = SMBClient()
-        val networkConnection = client.connect(endpoint.first, endpoint.second)
+        val resources = mutableListOf<AutoCloseable>()
+        try {
+        val client = SMBClient().also(resources::add)
+        val networkConnection = client.connect(endpoint.first, endpoint.second).also(resources::add)
         val auth = AuthenticationContext(
             connection.username,
             connection.password.toCharArray(),
             connection.domain,
         )
-        val session = networkConnection.authenticate(auth)
-        val share = session.connectShare(connection.share) as? DiskShare
+        val session = networkConnection.authenticate(auth).also(resources::add)
+        val share = session.connectShare(connection.share).also(resources::add) as? DiskShare
             ?: throw IOException("SMB 共享不是磁盘目录")
         val file = share.openFile(
             smbPath(path),
@@ -465,8 +474,8 @@ private class SmbBackend(override val connection: NetworkStorageConnection) : Ne
             setOf(SMB2ShareAccess.FILE_SHARE_READ, SMB2ShareAccess.FILE_SHARE_WRITE, SMB2ShareAccess.FILE_SHARE_DELETE),
             SMB2CreateDisposition.FILE_OPEN,
             setOf(SMB2CreateOptions.FILE_RANDOM_ACCESS),
-        )
-        val input = file.inputStream
+        ).also(resources::add)
+        val input = file.inputStream.also(resources::add)
         input.skipFully(position)
         return object : NetworkReadHandle {
             private var remaining = knownLength?.minus(position)?.coerceAtLeast(0)
@@ -490,6 +499,7 @@ private class SmbBackend(override val connection: NetworkStorageConnection) : Ne
                 runCatching { client.close() }
             }
         }
+        } catch (e: Exception) { resources.asReversed().forEach { runCatching { it.close() } }; throw e }
     }
 
     private inline fun <T> withShare(block: (DiskShare) -> T): T {

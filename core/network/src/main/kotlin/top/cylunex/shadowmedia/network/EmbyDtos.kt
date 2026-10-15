@@ -51,6 +51,8 @@ internal data class BaseItemDto(
     @SerialName("BackdropImageTags") val backdropImageTags: List<String> = emptyList(),
     @SerialName("ProviderIds") val providerIds: Map<String, String> = emptyMap(),
     @SerialName("UserData") val userData: UserDataDto? = null,
+    @SerialName("IsFolder") val isFolder: Boolean = false,
+    @SerialName("ShadowNextUp") val nextUp: Boolean = false,
 )
 
 @Serializable

@@ -78,11 +78,14 @@ class PlaybackRuntime(
     private val onTerminalError: (positionMs: Long, message: String) -> Unit = { _, _ -> },
     private val feedPreload: FeedPreloadPool? = null,
 ) : Closeable {
+    private val preferences = VideoPreferenceStore.get(context)
+    private val preferenceKey = "${session.providerId}:${plan.itemId}"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val reporter = OrderedPlaybackReporter(CoroutineScope(scope.coroutineContext + Dispatchers.IO)) { playbackOutbox.submit(session, it) }
     private var candidateIndex = 0
     private var positionOffsetMs = 0L
     private var started = false
+    private var remoteReporting = false
     private var progressJob: Job? = null
     private var released = false
     private var foreground = true
@@ -128,7 +131,7 @@ class PlaybackRuntime(
 
     val diagnostics: StateFlow<PlaybackDiagnostics> = diagnosticsState.asStateFlow()
     val tracks: StateFlow<PlaybackTracksState> = tracksState.asStateFlow()
-    private val exoPlayer = (feedPreload?.buildPlayer() ?: ExoPlayer.Builder(context).build()).apply {
+    private val exoPlayer = ((if (preferences.settings.value.decoder == VideoDecoderMode.AUTO) feedPreload?.buildPlayer() else null) ?: ExoPlayer.Builder(context, videoRenderers(context, preferences.settings.value.decoder)).build()).apply {
         setAudioAttributes(AudioAttributes.DEFAULT, true)
         setHandleAudioBecomingNoisy(true)
         setWakeMode(C.WAKE_MODE_LOCAL)
@@ -137,7 +140,7 @@ class PlaybackRuntime(
     val player: Player = exoPlayer
     private val audible = top.cylunex.shadowmedia.model.PlaybackCoordinator.process.participant { exoPlayer.pause() }
     private val mediaSession = MediaSession.Builder(context, exoPlayer).setId("video-$telemetryId").build()
-    private val recoveryController = PlaybackRecovery(scope, { !NetworkPolicy.offlineOnly }) {
+    private val recoveryController = PlaybackRecovery(scope, { !NetworkPolicy.offlineOnly }, { preferences.settings.value.retries }) {
         prepareCandidate(currentCandidate(), currentPositionMs, player.playWhenReady)
     }
     private val networkMonitor = PlaybackNetworkMonitor(context, recoveryController::setNetworkAvailable)
@@ -153,6 +156,7 @@ class PlaybackRuntime(
             transcodingCandidateIndex() >= 0
 
     init {
+        preferences.applyLanguages(exoPlayer)
         exoPlayer.addListener(PlayerListener())
         telemetrySink.record(telemetrySnapshot(completed = false))
         recoveryController.setPlayWhenReady(startPlayWhenReady)
@@ -170,6 +174,13 @@ class PlaybackRuntime(
         allowPreloadedSource = false
         diagnosticsState.value = diagnosticsState.value.copy(lastError = null)
         prepareCandidate(currentCandidate(), currentPositionMs, player.playWhenReady)
+    }
+
+    fun transferReportingToRemote() {
+        reportCurrent(PlaybackEvent.STOPPED)
+        remoteReporting = true
+        started = false
+        progressJob?.cancel()
     }
 
     fun nextAudioTrack() = cycleTrack(C.TRACK_TYPE_AUDIO)
@@ -350,6 +361,7 @@ class PlaybackRuntime(
             if (selected < 0) {
                 choices.firstOrNull()?.let { selectTrack(trackType, it) }
             } else if (selected == choices.lastIndex) {
+                preferences.saveTrack(preferenceKey, trackType, null)
                 exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
                     .clearOverridesOfType(trackType)
                     .setTrackTypeDisabled(trackType, true)
@@ -365,6 +377,7 @@ class PlaybackRuntime(
     }
 
     private fun selectTrack(trackType: Int, choice: TrackChoice) {
+        preferences.saveTrack(preferenceKey, trackType, choice.group.getTrackFormat(choice.trackIndex))
         exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(trackType, false)
             .clearOverridesOfType(trackType)
@@ -449,6 +462,10 @@ class PlaybackRuntime(
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             if (playWhenReady) audible.claim() else audible.abandon()
+            if (playWhenReady && remoteReporting && !released) {
+                remoteReporting = false; started = true
+                reportCurrent(PlaybackEvent.STARTED); startProgressLoop()
+            }
             recoveryController.setPlayWhenReady(playWhenReady)
             if (!started || released) return
             reportCurrent(if (playWhenReady) PlaybackEvent.UNPAUSE else PlaybackEvent.PAUSE)
@@ -470,6 +487,7 @@ class PlaybackRuntime(
         }
 
         override fun onTracksChanged(tracks: Tracks) {
+            preferences.restoreTracks(preferenceKey, exoPlayer)
             publishTracks()
         }
     }

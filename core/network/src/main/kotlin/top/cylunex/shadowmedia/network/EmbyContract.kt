@@ -96,6 +96,7 @@ interface EmbyRepository {
         libraryId: String,
     ): List<MediaItem>
 
+    suspend fun nextUp(session: EmbySession): List<MediaItem> = emptyList()
     suspend fun home(session: EmbySession, libraryIds: List<String>): List<MediaSection>
     suspend fun browse(session: EmbySession, request: BrowseRequest): MediaPage
     suspend fun children(session: EmbySession, parentId: String): List<MediaItem>

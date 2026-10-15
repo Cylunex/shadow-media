@@ -25,6 +25,7 @@ import org.json.JSONObject
 import java.util.UUID
 import top.cylunex.shadowmedia.database.*
 import top.cylunex.shadowmedia.library.*
+import top.cylunex.shadowmedia.playback.*
 import top.cylunex.shadowmedia.model.AudioMode
 
 /** One application-looper player owns the queue; the UI only issues controller commands. */
@@ -36,6 +37,21 @@ class AudiobookService : MediaLibraryService() {
     private lateinit var tree: AudioLibraryTree
     private var session: MediaLibrarySession? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var pausedAt = 0L
+    private var recoveryEntry: String? = null
+    private val recoveryController = PlaybackRecovery(scope, { !LibraryResources.offlineOnly },
+        { VideoPreferenceStore.get(this).settings.value.retries }) { retryCurrentAudio() }
+    private var networkMonitor: PlaybackNetworkMonitor? = null
+    private fun retryCurrentAudio() {
+        if (!::player.isInitialized || player.mediaItemCount == 0) return
+        val index = player.currentMediaItemIndex
+        val current = player.currentMediaItem ?: return
+        val position = player.currentPosition.coerceAtLeast(0)
+        val playing = player.playWhenReady
+        val uri = current.localConfiguration?.uri ?: return
+        player.replaceMediaItem(index, current.buildUpon().setUri(uri.buildUpon().appendQueryParameter("retry", UUID.randomUUID().toString()).build()).build())
+        player.prepare(); player.seekTo(position); player.playWhenReady = playing
+    }
     private var sleepDeadline = 0L
     private var stopAfterTrack = false
     private var chapterStop: Pair<String, Long>? = null
@@ -66,6 +82,8 @@ class AudiobookService : MediaLibraryService() {
         queueDao = ShadowMediaDatabase.create(this).audioQueueDao()
         listening = ListeningTracker(ShadowMediaDatabase.create(this).musicDao())
         mode = runCatching { AudioMode.valueOf(getSharedPreferences("audio_preferences", MODE_PRIVATE).getString("mode", "AUDIOBOOK")!!) }.getOrDefault(AudioMode.AUDIOBOOK)
+        networkMonitor = PlaybackNetworkMonitor(this, recoveryController::setNetworkAvailable)
+        scope.launch { recoveryController.state.collect { AudioDiagnostics.recovery.value = it } }
         val factory = DefaultMediaSourceFactory(DataSource.Factory { LibraryAudioDataSource(this, library, candidates) })
         player = ExoPlayer.Builder(this).setMediaSourceFactory(factory).build().apply {
             setAudioAttributes(AudioAttributes.Builder().setContentType(if (mode == AudioMode.MUSIC) C.AUDIO_CONTENT_TYPE_MUSIC else C.AUDIO_CONTENT_TYPE_SPEECH).setUsage(C.USAGE_MEDIA).build(), true)
@@ -98,7 +116,9 @@ class AudiobookService : MediaLibraryService() {
                 }
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                     if (stopAfterTrack && reason in setOf(Player.MEDIA_ITEM_TRANSITION_REASON_AUTO, Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT)) { pause(); clearSleep() }
-                    candidates.activate(mediaItem?.entryId())
+                    val entry = mediaItem?.entryId()
+                    if (recoveryEntry != entry) { recoveryController.manualRetry(); recoveryEntry = entry }
+                    candidates.activate(entry)
                     AudioDiagnostics.format.value = ""
                     listening.sample(this@apply, transition = true)
                     if (jumpToLastChapter != null && jumpToLastChapter != mediaItem?.entryId()) jumpToLastChapter = null
@@ -112,6 +132,8 @@ class AudiobookService : MediaLibraryService() {
                 }
                 override fun onPlayerError(error: PlaybackException) {
                     val entry = currentMediaItem?.entryId() ?: return
+                    val failure = classifyPlaybackFailure(error, LibraryResources.offlineOnly)
+                    if (recoveryController.recover(failure)) return
                     if (candidates.advance(entry)) {
                         val position = currentPosition
                         val requestedPlay = playWhenReady
@@ -123,11 +145,24 @@ class AudiobookService : MediaLibraryService() {
                     }
                 }
                 override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (playbackState == Player.STATE_READY) startProgressSession()
+                    if (playbackState == Player.STATE_READY) { recoveryController.ready(); startProgressSession() }
                     if (playbackState == Player.STATE_ENDED) { saveCurrent(true); clearSleep() }
                 }
                 override fun onIsPlayingChanged(isPlaying: Boolean) { saveCurrent(playbackState == Player.STATE_ENDED) }
-                override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) { if (playWhenReady) audible.claim() else audible.abandon(); saveCurrent(playbackState == Player.STATE_ENDED) }
+                override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                    if (playWhenReady) {
+                        audible.claim()
+                        if (pausedAt > 0 && SystemClock.elapsedRealtime() - pausedAt >= 60_000) {
+                            recoveryController.manualRetry()
+                            currentMediaItem?.entryId()?.let(candidates::invalidate)
+                            pausedAt = 0
+                            retryCurrentAudio()
+                        }
+                        pausedAt = 0
+                    } else { audible.abandon(); pausedAt = SystemClock.elapsedRealtime() }
+                    recoveryController.setPlayWhenReady(playWhenReady)
+                    saveCurrent(playbackState == Player.STATE_ENDED)
+                }
                 override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
                     if (!applyingQueue && mode != AudioMode.MUSIC) currentMediaItem?.mediaId?.let {
                         getSharedPreferences("audio_preferences", MODE_PRIVATE).edit().putFloat("speed:$it", playbackParameters.speed).apply()
@@ -336,6 +371,7 @@ class AudiobookService : MediaLibraryService() {
             player.currentPosition.coerceAtLeast(0), true, player.isCurrentMediaItemSeekable, false, true, it.entryId() ?: it.mediaId)) }
         listening.sample(player, transition = true)
         initialized = false
+        recoveryController.close(); networkMonitor?.close(); AudioDiagnostics.recovery.value = PlaybackRecoveryState()
         scope.cancel(); audible.close(); candidates.close(); clearSleep(); session?.release(); player.release(); super.onDestroy()
     }
     private fun <T> future(block: suspend () -> T): ListenableFuture<T> {
@@ -513,6 +549,8 @@ object AudiobookController {
 }
 
 object AudioDiagnostics {
+    internal val recovery = MutableStateFlow(PlaybackRecoveryState())
+    val playbackRecovery = recovery.asStateFlow()
     internal val method = MutableStateFlow("")
     internal val format = MutableStateFlow("")
     val playbackMethod = method.asStateFlow()

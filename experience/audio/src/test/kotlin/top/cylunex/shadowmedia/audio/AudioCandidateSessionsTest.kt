@@ -95,6 +95,24 @@ class AudioCandidateSessionsTest {
             assertFalse(sessions.refresh(asset, "entry"))
         } finally { LibraryResources.audioResolver = original }
     }
+    @Test fun `invalidation rejects an in flight lease and resolves a fresh resource`() = runBlocking {
+        val original = LibraryResources.audioResolver
+        try { supervisorScope {
+            val release = CompletableDeferred<Unit>()
+            var resolves = 0
+            LibraryResources.audioResolver = { _, _ ->
+                val current = ++resolves
+                if (current == 1) release.await()
+                listOf(PlaybackCandidate("https://example.com/$current", PlayMethod.DIRECT_STREAM, emptyMap()))
+            }
+            val sessions = AudioCandidateSessions()
+            val pending = async(start = CoroutineStart.UNDISPATCHED) { sessions.current(asset, "entry") }
+            sessions.invalidate("entry"); release.complete(Unit)
+            assertTrue(runCatching { pending.await() }.exceptionOrNull() is java.io.IOException)
+            assertTrue(sessions.current(asset, "entry").url.endsWith("/2"))
+            assertEquals(2, resolves)
+        } } finally { LibraryResources.audioResolver = original }
+    }
     @Test fun `closed or superseded candidates never report selection`() = runBlocking {
         val original = LibraryResources.audioResolver
         val originalSelected = LibraryResources.audioCandidateSelected

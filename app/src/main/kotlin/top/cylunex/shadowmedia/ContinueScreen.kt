@@ -25,13 +25,47 @@ import top.cylunex.shadowmedia.model.*
     val dao = remember { ShadowMediaDatabase.create(context).libraryStateDao() }
     val scope = rememberCoroutineScope()
     val rows = remember(dao) { Pager(PagingConfig(30, enablePlaceholders = false)) { dao.continuing() }.flow }.collectAsLazyPagingItems()
+    var nextEpisodes by remember { mutableStateOf(emptyList<Pair<EmbySession, MediaItem>>()) }
+    var nextLoading by remember { mutableStateOf(true) }
+    var nextFailure by remember { mutableStateOf(false) }
+    suspend fun loadFollowing() {
+        nextLoading = true
+        nextFailure = false
+        val result = mutableListOf<Pair<EmbySession, MediaItem>>()
+        for (account in container.sessionStore.loadAll()) {
+            try {
+                val next = container.embyRepository.nextUp(account)
+                val resume = container.embyRepository.browse(account, BrowseRequest("", setOf("Episode"), filter = MediaFilter.RESUMABLE, limit = 200)).items
+                for (item in mergeContinueAndNextUp(resume, next).filter { it.nextUp }) {
+                    val history = container.localMediaState.history("${account.providerId}:${item.id}")
+                    if (history?.completed != true && (history?.positionMs ?: 0) <= 0) result += account to item
+                }
+            } catch (e: CancellationException) { throw e } catch (_: Exception) { nextFailure = true }
+        }
+        nextEpisodes = result
+        nextLoading = false
+    }
+    LaunchedEffect(Unit) { loadFollowing() }
     var association by remember { mutableStateOf<LibraryAssetEntity?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 20.dp)) {
         Row { TextButton(onClick = onBack) { Text("返回") }; Text("继续播放与阅读", Modifier.padding(12.dp), style = MaterialTheme.typography.headlineSmall) }
         message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
-            if (rows.itemCount == 0) item { Text("打开内容后，继续位置会显示在这里。") }
+            item {
+                Text("下一集", style = MaterialTheme.typography.titleMedium)
+                if (nextLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (nextFailure) TextButton(onClick = { scope.launch { loadFollowing() } }) { Text("部分来源加载失败，重试") }
+            }
+            items(nextEpisodes, key = { (account, item) -> "next:${account.providerId}:${item.id}" }) { (account, item) ->
+                Card { Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                    Text(item.name, style = MaterialTheme.typography.titleMedium)
+                    Text("${item.seriesName.orEmpty()} · S${item.seasonNumber ?: 0}E${item.episodeNumber ?: 0}")
+                    Text("Emby · ${account.userName}", style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = { onLegacy(ContinueRow("next:${account.providerId}:${item.id}", null, account.providerId, item.id, item.name, "EPISODE", 0, item.runTimeTicks?.div(10000), 0.0, 0)) }) { Text("播放下一集") }
+                } }
+            }
+            if (rows.itemCount == 0 && nextEpisodes.isEmpty() && !nextLoading) item { Text("打开内容后，继续位置会显示在这里。") }
             items(rows.itemCount, key = rows.itemKey { it.rowId }) { index ->
                 val row = rows[index] ?: return@items
                 val fraction = row.progression
