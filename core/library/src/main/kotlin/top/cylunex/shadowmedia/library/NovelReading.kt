@@ -11,10 +11,10 @@ class NovelPublicationMap(val json: JSONObject) {
     val complete = json.getBoolean("complete")
     val versionComplete = json.getBoolean("version_complete")
     init {
-        require(json.getString("schema") == "shadow.novel.publication/v1")
-        require(chapters.isNotEmpty() && chapters.map { it.getString("id") }.distinct().size == chapters.size)
-        require(chapters.map { it.getString("href") }.distinct().size == chapters.size)
-        chapters.forEach { require(it.getString("href") == "chapters/${it.getString("id")}.xhtml") }
+        require(json.getString("schema") == "shadow.novel.publication/v1") { "阅读包映射格式不受支持，请更新 Novel 服务" }
+        require(chapters.isNotEmpty() && chapters.map { it.getString("id") }.distinct().size == chapters.size) { "阅读包章节为空或标识重复" }
+        require(chapters.map { it.getString("href") }.distinct().size == chapters.size) { "阅读包存在重复的章节路径" }
+        chapters.forEach { require(it.getString("href") == "chapters/${it.getString("id")}.xhtml") { "阅读包章节路径与章节标识不匹配" } }
     }
     fun chapter(id: String) = chapters.singleOrNull { it.getString("id") == id }
     fun chapterForHref(href: String): JSONObject? {

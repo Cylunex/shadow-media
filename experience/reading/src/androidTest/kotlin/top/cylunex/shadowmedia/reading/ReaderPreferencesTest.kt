@@ -50,8 +50,8 @@ class ReaderPreferencesTest {
             assertEquals(mode == ReaderPageMode.SCROLL, prefs.scroll)
             assertEquals(paper.background, prefs.backgroundColor!!.int)
             assertEquals(paper.foreground, prefs.textColor!!.int)
-            assertEquals(150.0, prefs.fontSize!!, 0.0)
-            assertEquals(700.0, prefs.fontWeight!!, 0.0)
+            assertEquals(1.5, prefs.fontSize!!, 0.0)
+            assertEquals(1.75, prefs.fontWeight!!, 0.0)
             assertEquals(if (paper == ReaderPaper.NIGHT) Theme.DARK else Theme.LIGHT, prefs.theme)
         }
     }

@@ -114,18 +114,21 @@ class ReaderActivity : FragmentActivity() {
                 }
                 require(item.format in setOf("epub", "txt")) { "此阅读器支持 EPUB 和 TXT" }
                 progressSession = ProgressWriter.begin(library, item)
-                val file = library.publicationFile(item)
-                initial = (saved.takeIf { savedRevision == item.revision } ?: intent.getStringExtra("novelLocator") ?: library.dao.progress(item.id)?.locatorJson)?.let { runCatching { Locator.fromJSON(JSONObject(it)) }.getOrNull() }
-                if (novelPublication != null && initial == null) {
-                    val map = NovelPublicationMap(JSONObject(novelPublication!!.mappingJson))
-                    novel.dao.state(NovelRepository.stateId(novelPublication!!.scope, map.workId))?.localPosition?.takeIf { it.isNotBlank() }?.let { position ->
-                        initial = map.locator(JSONObject(position))?.let { Locator.fromJSON(it) }
+                val file = readerOpeningStep(ReaderOpenStage.LOCAL_COPY) { library.publicationFile(item) }
+                readerOpeningStep(ReaderOpenStage.POSITION) {
+                    initial = (saved.takeIf { savedRevision == item.revision } ?: intent.getStringExtra("novelLocator") ?: library.dao.progress(item.id)?.locatorJson)?.let { runCatching { Locator.fromJSON(JSONObject(it)) }.getOrNull() }
+                    if (novelPublication != null && initial == null) {
+                        val map = NovelPublicationMap(JSONObject(novelPublication!!.mappingJson))
+                        novel.dao.state(NovelRepository.stateId(novelPublication!!.scope, map.workId))?.localPosition?.takeIf { it.isNotBlank() }?.let { position ->
+                            initial = map.locator(JSONObject(position))?.let { Locator.fromJSON(it) }
+                        }
                     }
                 }
                 val engine: ReadingEngineAdapter = ReadiumEngineAdapter(this@ReaderActivity)
-                val pub = engine.open(file)
+                val pub = readerOpeningStep(ReaderOpenStage.PUBLICATION) { engine.open(file) }
                 publication = pub
-                supportFragmentManager.fragmentFactory = engine.navigator(pub, initial, prefs, selectionActions())
+                val preferences = readerOpeningStep(ReaderOpenStage.PREFERENCES) { prefs }
+                supportFragmentManager.fragmentFactory = readerOpeningStep(ReaderOpenStage.NAVIGATOR) { engine.navigator(pub, initial, preferences, selectionActions()) }
                 ready = true
                 lifecycleScope.launch {
                     try { positions = pub.positions() }
@@ -133,7 +136,10 @@ class ReaderActivity : FragmentActivity() {
                     catch (_: Exception) { positions = emptyList() }
                 }
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { error = e.message ?: "图书打开失败" }
+            catch (e: Exception) {
+                android.util.Log.e("ShadowReader", "Reader opening failed${(e as? ReaderOpeningException)?.let { " at ${it.stage}" }.orEmpty()}", e)
+                error = e.message?.takeUnless { it in setOf("Failed requirement.", "Check failed.") } ?: "图书打开失败，请返回书架后重试"
+            }
         }
         setContent { ReaderChrome() }
     }

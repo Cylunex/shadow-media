@@ -138,7 +138,7 @@ class LibraryRepository(context: Context) {
     /** Only the caller's scoped downloader may supply this file. No URL/headers are persisted. */
     suspend fun importPrepared(id: String, providerId: String, itemId: String, name: String, format: String, input: File): LibraryAssetEntity = withContext(Dispatchers.IO) {
         val kind = contentKindForFile("item.$format")
-        require(kind in setOf(ContentKind.BOOK, ContentKind.COMIC, ContentKind.AUDIOBOOK, ContentKind.MUSIC, ContentKind.PODCAST))
+        require(kind in setOf(ContentKind.BOOK, ContentKind.COMIC, ContentKind.AUDIOBOOK, ContentKind.MUSIC, ContentKind.PODCAST)) { "此资源格式不支持导入本地书库" }
         if (format in setOf("epub", "cbz", "zip")) SafeArchives.validate(input)
         val revision = input.inputStream().use { stream ->
             val hash = MessageDigest.getInstance("SHA-256")

@@ -33,6 +33,13 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     testImplementation(libs.junit)
+    testImplementation("org.robolectric:robolectric:4.17")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test:runner:1.7.0")
+}
+
+// Optional real-server regressions must rerun when their external test inputs change.
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    inputs.property("novelValidationUrl", providers.environmentVariable("NOVEL_VALIDATION_URL").orElse(""))
+    inputs.property("novelValidationTargets", providers.environmentVariable("NOVEL_VALIDATION_TARGETS").orElse(""))
 }

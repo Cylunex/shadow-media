@@ -41,15 +41,19 @@ internal class ReaderSettingsStore(private val preferences: SharedPreferences) {
 private inline fun <reified T : Enum<T>> SharedPreferences.enumValue(key: String, fallback: T): T =
     runCatching { enumValueOf<T>(getString(key, null).orEmpty()) }.getOrDefault(fallback)
 
-internal fun ReaderSettings.epubPreferences() = EpubPreferences(
-    fontSize = fontSize.toDouble(), lineHeight = lineHeight.toDouble(),
-    paragraphSpacing = paragraphSpacing.toDouble(), letterSpacing = letterSpacing.toDouble(),
-    pageMargins = margins.toDouble(), paragraphIndent = if (indent) 2.0 else 0.0,
-    fontFamily = FontFamily(font.css), fontWeight = if (bold) 700.0 else 400.0,
-    theme = if (paper == ReaderPaper.NIGHT) Theme.DARK else Theme.LIGHT,
-    backgroundColor = Color(paper.background), textColor = Color(paper.foreground),
-    publisherStyles = false, textAlign = TextAlign.JUSTIFY, scroll = pageMode == ReaderPageMode.SCROLL
-)
+internal fun ReaderSettings.epubPreferences() = with(normalized()) {
+    // Readium 3 uses multipliers: 1.15 = 115%, and 1.75 * normal CSS weight 400 = 700.
+    // Keep the user's stored percent/bold choices; convert only at the engine boundary.
+    EpubPreferences(
+        fontSize = fontSize / 100.0, lineHeight = lineHeight.toDouble(),
+        paragraphSpacing = paragraphSpacing.toDouble(), letterSpacing = letterSpacing.toDouble(),
+        pageMargins = margins.toDouble(), paragraphIndent = if (indent) 2.0 else 0.0,
+        fontFamily = FontFamily(font.css), fontWeight = if (bold) 1.75 else 1.0,
+        theme = if (paper == ReaderPaper.NIGHT) Theme.DARK else Theme.LIGHT,
+        backgroundColor = Color(paper.background), textColor = Color(paper.foreground),
+        publisherStyles = false, textAlign = TextAlign.JUSTIFY, scroll = pageMode == ReaderPageMode.SCROLL
+    )
+}
 
 /** Generated locally: no remote texture, font download or image dependency. Does not change pagination. */
 internal fun readerPaperScript(paper: ReaderPaper): String {
