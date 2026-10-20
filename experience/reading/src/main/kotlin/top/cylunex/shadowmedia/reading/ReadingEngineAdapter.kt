@@ -2,6 +2,8 @@
 package top.cylunex.shadowmedia.reading
 
 import android.content.Context
+import android.view.ActionMode
+import org.readium.r2.navigator.epub.EpubNavigatorFragment
 import androidx.fragment.app.FragmentFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -20,7 +22,7 @@ import java.io.File
 /** The reader's engine boundary owns opening and navigator construction; identity/progress stay in the library. */
 internal interface ReadingEngineAdapter {
     suspend fun open(file: File): Publication
-    fun navigator(publication: Publication, initial: Locator?, preferences: EpubPreferences): FragmentFactory
+    fun navigator(publication: Publication, initial: Locator?, preferences: EpubPreferences, selectionActions: ActionMode.Callback? = null): FragmentFactory
 }
 internal class ReadiumEngineAdapter(private val context: Context) : ReadingEngineAdapter {
     override suspend fun open(file: File): Publication = withContext(Dispatchers.IO) {
@@ -31,6 +33,7 @@ internal class ReadiumEngineAdapter(private val context: Context) : ReadingEngin
         PublicationOpener(DefaultPublicationParser(context, http, retriever, pdfFactory = null))
             .open(resource, allowUserInteraction = false).getOrElse { throw IllegalArgumentException("图书格式损坏或受 DRM 保护") }
     }
-    override fun navigator(publication: Publication, initial: Locator?, preferences: EpubPreferences): FragmentFactory =
-        EpubNavigatorFactory(publication).createFragmentFactory(initialLocator = initial, initialPreferences = preferences)
+    override fun navigator(publication: Publication, initial: Locator?, preferences: EpubPreferences, selectionActions: ActionMode.Callback?): FragmentFactory =
+        EpubNavigatorFactory(publication).createFragmentFactory(initialLocator = initial, initialPreferences = preferences,
+            configuration = EpubNavigatorFragment.Configuration(selectionActionModeCallback = selectionActions))
 }

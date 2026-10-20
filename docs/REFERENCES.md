@@ -47,3 +47,6 @@ Emby/MediaWarp/115 链路完成兼容性与资源占用采样后，再决定是�
 
 界面中的 Emby 海报使用 Coil 加载。认证头仅在与当前 Emby 服务严格同源时附加；发生跨域重定向
 时会移除 Token、Authorization 和 Cookie，保持与播放链路一致的凭据隔离边界。
+
+阅读部分另见 [沉浸阅读与交互](READING_EXPERIENCE.md)：参考 Legado、Readest、KOReader、
+android-pagecurl 与 Readium 的公开交互/API，独立实现主题、手势、菜单和 Canvas 翻页。

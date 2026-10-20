@@ -1,1 +1,4 @@
-<resources><item name="epub_reader" type="id" /></resources>
+<resources>
+    <item name="epub_reader" type="id" />
+    <item name="reader_save_excerpt" type="id" />
+</resources>
