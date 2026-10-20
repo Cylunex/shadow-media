@@ -57,6 +57,7 @@ class AppContainer(private val application: Application) {
     val offline = top.cylunex.shadowmedia.library.OfflineRepository(application, library)
     val music = top.cylunex.shadowmedia.library.MusicRepository(application, library)
     val catalogs = top.cylunex.shadowmedia.library.NativeCatalogRepository(application, library)
+    val novel = top.cylunex.shadowmedia.library.NovelRepository(application, library)
     val playlistExports = top.cylunex.shadowmedia.library.PlaylistExportRepository(application, catalogs, library)
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val database = ShadowMediaDatabase.create(application)
@@ -107,6 +108,7 @@ class AppContainer(private val application: Application) {
 
     fun initializeLibraryResources() {
         top.cylunex.shadowmedia.library.LibraryResources.offlineOnly = application.getSharedPreferences("resource_policy", 0).getBoolean("offlineOnly", false)
+        top.cylunex.shadowmedia.library.NovelRepository.schedule(application)
         val offlineMedia = top.cylunex.shadowmedia.audio.MediaOfflineStore.get(application)
         offlineMedia.installPlaybackRoute()
         top.cylunex.shadowmedia.library.LibraryResources.mediaOffline = offlineMedia::command

@@ -232,14 +232,18 @@ class LibraryRepository(context: Context) {
         val previous = dao.progress(id)?.takeIf { it.locatorType == type }?.let { runCatching { JSONObject(it.locatorJson) }.getOrNull() }
         val position = if (type == "time") ProgressPolicy.timeSnapshot(locator, previous) else locator
         val effectiveFraction = if (completed) 1.0 else fraction ?: if (type == "time" && position.optLong("durationMs") > 0) position.optLong("positionMs").toDouble() / position.optLong("durationMs") else null
+        val novel = asset.providerId.startsWith("novel:")
         val record = ContentProgressEntity(id, locatorType = type, locatorJson = position.toString(),
-            progression = effectiveFraction?.takeIf(Double::isFinite)?.coerceIn(0.0, 1.0), completed = completed, updatedAt = System.currentTimeMillis())
+            progression = effectiveFraction?.takeIf(Double::isFinite)?.coerceIn(0.0, 1.0), completed = completed && !novel, updatedAt = System.currentTimeMillis())
         val operation = asset.takeIf { it.providerId.startsWith("catalog:KOMGA:") || it.providerId.startsWith("catalog:AUDIOBOOKSHELF:") ||
             (it.providerId.startsWith("emby:") && it.localUri.isNotBlank() && it.kind == "AUDIOBOOK") }?.let {
             val target = if (it.providerId.startsWith("catalog:AUDIOBOOKSHELF:")) "abs-book:${ProgressPolicy.absBookId(it.itemId)}" else id
             SyncOperationEntity(UUID.randomUUID().toString(), it.providerId, target, if (it.providerId.startsWith("emby:")) "offline-audio" else "progress", JSONObject(position.toString()).put("assetId", id).put("completed", completed).toString(), System.currentTimeMillis())
         }
-        dao.saveAndEnqueue(record, operation, session)
+        val database = ShadowMediaDatabase.create(context)
+        database.withTransaction {
+            if (dao.saveAndEnqueue(record, operation, session) && novel) NovelRepository.record(database, asset, position)
+        }
     }
 
     suspend fun bookmark(id: String, locator: String, note: String) = dao.putAnnotation(

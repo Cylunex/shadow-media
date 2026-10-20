@@ -30,8 +30,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         UserCollectionEntity::class, WorkEntity::class, RenditionEntity::class, PlaylistExportEntity::class, CatalogPageEntity::class, RemoteUserStateEntity::class,
         ResourceTaskEntity::class, CatalogScopeEntity::class, CatalogEntryEntity::class,
         AudioChapterEntity::class, MusicTrackEntity::class, MusicListeningEntity::class, MusicPlaylistEntity::class, MusicPlaylistEntryEntity::class,
+        NovelPublicationEntity::class, NovelReadingStateEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = true,
 )
 abstract class ShadowMediaDatabase : RoomDatabase() {
@@ -43,6 +44,7 @@ abstract class ShadowMediaDatabase : RoomDatabase() {
     abstract fun chapterDao(): ChapterDao
     abstract fun musicDao(): MusicDao
     abstract fun audioQueueDao(): AudioQueueDao
+    abstract fun novelDao(): NovelDao
 
     companion object {
         @Volatile private var instance: ShadowMediaDatabase? = null
@@ -52,7 +54,17 @@ abstract class ShadowMediaDatabase : RoomDatabase() {
                 context.applicationContext,
                 ShadowMediaDatabase::class.java,
                 "shadow-media.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10).build().also { instance = it }
+        }
+
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS novel_publications (assetId TEXT NOT NULL PRIMARY KEY, scope TEXT NOT NULL, workId TEXT NOT NULL, versionId TEXT NOT NULL, mappingJson TEXT NOT NULL, packageRevision TEXT NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_novel_publications_scope ON novel_publications(scope)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_novel_publications_scope_workId_versionId ON novel_publications(scope, workId, versionId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS novel_reading_states (id TEXT NOT NULL PRIMARY KEY, scope TEXT NOT NULL, workId TEXT NOT NULL, clientId TEXT NOT NULL, revision INTEGER NOT NULL, localSequence INTEGER NOT NULL, acknowledgedSequence INTEGER NOT NULL, localPosition TEXT NOT NULL, nextClientSeq INTEGER NOT NULL, requestJson TEXT NOT NULL, requestSequence INTEGER NOT NULL, conflictJson TEXT NOT NULL, message TEXT NOT NULL, updatedAt INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_novel_reading_states_scope ON novel_reading_states(scope)")
+            }
         }
 
         val MIGRATION_8_9 = object : Migration(8, 9) {

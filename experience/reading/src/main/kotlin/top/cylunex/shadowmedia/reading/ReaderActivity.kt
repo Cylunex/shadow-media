@@ -40,6 +40,12 @@ import org.readium.r2.streamer.parser.DefaultPublicationParser
 import top.cylunex.shadowmedia.database.LibraryAssetEntity
 import top.cylunex.shadowmedia.library.LibraryRepository
 import top.cylunex.shadowmedia.library.ProgressWriter
+import top.cylunex.shadowmedia.library.NovelRepository
+import top.cylunex.shadowmedia.library.NovelPublicationMap
+import top.cylunex.shadowmedia.library.NovelLocatorTracker
+import top.cylunex.shadowmedia.library.novelObjects
+import top.cylunex.shadowmedia.database.NovelPublicationEntity
+import top.cylunex.shadowmedia.database.NovelReadingStateEntity
 
 class ReaderActivity : FragmentActivity() {
     private lateinit var library: LibraryRepository
@@ -56,12 +62,21 @@ class ReaderActivity : FragmentActivity() {
     private var searchJob: Job? = null
     private var progressJob: Job? = null
     private var progressSession: top.cylunex.shadowmedia.library.ProgressSession? = null
+    private lateinit var novel: NovelRepository
+    private var novelPublication by mutableStateOf<NovelPublicationEntity?>(null)
+    private var novelState by mutableStateOf<NovelReadingStateEntity?>(null)
+    private var novelBusy by mutableStateOf(false)
+    private var novelMessage by mutableStateOf<String?>(null)
+    private var novelContents by mutableStateOf<List<JSONObject>>(emptyList())
+    private var novelContentsOffset by mutableStateOf(0)
+    private var novelContentsTotal by mutableStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // The factory requires an asynchronously opened publication. Restore our versioned Locator,
         // not Android's eagerly reconstructed fragment with an unavailable publication instance.
         super.onCreate(null)
         library = LibraryRepository(this)
+        novel = NovelRepository(this, library)
         val id = intent.getStringExtra("assetId")
         val saved = savedInstanceState?.getString("locator")
         val savedRevision = savedInstanceState?.getString("revision")
@@ -72,10 +87,20 @@ class ReaderActivity : FragmentActivity() {
             try {
                 val item = requireNotNull(id?.let { library.dao.asset(it) }) { "图书已移除" }
                 asset = item
+                novelPublication = novel.dao.publication(item.id)
+                novelPublication?.let { publication ->
+                    lifecycleScope.launch { novel.observe(publication.scope, publication.workId).collectLatest { state -> novelState = state } }
+                }
                 require(item.format in setOf("epub", "txt")) { "此阅读器支持 EPUB 和 TXT" }
                 progressSession = ProgressWriter.begin(library, item)
                 val file = library.publicationFile(item)
-                initial = (saved.takeIf { savedRevision == item.revision } ?: library.dao.progress(item.id)?.locatorJson)?.let { runCatching { Locator.fromJSON(JSONObject(it)) }.getOrNull() }
+                initial = (saved.takeIf { savedRevision == item.revision } ?: intent.getStringExtra("novelLocator") ?: library.dao.progress(item.id)?.locatorJson)?.let { runCatching { Locator.fromJSON(JSONObject(it)) }.getOrNull() }
+                if (novelPublication != null && initial == null) {
+                    val map = NovelPublicationMap(JSONObject(novelPublication!!.mappingJson))
+                    novel.dao.state(NovelRepository.stateId(novelPublication!!.scope, map.workId))?.localPosition?.takeIf { it.isNotBlank() }?.let { position ->
+                        initial = map.locator(JSONObject(position))?.let { Locator.fromJSON(it) }
+                    }
+                }
                 val engine: ReadingEngineAdapter = ReadiumEngineAdapter(this@ReaderActivity)
                 val pub = engine.open(file)
                 publication = pub
@@ -99,13 +124,7 @@ class ReaderActivity : FragmentActivity() {
         supportFragmentManager.beginTransaction().replace(R.id.epub_reader, fragment).commitNow()
         navigator = fragment
         fragment.addInputListener(DirectionalNavigationAdapter(fragment))
-        progressJob = lifecycleScope.launch {
-            fragment.currentLocator.collectLatest { current ->
-                locator = current
-                progressSession?.let { ProgressWriter.save(library, it, "text", current.toJSON(), current.locations.totalProgression,
-                    completed = (current.locations.totalProgression ?: 0.0) >= 0.999) }
-            }
-        }
+        collectProgress(fragment)
         asset?.let { item -> lifecycleScope.launch {
             library.dao.annotations(item.id).collectLatest { marks ->
                 fragment.applyDecorations(marks.mapNotNull { mark ->
@@ -116,6 +135,58 @@ class ReaderActivity : FragmentActivity() {
                 }, "shadow.annotations")
             }
         } }
+    }
+
+    private fun collectProgress(fragment: EpubNavigatorFragment) {
+        progressJob = lifecycleScope.launch {
+            val tracker = novelPublication?.let { NovelLocatorTracker(NovelPublicationMap(JSONObject(it.mappingJson))) }
+            fragment.currentLocator.collectLatest { current ->
+                locator = current
+                if (tracker != null && !tracker.moved(current.toJSON())) return@collectLatest
+                progressSession?.let { ProgressWriter.save(library, it, "text", current.toJSON(), current.locations.totalProgression,
+                    completed = novelPublication == null && (current.locations.totalProgression ?: 0.0) >= 0.999) }
+                if (novelPublication != null) { delay(1200); ProgressWriter.flush(); NovelRepository.schedule(this@ReaderActivity) }
+            }
+        }
+    }
+
+    private fun openNovelChapter(chapter: String) {
+        val publication = novelPublication ?: return
+        if (novelBusy) return
+        novelBusy = true; novelMessage = null
+        lifecycleScope.launch {
+            progressJob?.cancelAndJoin(); ProgressWriter.flush()
+            try {
+                val prepared = novel.cachedChapter(publication.scope, publication.workId, publication.versionId, chapter)
+                    ?: novel.prepare(novel.connection(publication.scope), publication.workId, publication.versionId, chapter)
+                startActivity(android.content.Intent(this@ReaderActivity, ReaderActivity::class.java).putExtra("assetId", prepared.asset.id).putExtra("novelLocator", prepared.locator))
+                finish()
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { novelMessage = e.message ?: "章节获取失败，当前内容已保留"; navigator?.let(::collectProgress) }
+            finally { novelBusy = false }
+        }
+    }
+
+    private fun loadNovelContents(next: Boolean = false) {
+        val publication = novelPublication ?: return
+        if (novelBusy) return
+        novelBusy = true
+        lifecycleScope.launch {
+            try {
+                val offset = if (next) novelContentsOffset + 100 else 0
+                val page = novel.get(novel.connection(publication.scope), listOf("works", publication.workId, "contents"), listOf("version_id" to publication.versionId, "offset" to offset.toString(), "limit" to "100"))
+                novelContents = (if (next) novelContents else emptyList()) + page.novelObjects("items")
+                novelContentsOffset = offset; novelContentsTotal = page.optInt("total")
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                if (!next) {
+                    novelContents = novel.cachedContents(publication)
+                    novelContentsOffset = 0; novelContentsTotal = novelContents.size
+                    novelMessage = "完整目录暂不可用，显示本机已下载章节"
+                } else novelMessage = e.message ?: "目录获取失败"
+            }
+            finally { novelBusy = false }
+        }
     }
 
     private fun updatePrefs(next: EpubPreferences) {
@@ -144,10 +215,62 @@ class ReaderActivity : FragmentActivity() {
                 IconButton(onClick = { finish() }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回书架") }
             }, actions = {
                 IconButton(onClick = { panel = "搜索" }) { Icon(Icons.Rounded.Search, "全文搜索") }
-                IconButton(onClick = { panel = "目录" }) { Icon(Icons.Rounded.FormatListBulleted, "目录") }
+                IconButton(onClick = { panel = "目录"; if (novelPublication != null) loadNovelContents() }) { Icon(Icons.Rounded.FormatListBulleted, "目录") }
                 IconButton(onClick = { panel = "书签" }) { Icon(Icons.Rounded.Bookmarks, "书签") }
                 IconButton(onClick = { panel = "排版" }) { Icon(Icons.Rounded.TextFields, "排版") }
             }) }, bottomBar = {
+                Column {
+                novelPublication?.let { publication ->
+                    val map = remember(publication.mappingJson) { NovelPublicationMap(JSONObject(publication.mappingJson)) }
+                    val state = novelState
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+                        Text(when {
+                            !state?.conflictJson.isNullOrBlank() -> "进度冲突 · 本机位置已保留"
+                            !state?.message.isNullOrBlank() -> state!!.message
+                            state?.pending == true -> "本机已保存 · 等待同步"
+                            else -> "Novel · 已下载 ${map.chapters.size} 章${if (map.complete) "（完整目录包）" else "（章节窗口）"}"
+                        }, style = MaterialTheme.typography.bodySmall)
+                        novelMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                        if (novelBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        if (!state?.conflictJson.isNullOrBlank()) {
+                            val remote = runCatching { JSONObject(state!!.conflictJson).optJSONObject("current") }.getOrNull()
+                            Text("另一设备：${map.chapter(remote?.optString("chapter_id").orEmpty())?.optString("title") ?: "其他章节"} · ${((remote?.optDouble("ratio", 0.0) ?: 0.0) * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+                            Row {
+                                TextButton(enabled = !novelBusy, onClick = { lifecycleScope.launch {
+                                    try { novel.keepLocal(publication.scope, publication.workId) }
+                                    catch (e: Exception) { novelMessage = e.message }
+                                } }) { Text("继续本机位置") }
+                                TextButton(enabled = !novelBusy && remote != null, onClick = {
+                                    novelBusy = true
+                                    lifecycleScope.launch {
+                                        progressJob?.cancelAndJoin(); ProgressWriter.flush()
+                                        try {
+                                            val prepared = novel.useRemote(publication.scope, publication.workId)
+                                            startActivity(android.content.Intent(this@ReaderActivity, ReaderActivity::class.java).putExtra("assetId", prepared.asset.id).putExtra("novelLocator", prepared.locator)); finish()
+                                        } catch (e: CancellationException) { throw e }
+                                        catch (e: Exception) { novelMessage = e.message; navigator?.let(::collectProgress) }
+                                        finally { novelBusy = false }
+                                    }
+                                }) { Text("采用另一设备位置") }
+                            }
+                        } else if (state?.pending == true) TextButton(enabled = !novelBusy, onClick = { NovelRepository.schedule(this@ReaderActivity) }) { Text("重试同步") }
+                        Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                            if (map.json.optInt("offset") > 0) TextButton(enabled = !novelBusy, onClick = { panel = "目录"; loadNovelContents() }) { Text("完整版本目录") }
+                            if (!map.json.isNull("next_offset")) TextButton(enabled = !novelBusy, onClick = {
+                                novelBusy = true
+                                lifecycleScope.launch {
+                                    try {
+                                        val next = novel.nextChapter(publication)
+                                        novelBusy = false
+                                        if (next == null) novelMessage = "后续目录暂时没有可读章节" else openNovelChapter(next)
+                                    } catch (e: CancellationException) { throw e }
+                                    catch (e: Exception) { novelMessage = e.message }
+                                    finally { novelBusy = false }
+                                }
+                            }) { Text("下一段章节") }
+                        }
+                    }
+                }
                 Row(Modifier.navigationBarsPadding().fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                     IconButton(onClick = { navigator?.goBackward() }) { Icon(Icons.AutoMirrored.Rounded.NavigateBefore, "上一页") }
                     TextButton(onClick = { scope.launch {
@@ -166,6 +289,7 @@ class ReaderActivity : FragmentActivity() {
                             finally { narrating = false }
                         }
                     }) { Icon(if (narrating) Icons.Rounded.Stop else Icons.Rounded.RecordVoiceOver, if (narrating) "停止朗读" else "离线朗读，退出阅读时停止") }
+                }
                 }
             }) { padding ->
                 Box(Modifier.fillMaxSize().padding(padding)) {
@@ -215,9 +339,15 @@ class ReaderActivity : FragmentActivity() {
                             } }) { Text("更多结果") }
                         }
                         "目录" -> LazyColumn(Modifier.heightIn(max = 480.dp)) {
+                            if (novelPublication != null) {
+                                item { Text("本书完整版本目录 · 未下载章节按需获取", style = MaterialTheme.typography.bodySmall) }
+                                items(novelContents) { chapter -> TextButton(enabled = !novelBusy && chapter.optBoolean("readable"), onClick = { panel = null; openNovelChapter(chapter.getString("id")) }) { Text("${chapter.optInt("ordinal") + 1}. ${chapter.optString("title")}") } }
+                                if (novelContents.size < novelContentsTotal) item { TextButton(enabled = !novelBusy, onClick = { loadNovelContents(true) }) { Text("更多目录") } }
+                            } else {
                             fun flatten(links: List<Link>): List<Link> = links.flatMap { listOf(it) + flatten(it.children) }
                             items(flatten(publication?.tableOfContents.orEmpty()).ifEmpty { publication?.readingOrder.orEmpty() }) { link ->
                                 TextButton(onClick = { navigator?.go(link); panel = null }) { Text(link.title ?: link.href.toString()) }
+                            }
                             }
                         }
                         "书签" -> asset?.let { item ->
@@ -266,6 +396,6 @@ class ReaderActivity : FragmentActivity() {
                 } }; encodingChange = null }) { Text("重新打开") } }, dismissButton = { TextButton(onClick = { encodingChange = null }) { Text("取消") } }) }
         }
     }
-    override fun onStop() { aloud?.stop(); super.onStop() }
+    override fun onStop() { aloud?.stop(); if (novelPublication != null) NovelRepository.schedule(this); super.onStop() }
     override fun onDestroy() { searchJob?.cancel(); aloud?.close(); super.onDestroy(); publication?.close() }
 }

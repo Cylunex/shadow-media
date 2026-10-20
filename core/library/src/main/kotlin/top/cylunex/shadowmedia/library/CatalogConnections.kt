@@ -31,8 +31,8 @@ data class CatalogConnection(val id: String = UUID.randomUUID().toString(), val 
 }
 
 /** One authenticated, encrypted payload. Corrupt ciphertext is retained, never overwritten. */
-class CatalogConnectionStore(context: Context) {
-    private val preferences = context.getSharedPreferences("publication_connections", Context.MODE_PRIVATE)
+class CatalogConnectionStore(context: Context, namespace: String = "publication_connections", private val keyAlias: String = "shadow_publications_v1") {
+    private val preferences = context.getSharedPreferences(namespace, Context.MODE_PRIVATE)
     @Synchronized fun load(): List<CatalogConnection> {
         val value = preferences.getString("encrypted", null) ?: return emptyList()
         try {
@@ -61,9 +61,9 @@ class CatalogConnectionStore(context: Context) {
     }
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (store.getKey("shadow_publications_v1", null) as? SecretKey)?.let { return it }
+        (store.getKey(keyAlias, null) as? SecretKey)?.let { return it }
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
-            init(KeyGenParameterSpec.Builder("shadow_publications_v1", KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            init(KeyGenParameterSpec.Builder(keyAlias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
         }.generateKey()
     }

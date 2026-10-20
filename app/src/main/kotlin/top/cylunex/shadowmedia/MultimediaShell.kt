@@ -92,6 +92,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     var workAsset by remember { mutableStateOf<LibraryAssetEntity?>(null) }
     var offlineScreen by rememberSaveable { mutableStateOf(false) }
     var catalogScreen by rememberSaveable { mutableStateOf(false) }
+    var novelScreen by rememberSaveable { mutableStateOf(false) }
     val playerScreen = state.screen in setOf(Screen.PLAYER, Screen.EXTERNAL_PLAYER)
     val television = LocalConfiguration.current.uiMode and Configuration.UI_MODE_TYPE_MASK == Configuration.UI_MODE_TYPE_TELEVISION
     DisposableEffect(Unit) {
@@ -116,6 +117,18 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                 catch (_: Exception) { message = "无法打开音频，请检查文件授权或重新导入" }
             }
         } else {
+            if (item.providerId.startsWith("novel:")) {
+                startImport {
+                    try {
+                        val publication = container.novel.dao.publication(item.id)
+                        val connected = runCatching { container.novel.connection(item.providerId) }.getOrNull()
+                        val prepared = if (publication != null && connected != null) container.novel.prepare(connected, publication.workId, publication.versionId) else top.cylunex.shadowmedia.library.NovelRepository.Prepared(item, null)
+                        context.startActivity(Intent(context, ReaderActivity::class.java).putExtra("assetId", prepared.asset.id).putExtra("novelLocator", prepared.locator))
+                    } catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { message = e.message ?: "Novel 图书打开失败" }
+                }
+                return
+            }
             if (item.format == "komga") {
                 context.startActivity(Intent(context, ComicActivity::class.java).putExtra("assetId", item.id))
                 return
@@ -171,7 +184,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             }
         }
     }
-    fun select(index: Int) { localVideoScreen = false; tab = index; audioExpanded = false; catalogScreen = false; offlineScreen = false; continueScreen = false; viewModel.showHome() }
+    fun select(index: Int) { localVideoScreen = false; tab = index; audioExpanded = false; catalogScreen = false; novelScreen = false; offlineScreen = false; continueScreen = false; viewModel.showHome() }
     if (playerScreen) { LegacyMediaRoot(viewModel, container); return }
     BackHandler(enabled = audioExpanded) { audioExpanded = false }
     Scaffold(bottomBar = {
@@ -197,6 +210,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                     }
                 }
                 when {
+                    novelScreen -> NovelScreen(container.novel, onBack = { novelScreen = false })
                     audioExpanded -> AudioNowPlaying(controller, container.library, onBack = { audioExpanded = false })
                     localVideoScreen && !continueScreen -> LocalVideosScreen(container, viewModel, onBack = { localVideoScreen = false }, onContinue = { continueScreen = true })
                     continueScreen -> ContinueScreen(container, onBack = { continueScreen = false }, onOpen = ::open, onLegacy = viewModel::continueLegacy)
@@ -216,7 +230,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                             catch (_: Exception) { message = "听书队列加载失败，请检查来源或重新添加" }
                         } else if (control == null) message = "音频服务正在连接，请稍后重试"
                     })
-                    (tab == 2 || tab == 3) && state.screen == Screen.HOME -> PublicationShelf(container.library, audio = tab == 3, onImport = { importer.launch(arrayOf("*/*")) }, onOpen = ::open,
+                    (tab == 2 || tab == 3) && state.screen == Screen.HOME -> PublicationShelf(container.library, audio = tab == 3, onNovel = { novelScreen = true }, onImport = { importer.launch(arrayOf("*/*")) }, onOpen = ::open,
                         onDirectory = { directoryImporter.launch(null) }, onAssociate = { workAsset = it },
                         onOffline = { item -> scope.launch {
                             try { container.offline.enqueue(item); message = "已加入离线任务" }
@@ -231,7 +245,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                             }
                             container.library.remove(item.id)
                         } })
-                    tab == 4 && state.screen == Screen.HOME -> SourcesHub(state, viewModel, pendingSync, onImport = { importer.launch(arrayOf("*/*")) }, onCatalogs = { catalogScreen = true }, onOffline = { offlineScreen = true }, onContinue = { continueScreen = true }, onVideos = { localVideoScreen = true })
+                    tab == 4 && state.screen == Screen.HOME -> SourcesHub(state, viewModel, pendingSync, onImport = { importer.launch(arrayOf("*/*")) }, onCatalogs = { catalogScreen = true }, onNovel = { novelScreen = true }, onOffline = { offlineScreen = true }, onContinue = { continueScreen = true }, onVideos = { localVideoScreen = true })
                     tab == 1 && state.screen == Screen.HOME -> LiveLanding(state, container, viewModel)
                     else -> LegacyMediaRoot(viewModel, container)
                 }
@@ -264,7 +278,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
 }
 
 @Composable private fun PublicationShelf(
-    library: LibraryRepository, audio: Boolean,
+    library: LibraryRepository, audio: Boolean, onNovel: () -> Unit,
     onImport: () -> Unit, onDirectory: () -> Unit, onAssociate: (LibraryAssetEntity) -> Unit, onOffline: (LibraryAssetEntity) -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onFavorite: (LibraryAssetEntity) -> Unit, onRemove: (LibraryAssetEntity) -> Unit,
 ) {
     var filter by rememberSaveable(audio) { mutableStateOf("全部") }
@@ -288,6 +302,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                     IconButton(onClick = onImport) { Icon(Icons.Rounded.Add, "导入文件") }
                     if (!audio) IconButton(onClick = onDirectory) { Icon(Icons.Rounded.FolderOpen, "导入漫画图片目录") }
                 }
+                if (!audio) FilledTonalButton(onClick = onNovel, modifier = Modifier.fillMaxWidth()) { Text("Shadow Novel · 书城与书单") }
                 Spacer(Modifier.height(20.dp))
                 OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("搜索标题、作者") }, leadingIcon = { Icon(Icons.Rounded.Search, null) }, singleLine = true, shape = RoundedCornerShape(18.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -363,7 +378,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     }
 }
 
-@Composable private fun SourcesHub(state: MainUiState, viewModel: MainViewModel, pendingSync: Int, onImport: () -> Unit, onCatalogs: () -> Unit, onOffline: () -> Unit, onContinue: () -> Unit, onVideos: () -> Unit) {
+@Composable private fun SourcesHub(state: MainUiState, viewModel: MainViewModel, pendingSync: Int, onImport: () -> Unit, onCatalogs: () -> Unit, onNovel: () -> Unit, onOffline: () -> Unit, onContinue: () -> Unit, onVideos: () -> Unit) {
     val context = LocalContext.current
     val appearance = remember { context.getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE) }
     var theme by remember { mutableStateOf(appearance.getString("theme", "深色")) }
@@ -376,6 +391,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
         item { SourceTile("影视与直播订阅", "${state.externalSources.size} 个订阅 · 导入、更新与诊断", Icons.Rounded.LiveTv, viewModel::showSources) }
         item { SourceTile("本机视频与链接", "手机视频 / 文件夹 / m3u8 · 继续观看", Icons.Rounded.VideoLibrary, onVideos) }
         item { SourceTile("本地书籍与音频", "系统文件选择器 · 不需要全盘存储权限", Icons.Rounded.FileOpen, onImport) }
+        item { SourceTile("Shadow Novel", "书城 / 书单 / 作家 / 原生阅读与进度同步", Icons.AutoMirrored.Rounded.MenuBook, onNovel) }
         item { SourceTile("图书与音乐服务", "OPDS / Komga / ABS / Jellyfin / OpenSubsonic", Icons.AutoMirrored.Rounded.MenuBook, onCatalogs) }
         item { SourceTile("聚合搜索", "搜索已连接的内容服务", Icons.Rounded.Search, viewModel::showDiscover) }
         item { SourceTile("设置与诊断", "功能开关、播放记录与问题排查", Icons.Rounded.Tune, viewModel::showSettings) }
