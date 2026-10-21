@@ -22,6 +22,7 @@ import org.json.JSONObject
 import kotlin.coroutines.resume
 
 const val NOVEL_OIDC_REDIRECT = "top.cylunex.shadowmedia.novel:/oauth2redirect"
+internal class NovelLoginHttpException(val status: Int) : java.io.IOException("Login endpoint returned HTTP $status")
 
 internal fun authRequired(): Nothing = throw NovelApiException(401, "authentication_required", JSONObject())
 
@@ -38,7 +39,7 @@ internal suspend fun novelAuthJson(base: HttpUrl, path: String, token: String? =
     val call = client.newCall(Request.Builder().url(url).apply { token?.let { header("Authorization", "Bearer $it") } }.build())
     val cancellation = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) { try { awaitCancellation() } finally { call.cancel() } }
     try { call.execute().use {
-        require(it.isSuccessful) { if (it.code == 401) "登录未获授权，请重试" else "无法连接统一认证服务（${it.code}）" }
+        if (!it.isSuccessful) throw NovelLoginHttpException(it.code)
         JSONObject(SafeArchives.readBounded(requireNotNull(it.body).byteStream(), 128 * 1024).toString(Charsets.UTF_8))
     } } finally { cancellation.cancel() }
 }

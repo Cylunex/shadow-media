@@ -20,6 +20,7 @@ class NovelLoginActivity : Activity() {
     private lateinit var store: CatalogConnectionStore
     private lateinit var status: TextView
     private var attemptId = ""
+    private var stage = NovelLoginStage.CONFIGURATION
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,12 +51,13 @@ class NovelLoginActivity : Activity() {
                     store.beginLogin(JSONObject().put("attempt", attemptId).put("created", System.currentTimeMillis())
                         .put("request", request.jsonSerializeString()).put("issuer", config.issuer).put("base", config.apiBase)
                         .put("name", intent.getStringExtra("name") ?: "Shadow Novel").put("previousId", intent.getStringExtra("connectionId").orEmpty()))
+                    stage = NovelLoginStage.BROWSER
                     @Suppress("DEPRECATION")
                     startActivityForResult(service.getAuthorizationRequestIntent(request), 110)
                     } catch (_: Exception) { failed() }
                 }
             } catch (_: CancellationException) { throw CancellationException() }
-            catch (_: Exception) { failed() }
+            catch (error: Exception) { failed((error as? NovelLoginHttpException)?.status) }
         }
         else {
             val pending = runCatching { store.pendingLogin() }.getOrNull()
@@ -70,34 +72,47 @@ class NovelLoginActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != 110) return
+        stage = NovelLoginStage.CALLBACK
         try {
             val attempt = store.consumeLogin(attemptId) ?: error("Login expired")
-            val response = data?.let(AuthorizationResponse::fromIntent) ?: error("Login cancelled")
+            val response = data?.let(AuthorizationResponse::fromIntent)
+            if (response == null) {
+                failed(oauthError = data?.let(AuthorizationException::fromIntent)?.error
+                    ?: if (resultCode == RESULT_CANCELED) "access_denied" else null)
+                return
+            }
             val expected = AuthorizationRequest.jsonDeserialize(attempt.getString("request"))
             check(response.state == expected.state && response.request.nonce == expected.nonce &&
                 response.request.jsonSerializeString() == expected.jsonSerializeString())
             val state = AuthState(response, null)
+            stage = NovelLoginStage.TOKEN
             service.performTokenRequest(response.createTokenExchangeRequest()) { tokens, error ->
                 if (isFinishing || isDestroyed) return@performTokenRequest
                 state.update(tokens, error)
-                if (tokens == null || error != null || state.accessToken == null) { failed(); return@performTokenRequest }
+                if (tokens == null || error != null || state.accessToken == null) { failed(oauthError = error?.error); return@performTokenRequest }
                 scope.launch {
                     try {
+                        stage = NovelLoginStage.IDENTITY
                         val identity = novelAuthJson(attempt.getString("base").toHttpUrl(), "auth/me", state.accessToken)
                         check(identity.getString("issuer") == attempt.getString("issuer") && identity.getString("sub").isNotBlank())
                         val connection = CatalogConnection(name = attempt.getString("name"), kind = CatalogKind.OPDS, url = attempt.getString("base"),
                             oidcIssuer = identity.getString("issuer"), oidcSubject = identity.getString("sub"),
                             oidcClientId = expected.clientId, oidcAuthState = state.jsonSerializeString())
+                        stage = NovelLoginStage.SAVE
                         val accepted = store.finishLogin(attemptId, connection)
                         setResult(RESULT_OK, Intent().putExtra("connectionId", accepted.id)); finish()
                     } catch (_: CancellationException) { throw CancellationException() }
-                    catch (_: Exception) { failed() }
+                    catch (error: Exception) { failed((error as? NovelLoginHttpException)?.status) }
                 }
             }
         } catch (_: Exception) { failed() }
     }
 
-    private fun failed() { runCatching { store.cancelLogin(attemptId) }; runOnUiThread { status.text = "登录未完成、已取消或账号未获授权，请返回重试。" } }
+    private fun failed(httpStatus: Int? = null, oauthError: String? = null) {
+        runCatching { store.cancelLogin(attemptId) }
+        val message = novelLoginFailure(stage, httpStatus, oauthError)
+        runOnUiThread { status.text = message }
+    }
     override fun onDestroy() {
         if (isFinishing) runCatching { store.cancelLogin(attemptId) }
         scope.cancel(); service.dispose(); super.onDestroy()
