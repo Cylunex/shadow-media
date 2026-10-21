@@ -2188,6 +2188,18 @@
       "embeddedNotices": []
     },
     {
+      "coordinate": "net.openid:appauth:0.11.1",
+      "artifact": "appauth-0.11.1.aar",
+      "sha256": "d9ff43b14f7ee8e81bc802148190ad808beb5389953e6e6ffa53cd5575ea611e",
+      "licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ],
+      "embeddedNotices": []
+    },
+    {
       "coordinate": "org.bouncycastle:bcprov-jdk18on:1.85.2",
       "artifact": "bcprov-jdk18on-1.85.2.jar",
       "sha256": "986b0fb92ec10e0c66b43e036ce0077e6150cfaecd1db9fb92b56672e157afe5",

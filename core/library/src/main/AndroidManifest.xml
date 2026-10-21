@@ -3,6 +3,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <application>
+        <activity android:name=".NovelLoginActivity" android:exported="false" />
+        <activity android:name="net.openid.appauth.RedirectUriReceiverActivity" android:exported="true" tools:node="replace">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="top.cylunex.shadowmedia.novel" android:path="/oauth2redirect" />
+            </intent-filter>
+        </activity>
         <service android:name="androidx.work.impl.foreground.SystemForegroundService" android:foregroundServiceType="dataSync" tools:node="merge" />
     </application>
 </manifest>

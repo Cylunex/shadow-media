@@ -169,6 +169,8 @@ ISO 是光盘镜像而不是普通视频容器。Emby Server 不支持 ISO 转�
 外部服务能力与凭据边界见 [服务连接](docs/INTEGRATIONS.md)。
 媒体时刻、用户片段与脱敏统计见 [媒体记忆与洞察](docs/MEMORY_AND_INSIGHTS.md)。
 
+小说连接支持系统浏览器统一账号登录、凭据自动续期与退出，使用说明见[小说 OIDC 登录](docs/NOVEL_OIDC.md)。
+
 本项目整体以 GPL-3.0 发布。详见 [架构说明](docs/ARCHITECTURE.md)、
 [全媒介实施说明](docs/MULTIMEDIA_IMPLEMENTATION.md)、
 [ISO 播放说明](docs/ISO_PLAYBACK.md)、[第三方来源](third_party/webhtv-mpv/NOTICE.md)、

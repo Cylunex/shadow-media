@@ -19,14 +19,17 @@ class NovelApiException(val status: Int, val code: String, val detail: JSONObjec
         "progress_conflict" -> "另一设备已有新进度，请选择继续位置"
         "version_unavailable" -> "暂无可读版本，请选择可用版本或先在 Novel 获取正文"
         "content_changed" -> "内容已变化，请重新选择版本"
+        "authentication_required" -> "登录已失效，请重新登录统一账号"
         else -> "Novel 请求失败（HTTP $status，${code.ifBlank { "request_failed" }}）"
     }
 )
 
 /** Every redirect is checked before transmission, including 307/308 mutation redirects. */
+fun interface NovelBearerTokens { suspend fun token(connection: CatalogConnection, forceRefresh: Boolean): String }
+
 class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
     .addInterceptor(top.cylunex.shadowmedia.network.OfflineModeInterceptor())
-    .connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build()) {
+    .connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build(), private val bearer: NovelBearerTokens? = null) {
     fun url(c: CatalogConnection, path: List<String>, query: List<Pair<String, String>> = emptyList()): HttpUrl =
         c.base().newBuilder().apply {
             if (!c.base().encodedPath.endsWith('/')) addPathSegment("")
@@ -43,16 +46,27 @@ class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
             if (!sameOrigin(c.base(), redirected.url) || (!redirected.url.isHttps && !c.allowHttp)) throw IOException("拒绝 Novel 跨源重定向")
             chain.proceed(redirected)
         }.build()
+        val activeCall = java.util.concurrent.atomic.AtomicReference<Call?>()
+        val cancellation = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) { try { awaitCancellation() } finally { activeCall.get()?.cancel() } }
+        suspend fun request(force: Boolean): Response {
+        val access = if (c.oidcIssuer.isNotBlank()) bearer?.token(c, force)
+            ?: throw NovelApiException(401, "authentication_required", JSONObject()) else c.token
+        if (c.oidcIssuer.isNotBlank() && access.isBlank()) throw NovelApiException(401, "authentication_required", JSONObject())
         val call = scoped.newCall(Request.Builder().url(url).apply {
-            if (c.token.isNotBlank()) header("Authorization", "Bearer ${c.token}")
+            if (access.isNotBlank()) header("Authorization", "Bearer $access")
             else if (c.username.isNotBlank()) header("Authorization", Credentials.basic(c.username, c.password))
             header("Accept", "application/json, application/epub+zip")
             method(method, body?.toString()?.toRequestBody("application/json".toMediaType())
                 ?: if (method in setOf("POST", "PUT", "PATCH")) "{}".toRequestBody("application/json".toMediaType()) else null)
         }.build())
-        val cancellation = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) { try { awaitCancellation() } finally { call.cancel() } }
+        activeCall.set(call)
+        currentCoroutineContext().ensureActive()
+        return call.execute()
+        }
         try {
-            call.execute().use { response ->
+        var response = request(false)
+        if (response.code == 401 && c.oidcIssuer.isNotBlank()) { response.close(); response = request(true) }
+        response.use {
                 if (!response.isSuccessful) {
                     val value = response.body?.byteStream()?.use { SafeArchives.readBounded(it, 128 * 1024) }?.toString(Charsets.UTF_8)
                     val parsed = runCatching { JSONObject(value.orEmpty()) }.getOrNull()
@@ -60,7 +74,7 @@ class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
                     throw NovelApiException(response.code, detail.optString("code"), detail)
                 }
                 consume(response)
-            }
+        }
         } catch (e: Exception) { currentCoroutineContext().ensureActive(); throw e }
         finally { cancellation.cancel() }
     }

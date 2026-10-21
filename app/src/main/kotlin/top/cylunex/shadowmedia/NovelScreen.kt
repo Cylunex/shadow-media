@@ -3,6 +3,8 @@ package top.cylunex.shadowmedia
 
 import android.content.Intent
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -53,6 +55,24 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     var membershipTotal by remember { mutableIntStateOf(0) }
     var deletedLists by remember { mutableStateOf(false) }
     var disconnectedDownloads by remember { mutableStateOf<List<top.cylunex.shadowmedia.database.LibraryAssetEntity>>(emptyList()) }
+    val login = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        try {
+            connections = repository.store.load()
+            if (result.resultCode == android.app.Activity.RESULT_OK) {
+                connection = connections.singleOrNull { it.id == result.data?.getStringExtra("connectionId") }
+                route = NovelRoute("home"); stack = emptyList(); data = null; error = null; connectionEditor = false
+                NovelRepository.schedule(context)
+            }
+        } catch (e: Exception) { error = e.message }
+    }
+    fun signIn(name: String, url: String, previous: CatalogConnection?) {
+        try {
+            val value = CatalogConnection(name = name, kind = CatalogKind.OPDS, url = url)
+            require(value.base().isHttps) { "统一认证需要 HTTPS 地址" }
+            login.launch(Intent(context, NovelLoginActivity::class.java).putExtra("name", name).putExtra("url", url)
+                .putExtra("connectionId", previous?.id))
+        } catch (e: Exception) { error = e.message }
+    }
     fun execute(block: suspend () -> Unit) {
         if (busy) return
         job = scope.launch {
@@ -125,6 +145,7 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
         })
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         error?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.error) }
+        if (error != null && c?.oidcIssuer?.isNotBlank() == true) TextButton(enabled = !busy, onClick = { signIn(c.name, c.url, c) }) { Text("重新登录统一账号") }
         message?.let { Text(it, Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.primary) }
         if (c == null) LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item { Text("原生浏览书城、书单和作家，使用 Readium 阅读。输入你自己的 Novel 服务根地址；凭据加密保存在本机。") }
@@ -132,6 +153,10 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                 Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(enabled = !busy, onClick = { execute { repository.discover(item); connection = item; route = NovelRoute("home"); stack = emptyList(); NovelRepository.schedule(context) } }, modifier = Modifier.weight(1f)) { Text(item.name) }
                     TextButton(enabled = !busy, onClick = { connection = item; route = NovelRoute("offline"); stack = emptyList() }) { Text("离线") }
+                    if (item.oidcIssuer.isNotBlank()) TextButton(enabled = !busy, onClick = {
+                        if (item.oidcAuthState.isBlank()) signIn(item.name, item.url, item)
+                        else execute { repository.oidc.logout(item); connections = repository.store.load(); message = "已退出统一账号；离线内容保留" }
+                    }) { Text(if (item.oidcAuthState.isBlank()) "登录" else "退出") }
                     IconButton(onClick = { editingConnection = item; connectionEditor = true }) { Icon(Icons.Rounded.Edit, "编辑连接") }
                     IconButton(onClick = { try { repository.store.remove(item.id); connections = repository.store.load(); message = "连接已移除；下载与待同步进度保留在本机阅读书架" } catch (e: Exception) { error = e.message } }) { Icon(Icons.Rounded.LinkOff, "移除连接") }
                 }
@@ -256,7 +281,7 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
             }
         }
     }
-    if (connectionEditor) NovelConnectionEditor(editingConnection, busy, error, onDismiss = { connectionEditor = false }, onSave = { edited -> execute {
+    if (connectionEditor) NovelConnectionEditor(editingConnection, busy, error, onDismiss = { connectionEditor = false }, onLogin = { name, url -> signIn(name, url, editingConnection) }, onSave = { edited -> execute {
         repository.discover(edited)
         repository.store.replace(editingConnection, edited); connections = repository.store.load(); connectionEditor = false; message = "Novel 连接已验证"
     } })
@@ -294,7 +319,7 @@ private fun serialLabel(value: String) = when(value) { "completed" -> "完结"; 
     } }
 }
 
-@Composable private fun NovelConnectionEditor(existing: CatalogConnection?, busy: Boolean, operationError: String?, onDismiss: () -> Unit, onSave: (CatalogConnection) -> Unit) {
+@Composable private fun NovelConnectionEditor(existing: CatalogConnection?, busy: Boolean, operationError: String?, onDismiss: () -> Unit, onLogin: (String, String) -> Unit, onSave: (CatalogConnection) -> Unit) {
     var name by remember { mutableStateOf(existing?.name ?: "Shadow Novel") }
     var url by remember { mutableStateOf(existing?.url.orEmpty()) }
     var username by remember { mutableStateOf(existing?.username.orEmpty()) }
@@ -302,10 +327,19 @@ private fun serialLabel(value: String) = when(value) { "completed" -> "完结"; 
     var token by remember { mutableStateOf(existing?.token.orEmpty()) }
     var allowHttp by remember { mutableStateOf(existing?.allowHttp ?: false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var unified by remember { mutableStateOf(existing == null || existing.oidcIssuer.isNotBlank()) }
     ModalBottomSheet(onDismissRequest = onDismiss) { LazyColumn(Modifier.imePadding(), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Novel 连接", style = MaterialTheme.typography.titleLarge) }
         item { OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("名称") }) }
         item { OutlinedTextField(url, { url = it }, Modifier.fillMaxWidth(), label = { Text("服务根地址") }, placeholder = { Text("https://example.com/novel/") }) }
+        item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = unified, onClick = { unified = true }, label = { Text("统一账号") })
+            FilterChip(selected = !unified, onClick = { unified = false }, label = { Text("手动凭据") })
+        } }
+        if (unified) {
+            item { Text("在系统浏览器中登录统一账号，登录后自动返回；同一账号续期保留下载和待同步进度。") }
+            item { Button(enabled = !busy, onClick = { onLogin(name.trim().ifBlank { "Shadow Novel" }, url.trim()) }, modifier = Modifier.fillMaxWidth()) { Text("登录统一账号") } }
+        } else {
         item { OutlinedTextField(username, { username = it }, Modifier.fillMaxWidth(), label = { Text("Basic 用户名（可选）") }) }
         item { OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), label = { Text("Basic 密码") }, visualTransformation = PasswordVisualTransformation()) }
         item { OutlinedTextField(token, { token = it }, Modifier.fillMaxWidth(), label = { Text("Bearer Token（可选，优先于 Basic）") }, visualTransformation = PasswordVisualTransformation()) }
@@ -317,6 +351,7 @@ private fun serialLabel(value: String) = when(value) { "completed" -> "完结"; 
             val value = CatalogConnection(existing?.id ?: java.util.UUID.randomUUID().toString(), name.trim(), CatalogKind.OPDS, url.trim(), username, password, token.trim(), allowHttp)
             value.base(); onSave(value)
         } catch (e: Exception) { error = e.message } }, modifier = Modifier.fillMaxWidth()) { Text(if (busy) "正在验证…" else "验证并保存") } }
+        }
     } }
 }
 

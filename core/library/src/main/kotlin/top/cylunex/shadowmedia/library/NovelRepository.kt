@@ -14,10 +14,12 @@ import org.json.JSONObject
 import top.cylunex.shadowmedia.database.*
 import top.cylunex.shadowmedia.model.scopedContentId
 
-class NovelRepository(private val context: Context, private val library: LibraryRepository = LibraryRepository(context), private val api: NovelApi = NovelApi(),
+class NovelRepository(private val context: Context, private val library: LibraryRepository = LibraryRepository(context), api: NovelApi? = null,
     private val database: ShadowMediaDatabase = ShadowMediaDatabase.create(context), connectionLoader: (() -> List<CatalogConnection>)? = null) {
     // Reuse the existing encrypted connection format; this vault exclusively holds Novel roots.
     val store = CatalogConnectionStore(context, "novel_connections", "shadow_novel_connections_v1")
+    val oidc = NovelOidcTokens(context, store)
+    private val api = api ?: NovelApi(bearer = oidc)
     private val connections = connectionLoader ?: store::load
     val dao = database.novelDao()
     fun connection(scope: String) = connections().singleOrNull { novelScope(it) == scope } ?: error("Novel 连接已移除，离线内容与进度仍保留")
