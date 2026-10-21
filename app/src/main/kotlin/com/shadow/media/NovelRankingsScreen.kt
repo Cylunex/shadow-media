@@ -31,7 +31,7 @@ import org.json.JSONObject
     var index by remember { mutableStateOf<JSONObject?>(null) }
     var indexError by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
-    var page by remember { mutableStateOf<JSONObject?>(null) }
+    var snapshot by remember(connection.id) { mutableStateOf<NovelRankingPage?>(null) }
     var loading by remember { mutableStateOf(false) }
     var working by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -40,6 +40,7 @@ import org.json.JSONObject
     var authenticationRequired by remember { mutableStateOf(false) }
     val boards = remember(index) { NovelRankingBoard.parse(index ?: JSONObject()) }
     val selection = NovelRankingSelection(provider, kind, boardKey, period, category).resolved(boards)
+    val page = snapshot?.forSelection(selection)
     val external = boards.filter { it.providerId == provider }
     val editable = !LibraryResources.offlineOnly && page?.has("_cached_at") != true
 
@@ -68,7 +69,7 @@ import org.json.JSONObject
             }
             val refreshed = fetch(selected)
             listState.scrollToItem(0)
-            page = refreshed
+            snapshot = NovelRankingPage(selected, refreshed)
             notice = result.optString("message").takeIf(String::isNotBlank) ?: "榜单已更新"
         } finally { working = false }
     }
@@ -90,17 +91,17 @@ import org.json.JSONObject
     }
     LaunchedEffect(connection.id, selection, reload) {
         if (!selection.local && selection.key.isBlank()) {
-            page = null; loading = false
+            snapshot = null; loading = false
             error = if (index != null) "此来源已停用或没有可用榜单，请切换来源。" else null
             return@LaunchedEffect
         }
-        loading = true; page = null; error = null; notice = null
+        loading = true; snapshot = null; error = null; notice = null
         try {
             val result = fetch(selection)
             if (loadedSelection != null && loadedSelection != selection.toString()) listState.scrollToItem(0)
             loadedSelection = selection.toString()
-            page = result; loading = false
-            val current = page!!
+            snapshot = NovelRankingPage(selection, result); loading = false
+            val current = result
             if (!selection.local && !LibraryResources.offlineOnly && !current.has("_cached_at") && current.optBoolean("stale") &&
                 System.currentTimeMillis() / 1000 - current.optDouble("attempted_at", 0.0) > 30) refreshBoard(selection)
         } catch (e: TimeoutCancellationException) { notice = "服务端仍在更新，稍后点刷新查看；已保留当前榜单" }
@@ -180,7 +181,7 @@ import org.json.JSONObject
                             if (workId.isNotBlank()) TextButton(enabled = editable && !working && !work.optBoolean("on_shelf"), onClick = { operation {
                                 repository.mutate(connection, listOf("me", "books", workId), "PATCH", JSONObject().put("on_shelf", true))
                                 notice = "已加入书架"
-                                if (selection.local) { work.put("on_shelf", true); page = JSONObject(page!!.toString()) }
+                                if (selection.local) { work.put("on_shelf", true); snapshot = NovelRankingPage(selection, JSONObject(page!!.toString())) }
                             } }) { Text(if (work.optBoolean("on_shelf")) "已在书架" else "加入书架") }
                             else TextButton(enabled = editable && !working && page?.optString("token").orEmpty().length == 64, onClick = { operation {
                                 try {
@@ -189,7 +190,7 @@ import org.json.JSONObject
                                     onWork(result.getString("work_id"))
                                 } catch (e: NovelApiException) {
                                     if (e.status != 409) throw e
-                                    val latest = fetch(selection); listState.scrollToItem(0); page = latest
+                                    val latest = fetch(selection); listState.scrollToItem(0); snapshot = NovelRankingPage(selection, latest)
                                     notice = "榜单已更新，请在最新榜单中重新选择作品"
                                 }
                             } }) { Text("收录资料") }
@@ -203,11 +204,11 @@ import org.json.JSONObject
                     val previous = requireNotNull(page)
                     val next = fetch(selection, previous.novelObjects("items").size)
                     if (!sameNovelRankingSnapshot(previous, next, selection.local)) {
-                        val latest = fetch(selection); listState.scrollToItem(0); page = latest
+                        val latest = fetch(selection); listState.scrollToItem(0); snapshot = NovelRankingPage(selection, latest)
                         notice = "榜单已更新，已返回最新榜单开头"
                     } else {
                         next.put("items", JSONArray().also { result -> (previous.novelObjects("items") + next.novelObjects("items")).forEach(result::put) })
-                        page = next
+                        snapshot = NovelRankingPage(selection, next)
                     }
                 } }) { Text("加载更多") }
             }

@@ -24,6 +24,31 @@ class NovelDiscoveryTest {
         assertEquals(listOf("rankings", "local"), path)
         assertEquals(mapOf("kind" to "rating", "period" to "total", "category_id" to "science", "offset" to "30", "limit" to "30"), query.toMap())
     }
+    @Test fun switchingSourcesNeverRendersThePreviousPagesIncompatibleRows() {
+        val local = NovelRankingSelection().resolved(boards)
+        val external = NovelRankingSelection(provider = "a").resolved(boards)
+        // Local rows have work.id; external rows have index and may have no matched work.
+        val localData = JSONObject().put("items", JSONArray().put(JSONObject()
+            .put("rank", 1).put("work", JSONObject().put("id", "work-1"))))
+        val externalData = JSONObject().put("items", JSONArray().put(JSONObject()
+            .put("rank", 1).put("index", 0).put("name", "外部作品")))
+        val localPage = NovelRankingPage(local, localData)
+        val externalPage = NovelRankingPage(external, externalData)
+        assertSame(localData, localPage.forSelection(local))
+        assertNull(localPage.forSelection(external))
+        assertSame(externalData, externalPage.forSelection(external))
+        assertNull(externalPage.forSelection(local))
+        assertNull(externalPage.forSelection(NovelRankingSelection(provider = "b").resolved(boards)))
+    }
+    @Test fun switchingPeriodCategoryOrKindHidesStaleResponsesBeforeTheNextFetch() {
+        val selected = NovelRankingSelection(provider = "a", period = "month").resolved(boards)
+        val page = NovelRankingPage(selected, JSONObject())
+        assertNull(page.forSelection(selected.copy(period = "week", key = "hot-week")))
+        val local = NovelRankingSelection()
+        val localPage = NovelRankingPage(local, JSONObject())
+        assertNull(localPage.forSelection(local.copy(kind = "rating")))
+        assertNull(localPage.forSelection(local.copy(category = "science")))
+    }
     @Test fun changedOrMissingSnapshotCannotAppendExternalRankPositions() {
         val first = JSONObject().put("token", "a".repeat(64))
         assertTrue(sameNovelRankingSnapshot(first, JSONObject(first.toString()), false))

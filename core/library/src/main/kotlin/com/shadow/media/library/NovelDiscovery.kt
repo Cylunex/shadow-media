@@ -46,6 +46,11 @@ data class NovelRankingSelection(
     }
 }
 
+/** A response belongs to the selection that fetched it, including during source-switch composition. */
+data class NovelRankingPage(val selection: NovelRankingSelection, val data: JSONObject) {
+    fun forSelection(current: NovelRankingSelection): JSONObject? = data.takeIf { selection == current }
+}
+
 /** Use the server's filter parameters, never launch its web page or infer a category from a label. */
 fun novelSectionQuery(section: JSONObject): NovelQuery {
     val id = section.optString("id")

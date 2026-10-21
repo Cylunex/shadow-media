@@ -51,6 +51,7 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     var connectionEditor by remember { mutableStateOf(false) }
     var editingConnection by remember { mutableStateOf<CatalogConnection?>(null) }
     var filter by remember { mutableStateOf(false) }
+    var sourceSearch by remember(connection?.id, route) { mutableStateOf(false) }
     var editor by remember { mutableStateOf<NovelEdit?>(null) }
     var memberships by remember { mutableStateOf<List<JSONObject>?>(null) }
     var membershipOffset by remember { mutableIntStateOf(0) }
@@ -258,6 +259,12 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                         }
                         Row { Button(enabled = !busy && work.novelStrings("availability") != listOf("metadata_only"), onClick = { open(route.id) }) { Text(if (work.optJSONObject("progress") != null) "继续阅读" else "开始阅读") }
                             if (!work.optBoolean("author_unknown") && work.optString("author").isNotBlank()) TextButton(enabled = !busy, onClick = { navigate(NovelRoute("author", name = work.getString("author"))) }) { Text("查看作家") } }
+                        FilledTonalButton(enabled = !busy && !LibraryResources.offlineOnly && work.optString("title").isNotBlank(),
+                            onClick = { sourceSearch = true }, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Rounded.Search, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("直接搜索在线书源")
+                        }
                     }
                     item {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -347,6 +354,12 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
         repository.store.replace(editingConnection, edited); connections = repository.store.load(); connectionEditor = false; message = "Novel 连接已验证"
     } })
     if (filter) NovelFilterSheet(query, navigation, onDismiss = { filter = false }, onApply = { query = it; filter = false })
+    if (sourceSearch && c != null && route.kind == "work") data?.let { work ->
+        NovelSourceSearchSheet(repository, c, work, onDismiss = { sourceSearch = false }, onBound = {
+            sourceSearch = false
+            execute { load(); message = "已关联书源并获取目录，可选择版本阅读" }
+        })
+    }
     editor?.let { edit -> NovelEditSheet(edit, busy, error, onDismiss = { editor = null }, onSave = { values -> execute { edit.save(values); editor = null } }) }
     memberships?.let { lists -> ModalBottomSheet(onDismissRequest = { memberships = null }) { LazyColumn(contentPadding = PaddingValues(20.dp)) {
         item { Text("选择书单", style = MaterialTheme.typography.titleLarge) }

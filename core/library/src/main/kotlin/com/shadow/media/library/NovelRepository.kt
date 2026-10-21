@@ -20,6 +20,7 @@ class NovelRepository(private val context: Context, private val library: Library
     val store = CatalogConnectionStore(context, "novel_connections", "shadow_novel_connections_v1")
     val oidc = NovelOidcTokens(context, store)
     private val api = api ?: NovelApi(bearer = oidc)
+    val sourceSearch = NovelSourceSearch(this.api)
     private val connections = connectionLoader ?: store::load
     private val covers = object : android.util.LruCache<String, ByteArray>(8 * 1024 * 1024) {
         override fun sizeOf(key: String, value: ByteArray) = value.size
