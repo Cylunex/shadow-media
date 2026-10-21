@@ -7,9 +7,12 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.VelocityTracker
 import android.view.accessibility.AccessibilityManager
 import android.widget.FrameLayout
 import androidx.fragment.app.FragmentContainerView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sin
@@ -35,6 +38,8 @@ internal class ReaderSurface(context: Context) : FrameLayout(context) {
     private var scaleFactor = 1f
     private var physicalForward = true
     private var multiTouch = false
+    private var systemEdge = false
+    private var velocity: VelocityTracker? = null
     private enum class Gesture { NONE, PAGE, BRIGHTNESS, SCALE }
     private val scale = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
@@ -64,19 +69,26 @@ internal class ReaderSurface(context: Context) : FrameLayout(context) {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             downX = event.x; downY = event.y; downTime = event.eventTime
             gesture = Gesture.NONE; multiTouch = false
+            val insets = ViewCompat.getRootWindowInsets(this)?.getInsets(WindowInsetsCompat.Type.systemGestures())
+            systemEdge = readerSystemBackEdge(downX, width, insets?.left ?: 0, insets?.right ?: 0)
+            velocity?.recycle(); velocity = VelocityTracker.obtain()
             brightnessAtStart = currentBrightness()
         }
+        velocity?.addMovement(event)
         if (event.pointerCount > 1) {
             multiTouch = true
             if (gesture == Gesture.PAGE && !page.busy) { page.clear(); gesture = Gesture.NONE }
         }
-        if (gesturesEnabled && !touchExploration()) scale.onTouchEvent(event)
-        return super.dispatchTouchEvent(event)
+        if (gesturesEnabled && !systemEdge && !touchExploration()) scale.onTouchEvent(event)
+        return super.dispatchTouchEvent(event).also {
+            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) { velocity?.recycle(); velocity = null }
+        }
     }
 
     override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
+        if (systemEdge) return false
         if (page.busy) return true
-        if (!gesturesEnabled || touchExploration()) return false
+        if (!gesturesEnabled || systemEdge || touchExploration()) return false
         if (gesture != Gesture.NONE) return true
         if (multiTouch) return scale.isInProgress
         if (event.actionMasked != MotionEvent.ACTION_MOVE || event.eventTime - downTime > ViewConfiguration.getLongPressTimeout()) return false
@@ -97,6 +109,7 @@ internal class ReaderSurface(context: Context) : FrameLayout(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (systemEdge) return true
         if (page.busy) return true
         when (gesture) {
             Gesture.BRIGHTNESS -> if (event.actionMasked == MotionEvent.ACTION_MOVE) {
@@ -108,7 +121,9 @@ internal class ReaderSurface(context: Context) : FrameLayout(context) {
                 }
                 MotionEvent.ACTION_UP -> {
                     val distance = event.x - downX
-                    val committed = abs(distance) > maxOf(slop * 2, width * 0.12f) && (distance < 0) == physicalForward
+                    velocity?.computeCurrentVelocity(1000)
+                    val committed = readerCommitSwipe(distance, velocity?.xVelocity ?: 0f, width, slop,
+                        ViewConfiguration.get(context).scaledMinimumFlingVelocity.toFloat(), if (physicalForward) 1 else -1)
                     if (committed) onTurn(physicalForward != rtl) else page.finish(false)
                 }
                 MotionEvent.ACTION_CANCEL -> page.finish(false)
@@ -143,7 +158,7 @@ internal class ReaderSurface(context: Context) : FrameLayout(context) {
     fun finishTurn(success: Boolean) = page.finish(success)
     fun cancelTurn() = page.clear()
     private fun touchExploration() = (context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager).isTouchExplorationEnabled
-    override fun onDetachedFromWindow() { page.clear(); super.onDetachedFromWindow() }
+    override fun onDetachedFromWindow() { page.clear(); velocity?.recycle(); velocity = null; super.onDetachedFromWindow() }
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (w != oldw || h != oldh) page.clear()

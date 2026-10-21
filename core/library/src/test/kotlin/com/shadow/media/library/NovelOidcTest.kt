@@ -9,6 +9,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NovelOidcTest {
+    @Test fun `native covers use the API root and refresh OIDC credentials without following metadata URLs`() = runBlocking {
+        val server = MockWebServer(); server.start()
+        try {
+            server.enqueue(MockResponse().setResponseCode(401).setBody("{}"))
+            server.enqueue(MockResponse().setHeader("Content-Type", "image/png").setBody("original-image-fixture"))
+            val connection = CatalogConnection(name = "test", kind = CatalogKind.OPDS, url = server.url("/novel/").toString(), allowHttp = true, oidcIssuer = "https://id.example.com")
+            val api = NovelApi(bearer = NovelBearerTokens { _, force -> if (force) "fresh" else "expired" })
+            assertEquals("original-image-fixture", api.cover(connection, "work-1").toString(Charsets.UTF_8))
+            assertEquals("/novel/api/v1/works/work-1/cover", server.takeRequest().path)
+            assertEquals("Bearer fresh", server.takeRequest().getHeader("Authorization"))
+            server.enqueue(MockResponse().setHeader("Content-Type", "text/html").setBody("<html>login</html>"))
+            try { api.cover(connection, "work-1"); fail("HTML is not an image") } catch (_: IllegalArgumentException) { }
+        } finally { server.shutdown() }
+    }
     private fun discovery() = JSONObject().put("issuer", "https://id.example.com").put("client_id", "native-test")
         .put("resource", "https://example.com").put("redirect_uri", NOVEL_OIDC_REDIRECT).put("api_base", "https://example.com/novel/")
     @Test fun `discovery accepts a canonical same-origin prefix but rejects token export`() {

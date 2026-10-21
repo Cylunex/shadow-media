@@ -7,9 +7,10 @@ import android.os.Bundle
 import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -67,6 +68,7 @@ class NativeTextReaderActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installReaderBackNavigation({ panel != null }) { panel = null; applyWindow() }
         library = LibraryRepository(this); novel = NovelRepository(this, library); source = NativeTextSource(library, novel)
         store = ReaderSettingsStore(getSharedPreferences("reader_preferences", MODE_PRIVATE)); style = store.load()
         nativeSaved = savedInstanceState?.getString("native_locator")?.let { runCatching { JSONObject(it) }.getOrNull() }
@@ -229,7 +231,6 @@ class NativeTextReaderActivity : ComponentActivity() {
             var hits by remember { mutableStateOf<List<Pair<NativeTextChapter, Int>>>(emptyList()) }
             var searching by remember { mutableStateOf(false) }
             var searchJob by remember { mutableStateOf<Job?>(null) }
-            BackHandler(menu || panel != null) { if (panel != null) panel = null else menu = false; applyWindow() }
             Box(Modifier.fillMaxSize().background(Color(style.paper.background)).displayCutoutPadding()) {
                 AndroidView(factory = { context -> NativeTextView(context).also { reader ->
                     view = reader
@@ -241,10 +242,11 @@ class NativeTextReaderActivity : ComponentActivity() {
                         if (saveAfterLayout) { saveAfterLayout = false; positionChanged(reader.readingOffset, true) }
                     }
                     pendingShow?.let { (content, title, restored) -> reader.show(content, title, restored, style); pendingShow = null }
-                } }, modifier = Modifier.fillMaxSize())
+                } }, update = { it.gesturesEnabled = !menu && panel == null && excerpt == null && message == null }, modifier = Modifier.fillMaxSize())
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
                 fatal?.let { text -> Column(Modifier.align(Alignment.Center).padding(28.dp)) { Text(text); TextButton(onClick = { finish() }) { Text("返回书架") } } }
                 if (menu) {
+                    Box(Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { menu = false; applyWindow() })
                     Surface(Modifier.align(Alignment.TopCenter).fillMaxWidth().statusBarsPadding(), tonalElevation = 4.dp) {
                         Column(Modifier.padding(12.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) { TextButton(onClick = { finish() }) { Text("返回") }; Text(asset?.title.orEmpty(), Modifier.weight(1f), maxLines = 1) }

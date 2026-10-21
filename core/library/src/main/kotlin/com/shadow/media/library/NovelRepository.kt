@@ -21,6 +21,17 @@ class NovelRepository(private val context: Context, private val library: Library
     val oidc = NovelOidcTokens(context, store)
     private val api = api ?: NovelApi(bearer = oidc)
     private val connections = connectionLoader ?: store::load
+    private val covers = object : android.util.LruCache<String, ByteArray>(8 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: ByteArray) = value.size
+    }
+    suspend fun cover(c: CatalogConnection, workId: String, revision: String): ByteArray? {
+        val key = scopedContentId(novelScope(c), workId, revision)
+        covers.get(key)?.let { return it }
+        if (LibraryResources.offlineOnly) return null
+        return try { api.cover(c, workId).also { covers.put(key, it) } }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { null }
+    }
     val dao = database.novelDao()
     fun connection(scope: String) = connections().singleOrNull { novelScope(it) == scope } ?: error("Novel 连接已移除，离线内容与进度仍保留")
     suspend fun discover(c: CatalogConnection): JSONObject = api.json(c, listOf("integration")).also {

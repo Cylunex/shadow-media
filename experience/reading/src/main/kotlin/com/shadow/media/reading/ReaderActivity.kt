@@ -4,9 +4,10 @@ package com.shadow.media.reading
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.WindowManager
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -95,6 +96,7 @@ class ReaderActivity : FragmentActivity() {
         // The factory requires an asynchronously opened publication. Restore our versioned Locator,
         // not Android's eagerly reconstructed fragment with an unavailable publication instance.
         super.onCreate(null)
+        installReaderBackNavigation({ panel != null }) { panel = null; applyReaderWindow() }
         library = LibraryRepository(this)
         novel = NovelRepository(this, library)
         val id = intent.getStringExtra("assetId")
@@ -380,7 +382,6 @@ class ReaderActivity : FragmentActivity() {
             val progressLabel = if (partialNovel) "当前下载内容" else "全书进度"
             DisposableEffect(searchIterator) { val iterator = searchIterator; onDispose { iterator?.close() } }
             LaunchedEffect(chromeVisible, panel, readerSettings.fullScreen) { applyReaderWindow() }
-            BackHandler(enabled = chromeVisible && panel == null) { chromeVisible = false; applyReaderWindow() }
             Box(Modifier.fillMaxSize().background(Color(readerSettings.paper.background))) {
                 Column(Modifier.fillMaxSize().padding(WindowInsets.systemBarsIgnoringVisibility.union(WindowInsets.displayCutout).asPaddingValues())) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -435,7 +436,8 @@ class ReaderActivity : FragmentActivity() {
                             IconButton(onClick = { panel = "排版" }) { Icon(Icons.Rounded.TextFields, "排版与阅读设置") }
                         }
                     )
-                    Spacer(Modifier.weight(1f))
+                    Box(Modifier.weight(1f).fillMaxWidth().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null,
+                        onClickLabel = "收起阅读菜单") { chromeVisible = false; applyReaderWindow() })
                     Surface(tonalElevation = 6.dp, shadowElevation = 12.dp) {
                         Column(Modifier.heightIn(max = menuMaxHeight).verticalScroll(rememberScrollState())) {
                             novelPublication?.let { publication ->

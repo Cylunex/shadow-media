@@ -12,6 +12,9 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.VelocityTracker
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.OverScroller
 import kotlinx.coroutines.*
@@ -20,6 +23,8 @@ import kotlin.math.abs
 
 /** Three real Canvas pages, including while dragging. No browser or document screenshot. */
 internal class NativeTextView(context: Context) : View(context) {
+    var gesturesEnabled = true
+        set(value) { if (field && !value) pause(); field = value }
     var onMenu: () -> Unit = {}
     var onBoundary: (Int) -> Unit = {}
     var onPosition: (Int, Boolean) -> Unit = { _, _ -> }
@@ -50,13 +55,17 @@ internal class NativeTextView(context: Context) : View(context) {
     private var lastY = 0f
     private var dragging = false
     private var scaling = false
+    private var multiTouch = false
+    private var longPress = false
+    private var systemEdge = false
+    private var velocity: VelocityTracker? = null
     private var brightnessDrag = false
     private var gestureBrightness = .5f
     private var pinchFont = 115f
     private val scale = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
             if (!settings.pinchToResize) return false
-            scaling = true; pinchFont = settings.fontSize; cancelTurn(); return true
+            scaling = true; pinchFont = settings.fontSize; pause(); return true
         }
         override fun onScale(detector: ScaleGestureDetector): Boolean { pinchFont = (pinchFont * detector.scaleFactor).coerceIn(80f, 220f); return true }
         override fun onScaleEnd(detector: ScaleGestureDetector) { onSettings(settings.copy(fontSize = pinchFont)) }
@@ -64,13 +73,14 @@ internal class NativeTextView(context: Context) : View(context) {
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent) = true
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            if (scaling || dragging || brightnessDrag) return true
+            if (!gesturesEnabled || systemEdge || multiTouch || longPress || scaling || dragging || brightnessDrag) return true
             val direction = readerTap(e.x / width.coerceAtLeast(1), settings.tapToTurn, settings.pageMode == ReaderPageMode.SCROLL, false)
             if (direction == 0) onMenu() else turn(direction)
             return true
         }
         override fun onLongPress(e: MotionEvent) {
-            if (dragging || scaling) return
+            if (!gesturesEnabled || systemEdge || multiTouch || dragging || scaling || brightnessDrag) return
+            longPress = true
             val doc = document ?: return
             val line = doc.pages[pageIndex].lines.minByOrNull { abs(it.baseline - (e.y + scrollOffset)) } ?: return
             val text = doc.chapter.text
@@ -79,7 +89,7 @@ internal class NativeTextView(context: Context) : View(context) {
             onExcerpt(text.substring(start, end).trim(), line.start)
         }
         override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
-            if (settings.pageMode != ReaderPageMode.SCROLL || scaling || brightnessDrag) return false
+            if (settings.pageMode != ReaderPageMode.SCROLL || systemEdge || multiTouch || longPress || scaling || brightnessDrag) return false
             scrollLastY = 0
             scroller.fling(0, 0, 0, -velocityY.toInt(), 0, 0, -height * 4, height * 4)
             postInvalidateOnAnimation(); return true
@@ -196,37 +206,60 @@ internal class NativeTextView(context: Context) : View(context) {
         } else canvas.drawBitmap(current, 0f, 0f, null)
     }
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (!isEnabled || document == null || layoutJob?.isActive == true) return true
+        if (!isEnabled || !gesturesEnabled || document == null || layoutJob?.isActive == true) return true
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            pause(); downX = event.x; downY = event.y; lastY = event.y
+            dragging = false; scaling = false; brightnessDrag = false; multiTouch = false; longPress = false
+            val insets = ViewCompat.getRootWindowInsets(this)?.getInsets(WindowInsetsCompat.Type.systemGestures())
+            systemEdge = readerSystemBackEdge(downX, width, insets?.left ?: 0, insets?.right ?: 0)
+            gestureBrightness = settings.brightness.takeIf { it >= 0 } ?: (
+                android.provider.Settings.System.getInt(context.contentResolver, android.provider.Settings.System.SCREEN_BRIGHTNESS, 128) / 255f)
+            velocity?.recycle(); velocity = VelocityTracker.obtain()
+        }
+        if (systemEdge) {
+            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) { velocity?.recycle(); velocity = null }
+            return true
+        }
+        velocity?.addMovement(event)
+        if (event.actionMasked == MotionEvent.ACTION_POINTER_DOWN) { multiTouch = true; dragging = false; pause() }
         scale.onTouchEvent(event)
-        gestures.onTouchEvent(event)
+        if (!multiTouch) gestures.onTouchEvent(event)
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                animation?.cancel(); scroller.abortAnimation(); downX = event.x; downY = event.y; lastY = event.y
-                dragging = false; scaling = false; brightnessDrag = false
-                gestureBrightness = settings.brightness.takeIf { it >= 0 } ?: .5f
-            }
             MotionEvent.ACTION_MOVE -> {
-                if (scaling) return true
+                if (scaling || multiTouch || longPress) return true
                 val dx = event.x - downX; val dy = event.y - downY
-                if (!dragging && abs(dy) > slop && abs(dy) > abs(dx) * 1.3 && downX < width * .07f && settings.brightnessGesture) brightnessDrag = true
+                if (!dragging && abs(dy) > slop && abs(dy) > abs(dx) * 1.3 && downX < width * .14f && settings.brightnessGesture) brightnessDrag = true
                 if (brightnessDrag) { onSettings(settings.copy(brightness = (gestureBrightness - dy / height).coerceIn(.02f, 1f))); return true }
                 if (settings.pageMode == ReaderPageMode.SCROLL) {
                     if (abs(dy) > slop) dragging = true
                     if (dragging) scrollByPixels(lastY - event.y)
                     lastY = event.y
-                } else if (abs(dx) > slop && abs(dx) > abs(dy) * 1.3f) {
-                    dragging = true; val direction = if (dx < 0) 1 else -1
-                    if (pageIndex + direction in document!!.pages.indices) { turnDirection = direction; turnProgress = (abs(dx) / width).coerceIn(0f, .999f); invalidate() }
+                } else {
+                    if (!dragging && readerSwipe(dx, dy, slop.toFloat(), false) != 0) {
+                        dragging = true; turnDirection = if (dx < 0) 1 else -1
+                    }
+                    if (dragging) {
+                        turnProgress = if (pageIndex + turnDirection in document!!.pages.indices) (-turnDirection * dx / width).coerceIn(0f, .999f) else 0f
+                        invalidate()
+                    }
                 }
             }
             MotionEvent.ACTION_UP -> {
-                if (dragging && !scaling && !brightnessDrag && settings.pageMode != ReaderPageMode.SCROLL) {
-                    if (turnDirection != 0) animateTurn(turnProgress > .15f)
-                    else if (abs(event.x - downX) > width * .15f) onBoundary(if (event.x < downX) 1 else -1)
+                if (dragging && !multiTouch && !longPress && !scaling && !brightnessDrag && settings.pageMode != ReaderPageMode.SCROLL) {
+                    velocity?.computeCurrentVelocity(1000)
+                    val commit = readerCommitSwipe(event.x - downX, velocity?.xVelocity ?: 0f, width, slop.toFloat(),
+                        ViewConfiguration.get(context).scaledMinimumFlingVelocity.toFloat(), turnDirection)
+                    if (pageIndex + turnDirection !in document!!.pages.indices) {
+                        if (commit) onBoundary(turnDirection)
+                        pause()
+                    } else if (settings.pageMode == ReaderPageMode.NONE) {
+                        val target = pageIndex + turnDirection; pause(); if (commit) changePage(target)
+                    } else animateTurn(commit)
                 }
+                velocity?.recycle(); velocity = null
                 performClick()
             }
-            MotionEvent.ACTION_CANCEL -> { cancelTurn(); dragging = false }
+            MotionEvent.ACTION_CANCEL -> { pause(); dragging = false; velocity?.recycle(); velocity = null }
         }
         return true
     }
@@ -272,5 +305,5 @@ internal class NativeTextView(context: Context) : View(context) {
         AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> { turn(-1); true }
         else -> super.performAccessibilityAction(action, args)
     }
-    fun dispose() { cancelTurn(); scope.cancel(); clearBitmaps(); document = null }
+    fun dispose() { cancelTurn(); velocity?.recycle(); velocity = null; scope.cancel(); clearBitmaps(); document = null }
 }

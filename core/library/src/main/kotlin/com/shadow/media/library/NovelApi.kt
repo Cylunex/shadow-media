@@ -83,6 +83,11 @@ class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
             val text = response.body?.byteStream()?.use { SafeArchives.readBounded(it, 16L * 1024 * 1024) }?.toString(Charsets.UTF_8).orEmpty()
             if (text.isBlank() || text == "null") JSONObject() else JSONObject(text)
         }
+    suspend fun cover(c: CatalogConnection, workId: String): ByteArray =
+        execute(c, url(c, listOf("works", workId, "cover")), "GET", null) { response ->
+            require(response.body?.contentType()?.type == "image") { "Novel 封面格式无效" }
+            SafeArchives.readBounded(requireNotNull(response.body).byteStream(), 4L * 1024 * 1024)
+        }
     suspend fun download(c: CatalogConnection, path: List<String>, target: File, query: List<Pair<String, String>> = emptyList()) = execute(c, url(c, path, query), "GET", null) { response ->
         val input = requireNotNull(response.body).byteStream()
         input.use { source -> target.outputStream().use { sink ->

@@ -7,12 +7,14 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -55,6 +57,7 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     var membershipTotal by remember { mutableIntStateOf(0) }
     var deletedLists by remember { mutableStateOf(false) }
     var disconnectedDownloads by remember { mutableStateOf<List<com.shadow.media.database.LibraryAssetEntity>>(emptyList()) }
+    val pageStates = rememberSaveableStateHolder()
     val login = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         try {
             connections = repository.store.load()
@@ -85,11 +88,22 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     }
     suspend fun load(next: Boolean = false) {
         val c = connection ?: return
+        val requestedRoute = route
+        val requestedQuery = query
         if (route.kind == "offline") { disconnectedDownloads = repository.downloaded(novelScope(c)); data = JSONObject(); return }
         val start = if (next) offset + PAGE else 0
         val pagination = listOf("offset" to start.toString(), "limit" to PAGE.toString())
         val result = when (route.kind) {
-            "home" -> repository.get(c, listOf("city", "home"))
+            "home" -> supervisorScope {
+                suspend fun extra(path: List<String>, parameters: List<Pair<String, String>>): JSONObject = try { repository.get(c, path, parameters) }
+                    catch (e: CancellationException) { throw e } catch (_: Exception) { JSONObject() }
+                val home = async { repository.get(c, listOf("city", "home")) }
+                val history = async { extra(listOf("works"), listOf("view" to "history", "limit" to "1")) }
+                val lists = async { extra(listOf("booklists"), listOf("limit" to "3")) }
+                home.await().put("_continue", history.await().novelObjects("items").firstOrNull())
+                    .put("_booklists", lists.await().optJSONArray("items") ?: JSONArray())
+            }
+            "rankings" -> JSONObject()
             "works" -> repository.get(c, listOf("works"), query.copy(view = route.id).parameters() + pagination)
             "authors" -> repository.get(c, listOf("authors"), listOf("q" to search) + pagination)
             "author" -> repository.get(c, listOf("authors", "detail"), listOf("name" to route.name, "q" to search, "sort" to query.sort, "serial_status" to query.serialStatus) + pagination)
@@ -100,6 +114,7 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
             else -> error("未知 Novel 页面")
         }
         currentCoroutineContext().ensureActive()
+        if (connection?.id != c.id || route != requestedRoute || query != requestedQuery) return
         if (next) {
             val combined = JSONArray()
             (data?.novelObjects("items").orEmpty() + result.novelObjects("items")).forEach(combined::put)
@@ -136,19 +151,22 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     BackHandler(onBack = ::back)
     val c = connection
     val editable = data?.has("_cached_at") != true && !LibraryResources.offlineOnly
+    CompositionLocalProvider(LocalNovelArtwork provides c?.let { NovelArtwork(repository, it) }) {
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         TopAppBar(title = { Text(if (c == null) "Shadow Novel" else when (route.kind) {
-            "work" -> data?.optString("title") ?: "作品"; "author" -> route.name; "list" -> data?.optString("title") ?: "书单"; "contents" -> "版本目录"; else -> c.name
+            "work" -> data?.optString("title") ?: "作品"; "author" -> route.name; "list" -> data?.optString("title") ?: "书单"; "contents" -> "版本目录"
+            "home" -> "书城"; "lists" -> "我的书单"; "rankings" -> "排行榜"; "offline" -> "离线阅读"
+            "works" -> if (route.id == "shelf") "我的书架" else if (route.id == "history") "阅读历史" else "发现好书"; else -> c.name
         }, maxLines = 1) }, navigationIcon = { IconButton(onClick = ::back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") } }, actions = {
             if (c == null) IconButton(onClick = { editingConnection = null; connectionEditor = true }) { Icon(Icons.Rounded.Add, "添加 Novel") }
-            else IconButton(enabled = !busy, onClick = { execute { load() } }) { Icon(Icons.Rounded.Refresh, "刷新") }
+            else if (route.kind != "rankings") IconButton(enabled = !busy, onClick = { execute { load() } }) { Icon(Icons.Rounded.Refresh, "刷新") }
         })
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         error?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.error) }
         if (error != null && c?.oidcIssuer?.isNotBlank() == true) TextButton(enabled = !busy, onClick = { signIn(c.name, c.url, c) }) { Text("重新登录统一账号") }
         message?.let { Text(it, Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.primary) }
         if (c == null) LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item { Text("原生浏览书城、书单和作家，使用 Readium 阅读。输入你自己的 Novel 服务根地址；凭据加密保存在本机。") }
+            item { Text("连接自己的小说服务，在这里找书、管理书单与排行榜，接着上次的位置继续读。") }
             items(connections, key = { it.id }) { item -> Card {
                 Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(enabled = !busy, onClick = { execute { repository.discover(item); connection = item; route = NovelRoute("home"); stack = emptyList(); NovelRepository.schedule(context) } }, modifier = Modifier.weight(1f)) { Text(item.name) }
@@ -162,10 +180,23 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                 }
             } }
         } else {
-            FlowRow(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf("书城" to NovelRoute("home"), "全部" to NovelRoute("works", "city"), "搜索" to NovelRoute("works", "search"), "热度" to NovelRoute("works", "city"), "作家" to NovelRoute("authors"), "书单" to NovelRoute("lists"), "书架" to NovelRoute("works", "shelf"), "历史" to NovelRoute("works", "history"), "离线" to NovelRoute("offline")).forEach { (title, target) ->
-                    AssistChip(enabled = !busy, onClick = { stack = emptyList(); search = ""; if (title == "热度") query = query.copy(sort = "popularity"); if (route == target) execute { load() } else { route = target; data = null } }, label = { Text(title) })
-                }
+            val roots = listOf("书城" to NovelRoute("home"), "书架" to NovelRoute("works", "shelf"), "书单" to NovelRoute("lists"), "排行" to NovelRoute("rankings"))
+            val root = stack.firstOrNull() ?: route
+            val tab = when { root.kind == "rankings" -> 3; root.kind in setOf("lists", "list") -> 2; root.kind == "offline" || root.kind == "works" && root.id in setOf("shelf", "history") -> 1; else -> 0 }
+            PrimaryScrollableTabRow(selectedTabIndex = tab, edgePadding = 20.dp) {
+                roots.forEachIndexed { i, (title, target) -> Tab(selected = i == tab, enabled = !busy,
+                    onClick = { stack = emptyList(); search = ""; query = NovelQuery(); if (route == target) execute { load() } else { route = target; data = null } }, text = { Text(title) }) }
+            }
+            if (route.kind != "rankings") LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(listOf("分类找书", "搜索", "作家", "历史", "离线")) { label -> AssistChip(enabled = !busy, onClick = {
+                    when (label) {
+                        "分类找书" -> { query = NovelQuery(); navigate(NovelRoute("works", "city")); filter = true }
+                        "搜索" -> { query = NovelQuery(); navigate(NovelRoute("works", "search")) }
+                        "作家" -> navigate(NovelRoute("authors"))
+                        "历史" -> { query = NovelQuery(); navigate(NovelRoute("works", "history")) }
+                        else -> navigate(NovelRoute("offline"))
+                    }
+                }, label = { Text(label) }) }
             }
             if (data?.has("_cached_at") == true) Text("本机缓存 · ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(data!!.getLong("_cached_at")))}", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodySmall)
             if (route.kind in setOf("works", "authors", "author", "lists", "list")) Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -173,7 +204,24 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                 TextButton(enabled = !busy, onClick = { if (route.kind == "works" && query.q != search) query = query.copy(q = search) else execute { load() } }) { Text("搜索") }
                 if (route.kind == "works") IconButton(onClick = { filter = true }) { Icon(Icons.Rounded.FilterList, "筛选与排序") }
             }
-            LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            pageStates.SaveableStateProvider("${c.id}:${route}") {
+            if (route.kind == "rankings") NovelRankingsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = { title ->
+                query = NovelQuery(q = title); navigate(NovelRoute("works", "search")); search = title
+            }, onLogin = { signIn(c.name, c.url, c) }) else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (route.kind == "home") {
+                    item { Text(c.name, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    data?.optJSONObject("_continue")?.let { work -> item {
+                        FilledTonalButton(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = { open(work.getString("id")) }) { Text("继续阅读 · ${work.optString("title")}", maxLines = 1) }
+                    } }
+                    if (data?.novelObjects("_booklists")?.isNotEmpty() == true) {
+                        item { Text("我的主题书单", style = MaterialTheme.typography.titleLarge) }
+                        item { LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            items(data!!.novelObjects("_booklists"), key = { it.getString("id") }) { list ->
+                                Box(Modifier.width(300.dp)) { NovelBooklistCard(list, !busy, { navigate(NovelRoute("list", list.getString("id"))) }) }
+                            }
+                        } }
+                    }
+                }
                 if (route.kind == "offline") {
                     item { Text("已下载的章节窗口可离线阅读；不代表已下载全书。", style = MaterialTheme.typography.bodySmall) }
                     items(disconnectedDownloads, key = { it.id }) { asset -> Card(onClick = { context.startActivity(Intent(context, ReaderActivity::class.java).putExtra("assetId", asset.id)) }) { Text(asset.title, Modifier.fillMaxWidth().padding(20.dp)) } }
@@ -182,16 +230,25 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                     item { Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(section.optString("title"), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                         TextButton(enabled = !busy, onClick = {
-                            val id = section.optString("id")
-                            query = NovelQuery(sort = if (id == "popular") "popularity" else "recent", serialStatus = if (id == "completed") "completed" else "",
-                                availability = if (id in setOf("completed", "shuffle")) "readable" else "", categories = if (id.startsWith("category-")) listOf(id.removePrefix("category-")) else emptyList())
+                            query = novelSectionQuery(section)
                             navigate(NovelRoute("works", "city"))
                         }) { Text("全部 ${section.optInt("total")}") }
                     } }
-                    items(section.novelObjects("items"), key = { section.optString("id") + it.getString("id") }) { work -> NovelWorkCard(work, enabled = !busy) { navigate(NovelRoute("work", work.getString("id"))) } }
+                    item(key = "section:${section.optString("id")}") { NovelBookStrip(section.novelObjects("items"), !busy) { navigate(NovelRoute("work", it)) } }
+                }
+                if (route.kind == "home" && !busy && data != null && data!!.novelObjects("sections").isEmpty()) item {
+                    Text("书城里还没有作品，收录到 Novel 的作品会出现在这里。", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (route.kind == "work") data?.let { work ->
-                    item { Text(work.optString("author").ifBlank { "作者未知" }); Text(work.optString("description").ifBlank { "暂无简介" }, Modifier.padding(vertical = 12.dp))
+                    item { Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            NovelBookCover(work, Modifier.width(94.dp))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(work.optString("title"), style = MaterialTheme.typography.titleLarge)
+                                Text(work.optString("author").ifBlank { "作者未知" })
+                                Text(if (work.novelStrings("availability") == listOf("metadata_only")) "已收录资料 · 暂无可读版本" else "已有阅读版本", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        Text(work.optString("description").ifBlank { "暂无简介" }, Modifier.padding(vertical = 12.dp))
                         Text(listOf(work.optString("category"), serialLabel(work.optString("serial_status")), work.novelStrings("genre_tags").joinToString(" · ")).filter(String::isNotBlank).joinToString(" · "))
                         if (work.optString("aliases").isNotBlank()) Text("别名：${work.optString("aliases")}", style = MaterialTheme.typography.bodySmall)
                         work.optJSONObject("reading_summary")?.let { Text("${it.optInt("versions")} 个版本 · 最多 ${it.optInt("chapters")} 章 · 本地约 ${it.optLong("local_characters")} 字", style = MaterialTheme.typography.bodySmall) }
@@ -199,7 +256,7 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                             Text("热度 ${work.opt("popularity_score")} · ${popularity.optString("source")}\n原始${popularity.optString("metric")}：${popularity.optString("raw").ifBlank { popularity.opt("value")?.toString().orEmpty() }}", style = MaterialTheme.typography.bodySmall)
                             if (popularity.optDouble("observed_at", 0.0) > 0) Text("观测于 ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date((popularity.optDouble("observed_at") * 1000).toLong()))}", style = MaterialTheme.typography.bodySmall)
                         }
-                        Row { Button(enabled = !busy, onClick = { open(route.id) }) { Text(if (work.optJSONObject("progress") != null) "继续阅读" else "开始阅读") }
+                        Row { Button(enabled = !busy && work.novelStrings("availability") != listOf("metadata_only"), onClick = { open(route.id) }) { Text(if (work.optJSONObject("progress") != null) "继续阅读" else "开始阅读") }
                             if (!work.optBoolean("author_unknown") && work.optString("author").isNotBlank()) TextButton(enabled = !busy, onClick = { navigate(NovelRoute("author", name = work.getString("author"))) }) { Text("查看作家") } }
                     }
                     item {
@@ -256,10 +313,9 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                     when (route.kind) {
                         "works", "author" -> NovelWorkCard(item, enabled = !busy) { navigate(NovelRoute("work", item.getString("id"))) }
                         "authors" -> Card(onClick = { navigate(NovelRoute("author", name = item.getString("name"))) }, enabled = !busy) { Column(Modifier.fillMaxWidth().padding(18.dp)) { Text(item.getString("name"), style = MaterialTheme.typography.titleMedium); Text("${item.optInt("work_count")} 部作品"); if (item.optString("biography").isNotBlank()) Text(item.optString("biography"), maxLines = 3) } }
-                        "lists" -> Card(enabled = !busy, onClick = { if (!deletedLists) navigate(NovelRoute("list", item.getString("id"))) }) { Column(Modifier.fillMaxWidth().padding(18.dp)) {
-                            Text(item.optString("title"), style = MaterialTheme.typography.titleMedium); Text("${item.optInt("count")} 部 · ${item.optString("description")}"); Text(item.novelObjects("preview").joinToString(" · ") { it.optString("title") }, maxLines = 2)
+                        "lists" -> NovelBooklistCard(item, !busy, { if (!deletedLists) navigate(NovelRoute("list", item.getString("id"))) }) {
                             if (deletedLists) TextButton(enabled = editable && !busy, onClick = { execute { change(listOf("booklists", item.getString("id"), "restore"), "POST") } }) { Text("恢复书单") }
-                        } }
+                        }
                         "list" -> Column {
                             val work = item.getJSONObject("work"); val path = listOf("booklists", route.id, "items", work.getString("id"))
                             NovelWorkCard(work, enabled = !busy) { navigate(NovelRoute("work", work.getString("id"))) }
@@ -275,11 +331,16 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                     }
                 }
                 if (route.kind in setOf("works", "authors", "author", "lists", "list", "contents")) {
+                    if (!busy && data != null && data!!.novelObjects("items").isEmpty()) item {
+                        Text(when (route.kind) { "lists" -> if (deletedLists) "没有已删除的书单" else "还没有书单，点新建书单，收藏同一主题下的好书。"; "list" -> "书单里还没有作品，可在作品详情里加入书单。"; else -> "这里暂时没有内容，试试其他分类或关键词。" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     item { Text("共 ${data?.optInt("total") ?: 0} 项", style = MaterialTheme.typography.bodySmall) }
                     if ((data?.novelObjects("items")?.size ?: 0) < (data?.optInt("total") ?: 0)) item { OutlinedButton(enabled = !busy, onClick = { execute { load(true) } }, modifier = Modifier.fillMaxWidth()) { Text("加载更多") } }
                 }
             }
+            }
         }
+    }
     }
     if (connectionEditor) NovelConnectionEditor(editingConnection, busy, error, onDismiss = { connectionEditor = false }, onLogin = { name, url -> signIn(name, url, editingConnection) }, onSave = { edited -> execute {
         repository.discover(edited)
@@ -306,18 +367,6 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
 
 private const val PAGE = 48
 private fun splitTags(text: String) = text.split(',', '，').map(String::trim).filter(String::isNotBlank).distinct()
-private fun serialLabel(value: String) = when(value) { "completed" -> "完结"; "ongoing" -> "连载"; "hiatus" -> "停更"; else -> "状态未知" }
-@Composable private fun NovelWorkCard(work: JSONObject, enabled: Boolean, onClick: () -> Unit) {
-    Card(enabled = enabled, onClick = onClick) { Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-        Text(work.optString("title"), style = MaterialTheme.typography.titleMedium)
-        Text(listOf(work.optString("author"), work.optString("category"), serialLabel(work.optString("serial_status"))).filter(String::isNotBlank).joinToString(" · "), style = MaterialTheme.typography.bodySmall)
-        if (work.optString("description").isNotBlank()) Text(work.optString("description"), maxLines = 3, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(work.novelStrings("genre_tags").joinToString(" · "), style = MaterialTheme.typography.bodySmall)
-        val score = work.opt("popularity_score")
-        if (score != null && score != JSONObject.NULL) Text("热度 $score · ${work.optJSONObject("popularity")?.optString("source").orEmpty()}", style = MaterialTheme.typography.labelMedium)
-        if (work.optInt("update_count") > 0) Text("${work.optInt("update_count")} 章更新", color = MaterialTheme.colorScheme.primary)
-    } }
-}
 
 @Composable private fun NovelConnectionEditor(existing: CatalogConnection?, busy: Boolean, operationError: String?, onDismiss: () -> Unit, onLogin: (String, String) -> Unit, onSave: (CatalogConnection) -> Unit) {
     var name by remember { mutableStateOf(existing?.name ?: "Shadow Novel") }

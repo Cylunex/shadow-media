@@ -61,3 +61,13 @@ internal fun readerSwipe(dx: Float, dy: Float, threshold: Float, rtl: Boolean): 
     (dx < 0) != rtl -> 1
     else -> -1
 }
+
+/** Gesture navigation owns these physical edges; brightness and page turns must leave them alone. */
+internal fun readerSystemBackEdge(x: Float, width: Int, left: Int, right: Int) =
+    left > 0 && x < left || right > 0 && x > width - right
+
+internal fun readerCommitSwipe(dx: Float, velocityX: Float, width: Int, slop: Float, minimumFling: Float, direction: Int): Boolean {
+    val distance = -direction * dx
+    val velocity = -direction * velocityX
+    return distance > maxOf(slop * 2, width * 0.12f) || distance > slop && velocity > minimumFling
+}

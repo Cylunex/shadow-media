@@ -4,6 +4,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ReaderSettingsTest {
+    @Test fun shortQuickSwipesCommitButNoiseAndDirectionReversalsDoNot() {
+        assertTrue(readerCommitSwipe(-30f, -1200f, 432, 8f, 50f, 1))
+        assertFalse(readerCommitSwipe(-30f, -10f, 432, 8f, 50f, 1))
+        assertFalse(readerCommitSwipe(-3f, -2000f, 432, 8f, 50f, 1))
+        assertFalse(readerCommitSwipe(40f, 1500f, 432, 8f, 50f, 1))
+        assertTrue(readerCommitSwipe(100f, 0f, 432, 8f, 50f, -1))
+    }
+    @Test fun systemGestureEdgesAreReservedOnlyWhenAndroidReportsAnInset() {
+        assertTrue(readerSystemBackEdge(10f, 432, 24, 24))
+        assertTrue(readerSystemBackEdge(425f, 432, 24, 24))
+        assertFalse(readerSystemBackEdge(45f, 432, 24, 24))
+        assertFalse(readerSystemBackEdge(0f, 432, 0, 0))
+    }
     @Test fun centerAlwaysOpensMenuAndDisabledEdgesDoNotTurn() {
         for (x in listOf(0.3f, 0.5f, 0.7f)) {
             assertEquals(0, readerTap(x, true, false, false))
