@@ -2,7 +2,7 @@
 
 来源：[LegadoTeam/legado](https://github.com/LegadoTeam/legado)，固定版本 `5002ba71f6babf70704f2a0a26cff6aeafd95e3b`，GPL-3.0（许可全文见 LICENSE）。版权归 Legado 原作者及贡献者。
 
-移植文件位于 `experience/reading/src/main/kotlin/top/cylunex/shadowmedia/reading/legado/`：
+移植文件位于 `experience/reading/src/main/kotlin/com/shadow/media/reading/legado/`：
 
 - `ZhLayout.kt`、`HangingLineWidth.kt`：中文断行、标点避头尾。修复最终行与回查时 UTF-16 偏移和字簇下标混用，字宽缓存增加并发保护。
 - `LineColumnLayout.kt`：原生行内字坐标与两端对齐。

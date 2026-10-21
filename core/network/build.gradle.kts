@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "top.cylunex.shadowmedia.network"
+    namespace = "com.shadow.media.network"
     compileSdk = 36
 
     defaultConfig {

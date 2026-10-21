@@ -49,7 +49,7 @@ def main():
     if not analyzer: raise SystemExit('Set Android SDK/PATH to locate apkanalyzer; manifest verification is incomplete.')
     def manifest(field):
         return subprocess.run([analyzer, 'manifest', field, str(args.apk)], capture_output=True, text=True, check=True).stdout.strip()
-    assert manifest('application-id') == 'top.cylunex.shadowmedia', 'Unexpected release application id'
+    assert manifest('application-id') == 'com.shadow.media', 'Unexpected release application id'
     assert manifest('debuggable') == 'false', 'Debuggable package is not a release'
     signer = shutil.which('apksigner')
     if not signer:

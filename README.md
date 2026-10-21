@@ -136,6 +136,7 @@ docs/            架构决策、播放安全与迭代路线
 ```
 
 打开应用后输入自己的 Emby 地址和用户凭据。仓库不包含真实服务地址、Token 或签名材料。
+应用包名统一使用 `com.shadow.media`，与服务域名分开；服务地址在应用内配置，部署环境与凭据只保存在仓库外或被 Git 忽略的本地配置中。
 
 也可以在登录页选择“打开 OpenList / WebDAV / SMB”，完全跳过 Emby。OpenList 填站点根地址，
 WebDAV 填完整 DAV 根地址，SMB 填主机和共享名；配置细节见 [网络媒体库](docs/NETWORK_LIBRARIES.md)。

@@ -3,6 +3,10 @@
 .idea/
 **/build/
 local.properties
+*.local.properties
+.env
+.env.*
+!.env.example
 *.iml
 *.jks
 *.keystore

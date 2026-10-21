@@ -4,7 +4,7 @@
 
 ## 工程
 
-- `benchmark` 是独立 `com.android.test` 工程；目标为 `top.cylunex.shadowmedia.benchmark`，采用 release 派生配置、混淆和测试签名，应用数据与正式包隔离。
+- `benchmark` 是独立 `com.android.test` 工程；目标为 `com.shadow.media.benchmark`，采用 release 派生配置、混淆和测试签名，应用数据与正式包隔离。
 - 只有 `app/src/benchmark` 声明测试 Application/准备 Activity 和回环 HTTP 服务器。种入一万首本地曲目、两个测试账号、分页视频与固定阅读样本；准备数据发生在计时区间外。
 - Macrobenchmark 覆盖冷/暖启动、万曲滚动、视频目录/播放、EPUB/目录、音频队列和账号切换。UI 步骤缺失会失败，不能以空启动代替业务路径。
 - `BaselineProfileGenerator` 分别采集 startup 和业务路径；`profileinstaller` 已接入正式应用。只有设备实际产生的文本才可导入，不手写“假” profile。
@@ -31,12 +31,12 @@ python3 scripts/verify-release.py
 下列 connected 任务会构建和安装 APK；遵守工作区约定，不能随普通代码提交自动执行。
 
 ```sh
-./gradlew :benchmark:connectedBenchmarkAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=top.cylunex.shadowmedia.perftest.BaselineProfileGenerator
+./gradlew :benchmark:connectedBenchmarkAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.shadow.media.perftest.BaselineProfileGenerator
 # 将上一步真实输出复制到本机工作目录后再导入；参数必须是实际生成文件。
 python3 scripts/import-baseline-profile.py PATH_TO_GENERATED_STARTUP_PROFILE --startup
 python3 scripts/import-baseline-profile.py PATH_TO_GENERATED_STARTUP_PROFILE PATH_TO_GENERATED_CRITICAL_PROFILE
-./gradlew :benchmark:connectedBenchmarkAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=top.cylunex.shadowmedia.perftest.CriticalJourneyBenchmark
-./gradlew :benchmark:connectedBenchmarkAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=top.cylunex.shadowmedia.perftest.AccessibilityJourneyTest
+./gradlew :benchmark:connectedBenchmarkAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.shadow.media.perftest.CriticalJourneyBenchmark
+./gradlew :benchmark:connectedBenchmarkAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.shadow.media.perftest.AccessibilityJourneyTest
 ```
 
 导入工具排除测试 Application/服务器/准备 Activity 的规则。生成后核对混淆映射，并分别以 `CompilationMode.None` 和安装 profile 的模式做同设备对比；当前测试工程的业务用例使用 Partial + warmup，不把暖机收益冒充 profile 收益。

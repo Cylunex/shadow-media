@@ -9,7 +9,8 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="top.cylunex.shadowmedia.novel" android:path="/oauth2redirect" />
+                <!-- Private-use redirect URIs have no host; Android matches the scheme here. -->
+                <data android:scheme="com.shadow.media.novel" />
             </intent-filter>
         </activity>
         <service android:name="androidx.work.impl.foreground.SystemForegroundService" android:foregroundServiceType="dataSync" tools:node="merge" />

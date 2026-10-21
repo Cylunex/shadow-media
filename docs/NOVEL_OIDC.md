@@ -2,7 +2,16 @@
 
 在「来源 → Novel → 添加」输入自己的 HTTPS 小说服务地址，选择「统一账号」，点击「登录统一账号」。应用会打开系统浏览器，完成统一身份服务登录后返回原生书城；输入服务根域名或 `/novel/` 根均可，应用读取服务端公布的规范 API 根。
 
-登录使用 AppAuth Authorization Code + PKCE（S256），独立 public client，不内嵌域名、client secret 或账号密码。服务端需要部署[Novel 原生认证协议](https://github.com/Cylunex/shadow-novel/blob/main/docs/authentication.md)。回调 URI 为 `top.cylunex.shadowmedia.novel:/oauth2redirect`。
+登录使用 AppAuth Authorization Code + PKCE（S256），独立 public client，不内嵌域名、client secret 或账号密码。服务端需要部署[Novel 原生认证协议](https://github.com/Cylunex/shadow-novel/blob/main/docs/authentication.md)。回调 URI 为 `com.shadow.media.novel:/oauth2redirect`。
+
+## 应用标识与服务配置
+
+- 应用 ID、模块包名和源码目录统一以 `com.shadow.media` 为根，不随部署域名变化。
+- 服务域名只来自用户在「来源」中输入的地址；issuer、client ID、resource 与规范 API 根从该服务的 `auth/native/config` 读取。实际部署域名与凭据不进入仓库，服务端通过仓库外环境文件配置。
+- 上述回调是应用协议标识，不是服务地址。客户端常量、Manifest、Novel 服务端返回值和身份服务的客户端注册必须一致；部署时需把身份服务回调注册同步为新值。
+- 应用 ID 变更后，Android 将其视为独立应用，不能直接覆盖旧包或读取旧包的数据库、离线文件与 Keystore 凭据。旧安装和数据保留，新包需要重新配置来源并登录。
+
+仓库忽略 `.env`、`.env.*`、`local.properties` 与 `*.local.properties`；只允许提交不含真实地址或凭据的 `.env.example` 等示例。应用运行时仍使用上述来源配置，不自动读取开发机环境文件。
 
 ## 会话与数据
 

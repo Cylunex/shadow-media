@@ -3,7 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 android {
-    namespace = "top.cylunex.shadowmedia.library"
+    namespace = "com.shadow.media.library"
     compileSdk = 36
     defaultConfig { minSdk = 26 }
     compileOptions {

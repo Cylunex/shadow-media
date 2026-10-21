@@ -34,18 +34,18 @@
 | 位置 | 实际现状 | 对改造的影响 |
 | --- | --- | --- |
 | [settings.gradle.kts](../settings.gradle.kts) | app + model/provider/database/network/playback，共六个模块 | 先在原模块增加契约，按实际依赖再拆分 |
-| [Models.kt](../core/model/src/main/kotlin/top/cylunex/shadowmedia/model/Models.kt) | `MediaKey` 是 provider/item 二元组；条目类型为字符串；进度为毫秒 | 新增类型化领域模型，旧序列化标识不能直接替换 |
-| [MediaProvider.kt](../core/provider/src/main/kotlin/top/cylunex/shadowmedia/provider/MediaProvider.kt) | home/browse/search/detail/resolve；resolve 只返回播放候选 | 引入可返回五类计划的 OpenProvider |
-| [UnifiedProviders.kt](../app/src/main/kotlin/top/cylunex/shadowmedia/UnifiedProviders.kt) | Emby/直播适配器仍在 app；Emby 默认查询视频类；部分详情依赖内存缓存 | 补冷启动详情回源，音频需新增查询/映射，不是直接放开 Tab |
-| [MainViewModel.kt](../app/src/main/kotlin/top/cylunex/shadowmedia/MainViewModel.kt) | 1,626 行；`syncProviders()` 只注册当前 Emby 会话 | 多登录切换不等于多 Emby 同时聚合，需新增连接/账号级注册 |
-| [ShadowMediaRoot.kt](../app/src/main/kotlin/top/cylunex/shadowmedia/ShadowMediaRoot.kt) | 1,744 行；顶层 Screen 与大 UiState 集中控制 | 拆屏幕状态与导航，不把阅读状态再放进 MainUiState |
-| [AggregateSearchEngine.kt](../core/provider/src/main/kotlin/top/cylunex/shadowmedia/provider/AggregateSearchEngine.kt) | 并发且失败隔离，但等全部任务返回；没有独立超时和结果增量输出；丢弃各来源下一页游标 | 五类聚合前补渐进结果、取消、超时、来源游标 |
-| [NetworkStorageRepository.kt](../core/network/src/main/kotlin/top/cylunex/shadowmedia/network/NetworkStorageRepository.kt) | 已有 SMB 随机读与 HTTP 存储；文件筛选/投影围绕 Video/Strm；目录搜索有扫描预算 | 复用传输，不把增加扩展名误当成阅读支持 |
-| [ShadowMediaDatabase.kt](../core/database/src/main/kotlin/top/cylunex/shadowmedia/database/ShadowMediaDatabase.kt) | Room schema v3，有 v1→v2→v3 迁移；历史、收藏、时刻、片段等已持久化 | 增量迁移保留原记录，不能 destructive migration |
-| [PersistentPlaybackOutbox.kt](../core/network/src/main/kotlin/top/cylunex/shadowmedia/network/PersistentPlaybackOutbox.kt) | Outbox 实为 SharedPreferences JSON，最多 500 条；按 server/user 匹配 | 通用 Outbox 需要跨存储导入及单写者切换，不能只改 Room 表 |
+| [Models.kt](../core/model/src/main/kotlin/com/shadow/media/model/Models.kt) | `MediaKey` 是 provider/item 二元组；条目类型为字符串；进度为毫秒 | 新增类型化领域模型，旧序列化标识不能直接替换 |
+| [MediaProvider.kt](../core/provider/src/main/kotlin/com/shadow/media/provider/MediaProvider.kt) | home/browse/search/detail/resolve；resolve 只返回播放候选 | 引入可返回五类计划的 OpenProvider |
+| [UnifiedProviders.kt](../app/src/main/kotlin/com/shadow/media/UnifiedProviders.kt) | Emby/直播适配器仍在 app；Emby 默认查询视频类；部分详情依赖内存缓存 | 补冷启动详情回源，音频需新增查询/映射，不是直接放开 Tab |
+| [MainViewModel.kt](../app/src/main/kotlin/com/shadow/media/MainViewModel.kt) | 1,626 行；`syncProviders()` 只注册当前 Emby 会话 | 多登录切换不等于多 Emby 同时聚合，需新增连接/账号级注册 |
+| [ShadowMediaRoot.kt](../app/src/main/kotlin/com/shadow/media/ShadowMediaRoot.kt) | 1,744 行；顶层 Screen 与大 UiState 集中控制 | 拆屏幕状态与导航，不把阅读状态再放进 MainUiState |
+| [AggregateSearchEngine.kt](../core/provider/src/main/kotlin/com/shadow/media/provider/AggregateSearchEngine.kt) | 并发且失败隔离，但等全部任务返回；没有独立超时和结果增量输出；丢弃各来源下一页游标 | 五类聚合前补渐进结果、取消、超时、来源游标 |
+| [NetworkStorageRepository.kt](../core/network/src/main/kotlin/com/shadow/media/network/NetworkStorageRepository.kt) | 已有 SMB 随机读与 HTTP 存储；文件筛选/投影围绕 Video/Strm；目录搜索有扫描预算 | 复用传输，不把增加扩展名误当成阅读支持 |
+| [ShadowMediaDatabase.kt](../core/database/src/main/kotlin/com/shadow/media/database/ShadowMediaDatabase.kt) | Room schema v3，有 v1→v2→v3 迁移；历史、收藏、时刻、片段等已持久化 | 增量迁移保留原记录，不能 destructive migration |
+| [PersistentPlaybackOutbox.kt](../core/network/src/main/kotlin/com/shadow/media/network/PersistentPlaybackOutbox.kt) | Outbox 实为 SharedPreferences JSON，最多 500 条；按 server/user 匹配 | 通用 Outbox 需要跨存储导入及单写者切换，不能只改 Room 表 |
 | [AndroidManifest.xml](../app/src/main/AndroidManifest.xml) | 没有后台媒体 Service/前台媒体服务权限 | MediaSession 已有不代表听书后台链路已有 |
-| [Handoff.kt](../app/src/main/kotlin/top/cylunex/shadowmedia/Handoff.kt) | `shadowmedia://play` 携带 provider/item/position | 这是接力链接，不是进度同步服务；本地连接 ID 也不天然跨设备一致 |
-| [ShadowMediaTheme.kt](../app/src/main/kotlin/top/cylunex/shadowmedia/ui/theme/ShadowMediaTheme.kt) | 已有 Material Icons 和深绿主题；定义了浅色方案但实际固定使用深色方案 | 延续现有图标体系；真正实现主题切换，不重新引入荧光黄绿 |
+| [Handoff.kt](../app/src/main/kotlin/com/shadow/media/Handoff.kt) | `shadowmedia://play` 携带 provider/item/position | 这是接力链接，不是进度同步服务；本地连接 ID 也不天然跨设备一致 |
+| [ShadowMediaTheme.kt](../app/src/main/kotlin/com/shadow/media/ui/theme/ShadowMediaTheme.kt) | 已有 Material Icons 和深绿主题；定义了浅色方案但实际固定使用深色方案 | 延续现有图标体系；真正实现主题切换，不重新引入荧光黄绿 |
 
 ### 2.1 原样保留的资产
 

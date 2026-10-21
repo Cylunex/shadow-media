@@ -1,0 +1,505 @@
+package com.shadow.media.playback
+
+import android.content.Context
+import android.os.SystemClock
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
+import androidx.media3.common.MediaMetadata
+import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.MediaSession
+import java.io.Closeable
+import java.util.concurrent.TimeUnit
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Dispatcher
+import okhttp3.OkHttpClient
+import com.shadow.media.model.EmbySession
+import com.shadow.media.model.PlayMethod
+import com.shadow.media.model.PlaybackCandidate
+import com.shadow.media.model.PlaybackEvent
+import com.shadow.media.model.PlaybackPlan
+import com.shadow.media.model.NetworkPolicy
+import com.shadow.media.model.embyTicksToMilliseconds
+import com.shadow.media.model.millisecondsToEmbyTicks
+import com.shadow.media.network.ClientIdentity
+import com.shadow.media.network.PlaybackOutbox
+import com.shadow.media.network.PlaybackReport
+
+data class PlaybackDiagnostics(
+    val method: PlayMethod,
+    val candidateIndex: Int,
+    val candidateCount: Int,
+    val requestHost: String,
+    val container: String?,
+    val videoType: String?,
+    val videoCodec: String?,
+    val audioCodec: String?,
+    val sourceCount: Int,
+    val supportsDirectPlay: Boolean,
+    val supportsDirectStream: Boolean,
+    val supportsTranscoding: Boolean,
+    val resolvedHost: String? = null,
+    val httpStatus: Int? = null,
+    val redirectCount: Int = 0,
+    val networkAttempt: Int = 1,
+    val responseHeadersMs: Long? = null,
+    val lastError: String? = null,
+)
+
+class PlaybackRuntime(
+    context: Context,
+    private val session: EmbySession,
+    private val plan: PlaybackPlan,
+    private val playbackOutbox: PlaybackOutbox,
+    clientIdentity: ClientIdentity,
+    startPositionMs: Long,
+    private val mediaTitle: String = "Shadow Media",
+    private val startPlayWhenReady: Boolean = true,
+    private val telemetrySink: PlaybackTelemetrySink = PlaybackTelemetrySink.NONE,
+    private val onTerminalError: (positionMs: Long, message: String) -> Unit = { _, _ -> },
+    private val feedPreload: FeedPreloadPool? = null,
+) : Closeable {
+    private val preferences = VideoPreferenceStore.get(context)
+    private val preferenceKey = "${session.providerId}:${plan.itemId}"
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val reporter = OrderedPlaybackReporter(CoroutineScope(scope.coroutineContext + Dispatchers.IO)) { playbackOutbox.submit(session, it) }
+    private var candidateIndex = 0
+    private var positionOffsetMs = 0L
+    private var started = false
+    private var remoteReporting = false
+    private var progressJob: Job? = null
+    private var released = false
+    private var foreground = true
+    private var allowPreloadedSource = true
+    private val telemetryId = UUID.randomUUID().toString()
+    private val telemetryStartedAtEpochMs = System.currentTimeMillis()
+    private val telemetryStartedElapsedMs = SystemClock.elapsedRealtime()
+    private var firstFrameMs: Long? = null
+    private var bufferingCount = 0
+    private var bufferingStartedElapsedMs: Long? = null
+    private var bufferingDurationMs = 0L
+    private var telemetryErrorCode: String? = null
+    private var telemetryErrorMessage: String? = null
+    private var terminalFailure = false
+    private val httpTrace = AtomicReference(PlaybackHttpTrace())
+    private val diagnosticsState = MutableStateFlow(diagnostics())
+    private val tracksState = MutableStateFlow(PlaybackTracksState())
+    private val embyOrigin = session.serverUrl.toHttpUrl()
+    private val playbackClient = OkHttpClient.Builder().addInterceptor(com.shadow.media.network.OfflineModeInterceptor())
+        .dispatcher(
+            Dispatcher().apply {
+                maxRequests = 6
+                maxRequestsPerHost = 2
+            }
+        )
+        .connectTimeout(25, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .addInterceptor(
+            ResilientPlaybackHttpInterceptor(embyOrigin) { trace ->
+                httpTrace.set(trace)
+                diagnosticsState.value = diagnostics(diagnosticsState.value.lastError)
+            }
+        )
+        .addNetworkInterceptor(
+            ScopedPlaybackHeadersInterceptor(
+                PlaybackHeaderPolicy(embyOrigin, session, clientIdentity)
+            )
+        )
+        .build()
+
+    val diagnostics: StateFlow<PlaybackDiagnostics> = diagnosticsState.asStateFlow()
+    val tracks: StateFlow<PlaybackTracksState> = tracksState.asStateFlow()
+    private val exoPlayer = ((if (preferences.settings.value.decoder == VideoDecoderMode.AUTO) feedPreload?.buildPlayer() else null) ?: ExoPlayer.Builder(context, videoRenderers(context, preferences.settings.value.decoder)).build()).apply {
+        setAudioAttributes(AudioAttributes.DEFAULT, true)
+        setHandleAudioBecomingNoisy(true)
+        setWakeMode(C.WAKE_MODE_LOCAL)
+        repeatMode = Player.REPEAT_MODE_ONE
+    }
+    val player: Player = exoPlayer
+    private val audible = com.shadow.media.model.PlaybackCoordinator.process.participant { exoPlayer.pause() }
+    private val mediaSession = MediaSession.Builder(context, exoPlayer).setId("video-$telemetryId").build()
+    private val recoveryController = PlaybackRecovery(scope, { !NetworkPolicy.offlineOnly }, { preferences.settings.value.retries }) {
+        prepareCandidate(currentCandidate(), currentPositionMs, player.playWhenReady)
+    }
+    private val networkMonitor = PlaybackNetworkMonitor(context, recoveryController::setNetworkAvailable)
+    val recovery: StateFlow<PlaybackRecoveryState> = recoveryController.state
+    val currentPositionMs: Long
+        get() = (positionOffsetMs + player.currentPosition).coerceAtLeast(0L)
+    val durationMs: Long
+        get() = plan.runTimeTicks?.embyTicksToMilliseconds()?.takeIf { it > 0 }
+            ?: (positionOffsetMs + player.duration).coerceAtLeast(0L)
+    val isSeekSupported: Boolean
+        get() = player.isCurrentMediaItemSeekable ||
+            currentCandidate().method == PlayMethod.TRANSCODE ||
+            transcodingCandidateIndex() >= 0
+
+    init {
+        preferences.applyLanguages(exoPlayer)
+        exoPlayer.addListener(PlayerListener())
+        telemetrySink.record(telemetrySnapshot(completed = false))
+        recoveryController.setPlayWhenReady(startPlayWhenReady)
+        prepareCandidate(plan.primary, startPositionMs.coerceAtLeast(0L), playWhenReady = startPlayWhenReady)
+    }
+
+    fun setForeground(active: Boolean) {
+        foreground = active
+        recoveryController.setForeground(active)
+    }
+
+    fun retry() {
+        if (released || !recoveryController.manualRetry()) return
+        terminalFailure = false
+        allowPreloadedSource = false
+        diagnosticsState.value = diagnosticsState.value.copy(lastError = null)
+        prepareCandidate(currentCandidate(), currentPositionMs, player.playWhenReady)
+    }
+
+    fun transferReportingToRemote() {
+        reportCurrent(PlaybackEvent.STOPPED)
+        remoteReporting = true
+        started = false
+        progressJob?.cancel()
+    }
+
+    fun nextAudioTrack() = cycleTrack(C.TRACK_TYPE_AUDIO)
+
+    fun nextSubtitleTrack() = cycleTrack(C.TRACK_TYPE_TEXT)
+
+    fun seekTo(positionMs: Long) {
+        if (released) return
+        val target = positionMs.coerceIn(0L, durationMs.coerceAtLeast(0L))
+        if (currentCandidate().method == PlayMethod.TRANSCODE) {
+            prepareCandidate(currentCandidate(), target, player.playWhenReady)
+        } else if (player.isCurrentMediaItemSeekable) {
+            exoPlayer.seekTo(target)
+        } else {
+            val transcodeIndex = transcodingCandidateIndex()
+            if (transcodeIndex < 0) return
+            candidateIndex = transcodeIndex
+            diagnosticsState.value = diagnostics("直链不支持拖动，已切换 Emby 转码")
+            prepareCandidate(currentCandidate(), target, player.playWhenReady)
+        }
+        reportCurrent(PlaybackEvent.TIME_UPDATE)
+    }
+
+    override fun close() {
+        if (released) return
+        released = true
+        recoveryController.close()
+        networkMonitor.close()
+        progressJob?.cancel()
+        val finalPosition = currentPositionMs.millisecondsToEmbyTicks()
+        val paused = !player.isPlaying
+        val canSeek = isSeekSupported
+        val candidate = currentCandidate()
+        finishBuffering()
+        telemetrySink.record(telemetrySnapshot(completed = !terminalFailure, terminal = true))
+        audible.close()
+        mediaSession.release()
+        exoPlayer.release()
+        if (started) {
+            report(PlaybackEvent.STOPPED, finalPosition, paused, canSeek, candidate.method, candidate.mediaSourceId)
+        }
+        reporter.close()
+        reporter.completion.invokeOnCompletion { scope.cancel() }
+    }
+
+    private fun mediaSource(candidate: PlaybackCandidate) = (if (allowPreloadedSource) feedPreload?.source(plan, candidate) else null) ?:
+        DefaultMediaSourceFactory(
+            OkHttpDataSource.Factory(playbackClient)
+                .setUserAgent("Shadow Media")
+                .setDefaultRequestProperties(candidate.requiredHeaders)
+        ).createMediaSource(
+            MediaItem.Builder()
+                .setUri(candidate.url)
+                .setMediaMetadata(MediaMetadata.Builder().setTitle(mediaTitle).build())
+                .build()
+        )
+
+    private fun prepareCandidate(
+        candidate: PlaybackCandidate,
+        absolutePositionMs: Long,
+        playWhenReady: Boolean,
+    ) {
+        if (released) return
+        if (candidate.method == PlayMethod.TRANSCODE) {
+            positionOffsetMs = absolutePositionMs
+            val url = candidate.url.toHttpUrl().newBuilder()
+                .setQueryParameter("StartTimeTicks", absolutePositionMs.millisecondsToEmbyTicks().toString())
+                .build()
+                .toString()
+            exoPlayer.setMediaSource(mediaSource(candidate.copy(url = url)))
+        } else {
+            positionOffsetMs = 0L
+            exoPlayer.setMediaSource(mediaSource(candidate))
+            exoPlayer.seekTo(absolutePositionMs)
+        }
+        exoPlayer.prepare()
+        exoPlayer.playWhenReady = playWhenReady
+    }
+
+    private fun startProgressLoop() {
+        progressJob?.cancel()
+        progressJob = scope.launch {
+            while (isActive) {
+                delay(PROGRESS_INTERVAL_MS)
+                reportCurrent(PlaybackEvent.TIME_UPDATE)
+            }
+        }
+    }
+
+    private fun reportCurrent(event: PlaybackEvent) {
+        if (!started || released) return
+        val position = currentPositionMs.millisecondsToEmbyTicks()
+        val paused = !player.isPlaying
+        val canSeek = isSeekSupported
+        val candidate = currentCandidate()
+        report(event, position, paused, canSeek, candidate.method, candidate.mediaSourceId)
+    }
+
+    private fun report(
+        event: PlaybackEvent,
+        positionTicks: Long,
+        paused: Boolean,
+        canSeek: Boolean,
+        playMethod: PlayMethod,
+        mediaSourceId: String?,
+    ) {
+        reporter.submit(
+            PlaybackReport(
+                itemId = plan.itemId,
+                mediaSourceId = mediaSourceId ?: plan.mediaSourceId,
+                playSessionId = plan.playSessionId,
+                positionTicks = positionTicks,
+                isPaused = paused,
+                canSeek = canSeek,
+                event = event,
+                playMethod = playMethod,
+            ),
+        )
+    }
+
+    private fun tryFallback(error: PlaybackException): Boolean {
+        val next = candidateIndex + 1
+        if (next >= plan.candidates.size || released) {
+            val message = classifyPlaybackFailure(error, NetworkPolicy.offlineOnly).message
+            telemetryErrorCode = error.errorCodeName
+            telemetryErrorMessage = message
+            terminalFailure = true
+            telemetrySink.record(telemetrySnapshot(completed = false, terminal = true))
+            diagnosticsState.value = diagnostics(message)
+            if (!released && foreground && player.playWhenReady) onTerminalError(currentPositionMs, message)
+            return false
+        }
+        val absolutePosition = currentPositionMs
+        candidateIndex = next
+        telemetryErrorCode = error.errorCodeName
+        telemetryErrorMessage = classifyPlaybackFailure(error, NetworkPolicy.offlineOnly).message
+        telemetrySink.record(telemetrySnapshot(completed = false))
+        diagnosticsState.value = diagnostics("上一播放地址失败，已切换回退链路：${error.errorCodeName}")
+        prepareCandidate(currentCandidate(), absolutePosition, playWhenReady = player.playWhenReady)
+        return true
+    }
+
+    private fun currentCandidate(): PlaybackCandidate = plan.candidates[candidateIndex]
+
+    private fun transcodingCandidateIndex(): Int =
+        plan.candidates.indexOfFirst { it.method == PlayMethod.TRANSCODE }
+
+    private fun diagnostics(error: String? = null): PlaybackDiagnostics {
+        val candidate = currentCandidate()
+        val trace = httpTrace.get()
+        return PlaybackDiagnostics(
+            method = candidate.method,
+            candidateIndex = candidateIndex,
+            candidateCount = plan.candidates.size,
+            requestHost = candidate.url.toHttpUrl().host,
+            container = plan.container,
+            videoType = plan.videoType,
+            videoCodec = plan.videoCodec,
+            audioCodec = plan.audioCodec,
+            sourceCount = plan.sourceCount,
+            supportsDirectPlay = plan.supportsDirectPlay,
+            supportsDirectStream = plan.supportsDirectStream,
+            supportsTranscoding = plan.supportsTranscoding,
+            resolvedHost = trace.resolvedHost,
+            httpStatus = trace.responseCode,
+            redirectCount = trace.redirectCount,
+            networkAttempt = trace.attempt,
+            responseHeadersMs = trace.responseHeadersMs,
+            lastError = error ?: trace.lastNetworkError,
+        )
+    }
+
+    private fun cycleTrack(trackType: Int) {
+        if (released) return
+        val choices = flattenedTracks(trackType)
+        if (trackType == C.TRACK_TYPE_TEXT) {
+            val selected = choices.indexOfFirst { it.selected }
+            if (selected < 0) {
+                choices.firstOrNull()?.let { selectTrack(trackType, it) }
+            } else if (selected == choices.lastIndex) {
+                preferences.saveTrack(preferenceKey, trackType, null)
+                exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+                    .clearOverridesOfType(trackType)
+                    .setTrackTypeDisabled(trackType, true)
+                    .build()
+            } else {
+                selectTrack(trackType, choices[selected + 1])
+            }
+        } else {
+            if (choices.size < 2) return
+            val selected = choices.indexOfFirst { it.selected }.coerceAtLeast(0)
+            selectTrack(trackType, choices[(selected + 1) % choices.size])
+        }
+    }
+
+    private fun selectTrack(trackType: Int, choice: TrackChoice) {
+        preferences.saveTrack(preferenceKey, trackType, choice.group.getTrackFormat(choice.trackIndex))
+        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(trackType, false)
+            .clearOverridesOfType(trackType)
+            .setOverrideForType(TrackSelectionOverride(choice.group.mediaTrackGroup, listOf(choice.trackIndex)))
+            .build()
+    }
+
+    private fun flattenedTracks(trackType: Int): List<TrackChoice> = exoPlayer.currentTracks.groups
+        .filter { it.type == trackType }
+        .flatMap { group ->
+            (0 until group.length).map { index ->
+                val format = group.getTrackFormat(index)
+                TrackChoice(
+                    group = group,
+                    trackIndex = index,
+                    selected = group.isTrackSelected(index),
+                    label = format.label
+                        ?: format.language?.uppercase()
+                        ?: format.codecs
+                        ?: if (trackType == C.TRACK_TYPE_AUDIO) "音轨 ${index + 1}" else "字幕 ${index + 1}",
+                )
+            }
+        }
+
+    private fun publishTracks() {
+        val audio = flattenedTracks(C.TRACK_TYPE_AUDIO)
+        val subtitles = flattenedTracks(C.TRACK_TYPE_TEXT)
+        tracksState.value = PlaybackTracksState(
+            audioTracks = audio.map(TrackChoice::label),
+            selectedAudioIndex = audio.indexOfFirst(TrackChoice::selected),
+            subtitleTracks = subtitles.map(TrackChoice::label),
+            selectedSubtitleIndex = subtitles.indexOfFirst(TrackChoice::selected),
+        )
+    }
+
+    private fun finishBuffering() {
+        bufferingStartedElapsedMs?.let { startedAt ->
+            bufferingDurationMs += (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L)
+            bufferingStartedElapsedMs = null
+        }
+    }
+
+    private fun telemetrySnapshot(completed: Boolean, terminal: Boolean = false): PlaybackTelemetrySnapshot {
+        val candidate = currentCandidate()
+        return PlaybackTelemetrySnapshot(
+            id = telemetryId,
+            providerId = session.providerId,
+            itemId = plan.itemId,
+            playSessionId = plan.playSessionId,
+            method = candidate.method.name,
+            requestHost = runCatching { candidate.url.toHttpUrl().host }.getOrNull(),
+            candidateIndex = candidateIndex,
+            startedAtEpochMs = telemetryStartedAtEpochMs,
+            firstFrameMs = firstFrameMs,
+            bufferingCount = bufferingCount,
+            bufferingDurationMs = bufferingDurationMs,
+            errorCode = telemetryErrorCode,
+            errorMessage = telemetryErrorMessage,
+            completed = completed,
+            terminal = terminal,
+        )
+    }
+
+    private inner class PlayerListener : Player.Listener {
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_READY) {
+                recoveryController.ready()
+                diagnosticsState.value = diagnosticsState.value.copy(lastError = null)
+            }
+            if (playbackState == Player.STATE_BUFFERING && bufferingStartedElapsedMs == null) {
+                bufferingCount++
+                bufferingStartedElapsedMs = SystemClock.elapsedRealtime()
+            } else if (playbackState != Player.STATE_BUFFERING) {
+                finishBuffering()
+            }
+            if (playbackState == Player.STATE_READY && !started) {
+                started = true
+                reportCurrent(PlaybackEvent.STARTED)
+                startProgressLoop()
+            }
+        }
+
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (playWhenReady) audible.claim() else audible.abandon()
+            if (playWhenReady && remoteReporting && !released) {
+                remoteReporting = false; started = true
+                reportCurrent(PlaybackEvent.STARTED); startProgressLoop()
+            }
+            recoveryController.setPlayWhenReady(playWhenReady)
+            if (!started || released) return
+            reportCurrent(if (playWhenReady) PlaybackEvent.UNPAUSE else PlaybackEvent.PAUSE)
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            if (released) return
+            // A failed preloaded source may retain its fatal load error; reopen via the scoped client.
+            allowPreloadedSource = false
+            if (recoveryController.recover(classifyPlaybackFailure(error, NetworkPolicy.offlineOnly))) return
+            tryFallback(error)
+        }
+
+        override fun onRenderedFirstFrame() {
+            if (firstFrameMs == null) {
+                firstFrameMs = (SystemClock.elapsedRealtime() - telemetryStartedElapsedMs).coerceAtLeast(0L)
+                telemetrySink.record(telemetrySnapshot(completed = false))
+            }
+        }
+
+        override fun onTracksChanged(tracks: Tracks) {
+            preferences.restoreTracks(preferenceKey, exoPlayer)
+            publishTracks()
+        }
+    }
+
+    private data class TrackChoice(
+        val group: Tracks.Group,
+        val trackIndex: Int,
+        val selected: Boolean,
+        val label: String,
+    )
+
+    companion object {
+        private const val PROGRESS_INTERVAL_MS = 10_000L
+    }
+}

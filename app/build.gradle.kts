@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-    namespace = "top.cylunex.shadowmedia"
+    namespace = "com.shadow.media"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "top.cylunex.shadowmedia"
+        applicationId = "com.shadow.media"
         minSdk = 26
         targetSdk = 36
         versionCode = 22

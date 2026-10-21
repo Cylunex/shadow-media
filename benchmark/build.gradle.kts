@@ -3,7 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 android {
-    namespace = "top.cylunex.shadowmedia.perftest"
+    namespace = "com.shadow.media.perftest"
     compileSdk = 36
     defaultConfig { minSdk = 28; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     targetProjectPath = ":app"

@@ -1,0 +1,52 @@
+package com.shadow.media.library
+
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONObject
+import com.shadow.media.database.LibraryAssetEntity
+import com.shadow.media.database.ProgressSessionEntity
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
+
+class ProgressSession internal constructor(internal val record: ProgressSessionEntity) {
+    private val sequence = AtomicLong()
+    internal fun snapshot(): ProgressSessionEntity = record.copy(sequence = sequence.incrementAndGet())
+}
+
+/** Process-owned, ordered disk writer. Activity/service disposal never blocks the main thread. */
+object ProgressWriter {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val writes = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+    private val failure = MutableStateFlow<String?>(null)
+    val error = failure.asStateFlow()
+    init {
+        scope.launch {
+            for (write in writes) {
+                try { write(); failure.value = null }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { failure.value = "进度保存失败，请检查设备剩余空间" }
+            }
+        }
+    }
+    suspend fun begin(library: LibraryRepository, asset: LibraryAssetEntity): ProgressSession {
+        flush()
+        val record = ProgressSessionEntity(asset.id, asset.revision, UUID.randomUUID().toString())
+        check(library.dao.beginProgressSession(record)) { "资源版本已变化，请重新打开" }
+        return ProgressSession(record)
+    }
+
+    fun save(library: LibraryRepository, session: ProgressSession, type: String, locator: JSONObject, fraction: Double?, completed: Boolean = false) {
+        val snapshot = locator.toString()
+        val version = session.snapshot()
+        check(writes.trySend { library.saveProgress(version, type, JSONObject(snapshot), fraction, completed) }.isSuccess)
+    }
+
+    /** A resume/reset must observe every earlier snapshot, not just the last periodic DB write. */
+    suspend fun flush() {
+        val barrier = CompletableDeferred<Unit>()
+        writes.send { barrier.complete(Unit) }
+        barrier.await()
+    }
+}

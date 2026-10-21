@@ -8,7 +8,7 @@ plugins {
 }
 
 android {
-    namespace = "top.cylunex.shadowmedia.database"
+    namespace = "com.shadow.media.database"
     compileSdk = 36
 
     defaultConfig { minSdk = 26; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }

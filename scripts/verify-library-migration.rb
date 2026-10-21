@@ -4,12 +4,12 @@ require 'json'
 require 'open3'
 
 root = File.expand_path('..', __dir__)
-schemas = File.join(root, 'core/database/schemas/top.cylunex.shadowmedia.database.ShadowMediaDatabase')
+schemas = File.join(root, 'core/database/schemas/com.shadow.media.database.ShadowMediaDatabase')
 from_version = Integer(ARGV.fetch(0, '3'))
 to_version = from_version + 1
 before = JSON.parse(File.read(File.join(schemas, "#{from_version}.json"))).fetch('database')
 after = JSON.parse(File.read(File.join(schemas, "#{to_version}.json"))).fetch('database')
-source = File.read(File.join(root, 'core/database/src/main/kotlin/top/cylunex/shadowmedia/database/ShadowMediaDatabase.kt'))
+source = File.read(File.join(root, 'core/database/src/main/kotlin/com/shadow/media/database/ShadowMediaDatabase.kt'))
 migration = source.split("val MIGRATION_#{from_version}_#{to_version} =", 2).last.split(/(?:private )?val MIGRATION_/, 2).first.scan(/db\.execSQL\("([^"]+)"\)/).flatten
 abort 'No migration statements found' if migration.empty?
 

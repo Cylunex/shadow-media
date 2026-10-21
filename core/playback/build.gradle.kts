@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "top.cylunex.shadowmedia.playback"
+    namespace = "com.shadow.media.playback"
     compileSdk = 36
 
     defaultConfig {

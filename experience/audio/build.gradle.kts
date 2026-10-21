@@ -3,7 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 android {
-    namespace = "top.cylunex.shadowmedia.audio"
+    namespace = "com.shadow.media.audio"
     compileSdk = 36
     defaultConfig { minSdk = 26 }
     compileOptions {

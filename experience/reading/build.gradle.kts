@@ -4,7 +4,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 android {
-    namespace = "top.cylunex.shadowmedia.reading"
+    namespace = "com.shadow.media.reading"
     compileSdk = 36
     defaultConfig { minSdk = 26; targetSdk = 36; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("fixtures/reading"))
