@@ -11,7 +11,7 @@ PDF 基础翻页、CBZ/ZIP 与图片目录；听书使用独立后台音频服�
 Audiobookshelf，多 Emby 与已导入书库可渐进搜索和继续翻页。界面采用中性深色、蓝色强调，
 提供浅色与跟随系统选项。新增体验尚待真机验收，不等同于已经发布的新版本。
 
-Shadow Novel 提供原生书城、书单、作家、个人书架与历史，使用 Readium 按需获取章节阅读，
+Shadow Novel 提供原生书城、书单、作家、个人书架与历史，使用 Legado 原生排版按需获取章节阅读，
 支持离线位置和进度冲突选择。接入与验收范围见 [Novel 原生接入](docs/SHADOW_NOVEL_INTEGRATION.md)。
 
 接入方法、支持范围及未完成项见 [全媒介实施说明](docs/MULTIMEDIA_IMPLEMENTATION.md)。
@@ -122,7 +122,7 @@ core/network/    Emby、OpenList、WebDAV、SMB、NFO/STRM 与 Keystore 凭据�
 core/playback/   Media3、libmpv ISO 引擎、302 请求头隔离、回退与播放上报
 core/library/    本地书库、出版物安全、图书协议、资源获取与进度写入
 experience/audio/   MediaSessionService、听书队列与按需资源解析
-experience/reading/ Readium 小说阅读、离线朗读、漫画分块与 PDF 翻页
+experience/reading/ Legado 原生 TXT/Novel、Readium EPUB、离线朗读与漫画/PDF
 docs/            架构决策、播放安全与迭代路线
 ```
 

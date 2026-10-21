@@ -114,6 +114,8 @@ interface LibraryDao {
     @Upsert suspend fun putProgress(progress: ContentProgressEntity)
     @Query("SELECT * FROM content_annotations WHERE assetId = :id ORDER BY createdAt DESC")
     fun annotations(id: String): Flow<List<ContentAnnotationEntity>>
+    @Query("SELECT * FROM content_annotations WHERE assetId IN (:ids) ORDER BY createdAt DESC")
+    fun annotationsForAssets(ids: List<String>): Flow<List<ContentAnnotationEntity>>
     @Upsert suspend fun putAnnotation(annotation: ContentAnnotationEntity)
     @Query("DELETE FROM content_annotations WHERE id = :id")
     suspend fun removeAnnotation(id: String)

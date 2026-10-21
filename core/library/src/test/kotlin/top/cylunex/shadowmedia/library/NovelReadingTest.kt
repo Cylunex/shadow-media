@@ -44,4 +44,18 @@ class NovelReadingTest {
         val json = JSONObject(mapping().json.toString()); json.getJSONArray("chapters").put(json.getJSONArray("chapters").getJSONObject(0))
         NovelPublicationMap(json)
     }
+    @Test fun nativeCharacterAnchorSurvivesWindowChangeButNotChapterOrVersionChange() {
+        val map = mapping()
+        val native = JSONObject().put("schema", 1).put("chapter_id", "c1").put("version_id", "v1")
+            .put("text_hash", "a".repeat(64)).put("offset", 321)
+        val locator = JSONObject().put("href", "chapters/c1.xhtml").put("locations", JSONObject().put("progression", .4)).put("native_text", native)
+        val remote = map.position(locator)!!
+        val restored = map.locator(remote)!!
+        assertEquals(321, restored.getJSONObject("native_text").getInt("offset"))
+        assertFalse(restored.getJSONObject("locations").has("totalProgression"))
+        native.put("chapter_id", "c2")
+        assertFalse(map.locator(map.position(locator)!!)!!.has("native_text"))
+        native.put("chapter_id", "c1").put("version_id", "v2")
+        assertFalse(map.locator(map.position(locator)!!)!!.has("native_text"))
+    }
 }

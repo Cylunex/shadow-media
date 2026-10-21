@@ -137,4 +137,45 @@ class NovelSyncTest {
             assertEquals(8, JSONObject(conflict.conflictJson).getJSONObject("current").getInt("revision")); assertEquals(1, server.requestCount)
         } finally { db.close(); server.shutdown() }
     }
+    @Test fun nativeReaderCharacterAnchorIsWrittenAtomicallyAndSyncedWithoutWindowCoordinates() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val context = RuntimeEnvironment.getApplication()
+        val db = ShadowMediaDatabase.create(context)
+        val library = LibraryRepository(context)
+        try {
+            val c = connection(server)
+            val scope = novelScope(c)
+            val id = LibraryRepository.digest("native-anchor-sync")
+            val asset = LibraryAssetEntity(id, scope, "native-test", "原生阅读测试", kind = "BOOK", format = "epub", revision = "r1", addedAt = 0)
+            library.dao.putAsset(asset)
+            val mapping = NovelPublicationMap(JSONObject("""{
+                "schema":"shadow.novel.publication/v1","work_id":"native-work","version_id":"v1","complete":false,"version_complete":true,
+                "chapters":[{"id":"chapter-1","title":"第一章","ordinal":12,"href":"chapters/chapter-1.xhtml","body_hash":"h1"}]
+            }"""))
+            db.novelDao().putPublication(NovelPublicationEntity(id, scope, "native-work", "v1", mapping.json.toString(), "r1"))
+            val initial = NovelReadingStateEntity(NovelRepository.stateId(scope, "native-work"), scope, "native-work", "native-device")
+            db.novelDao().putState(initial)
+            val session = ProgressWriter.begin(library, asset)
+            assertFalse(db.novelDao().state(initial.id)!!.pending)
+            val native = JSONObject().put("schema", 1).put("chapter_id", "chapter-1").put("version_id", "v1").put("offset", 537).put("text_hash", "a".repeat(64))
+            val locator = JSONObject().put("href", "chapters/chapter-1.xhtml").put("locations", JSONObject().put("progression", .37)).put("native_text", native)
+            ProgressWriter.save(library, session, "text", locator, .1)
+            ProgressWriter.flush()
+            val local = JSONObject(library.dao.progress(id)!!.locatorJson)
+            assertEquals(537, local.getJSONObject("native_text").getInt("offset"))
+            val pending = db.novelDao().state(initial.id)!!
+            assertTrue(pending.pending)
+            assertEquals(537, mapping.locator(JSONObject(pending.localPosition))!!.getJSONObject("native_text").getInt("offset"))
+            server.enqueue(MockResponse().setBody("{\"revision\":1}"))
+            val repository = NovelRepository(context, library, database = db, connectionLoader = { listOf(c) })
+            assertTrue(repository.sync())
+            val sent = JSONObject(server.takeRequest().body.readUtf8())
+            assertEquals("chapter-1", sent.getString("chapter_id"))
+            assertEquals(.37, sent.getDouble("ratio"), .00001)
+            val media = sent.getJSONObject("anchor").getJSONObject("media_locator")
+            assertEquals(537, media.getJSONObject("native_text").getInt("offset"))
+            assertFalse(media.getJSONObject("locations").has("totalProgression"))
+            assertFalse(db.novelDao().state(initial.id)!!.pending)
+        } finally { server.shutdown() }
+    }
 }

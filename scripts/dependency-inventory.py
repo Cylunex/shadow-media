@@ -62,7 +62,7 @@ def generate():
         lines += [f"  Notice {notice['sha256']} ({notice['path']})" for notice in row['embeddedNotices']]
     for digest, body in sorted(texts.items()): lines += ['', 'Notice ' + digest, body]
     # Include the application GPL and inherited native attribution in the distributed notice.
-    for file in [ROOT / 'LICENSE', ROOT / 'third_party/webhtv-mpv/NOTICE.md', ROOT / 'third_party/webhtv-mpv/MPVLIB-LICENSE']:
+    for file in [ROOT / 'LICENSE', ROOT / 'third_party/webhtv-mpv/NOTICE.md', ROOT / 'third_party/webhtv-mpv/MPVLIB-LICENSE', ROOT / 'third_party/legado/NOTICE.md', ROOT / 'third_party/legado/LICENSE']:
         lines += ['', file.name, file.read_text()]
     for file in sorted((ROOT / 'third_party/licenses').glob('*.txt')): lines += ['', file.name, file.read_text()]
     return json.dumps(result, ensure_ascii=False, indent=2) + '\n', '\n'.join(line.rstrip() for line in '\n'.join(lines).splitlines()).rstrip() + '\n'

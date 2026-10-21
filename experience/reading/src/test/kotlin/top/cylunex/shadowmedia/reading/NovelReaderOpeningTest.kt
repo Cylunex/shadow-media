@@ -10,12 +10,14 @@ import org.junit.runner.RunWith
 import org.readium.r2.shared.publication.Locator
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.GraphicsMode
 import org.robolectric.annotation.Config
 import top.cylunex.shadowmedia.library.*
 
 /** Read-only regression for specified real works. Values/content stay outside the repository. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class NovelReaderOpeningTest {
     @Test fun specifiedWorksPrepareSanitizeAndCreateReadiumNavigatorWithoutWritingRemoteProgress() = runBlocking {
         val root = System.getenv("NOVEL_VALIDATION_URL").orEmpty()
@@ -46,6 +48,17 @@ class NovelReaderOpeningTest {
                 for (bold in listOf(false, true)) {
                     val preferences = ReaderSettings(bold = bold).epubPreferences()
                     assertNotNull(engine.navigator(publication, initial, preferences))
+                }
+                val nativeSource = NativeTextSource(library, repository)
+                val packageMap = NovelPublicationMap(JSONObject(repository.dao.publication(prepared.asset.id)!!.mappingJson))
+                for (ref in packageMap.chapters) {
+                    val nativeChapter = nativeSource.chapter(prepared.asset, repository.dao.publication(prepared.asset.id), ref.getString("href"))
+                    assertTrue(nativeChapter.text.isNotBlank())
+                    val pages = NativeTextLayout.paginate(nativeChapter, 432, 900, ReaderSettings(), 1f, 1f)
+                    assertTrue(pages.pages.isNotEmpty())
+                    assertEquals(nativeChapter.text.length, pages.pages.last().end)
+                    val restored = packageMap.locator(packageMap.position(nativeChapter.locator(nativeChapter.text.length / 2))!!)!!
+                    assertEquals(nativeChapter.text.length / 2, nativeChapter.restore(restored))
                 }
                 assertFalse(repository.dao.state(NovelRepository.stateId(novelScope(connection), work))!!.pending)
                 assertEquals(before, api.json(connection, listOf("me", "progress", work)).toString())

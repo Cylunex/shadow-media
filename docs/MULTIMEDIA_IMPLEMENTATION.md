@@ -19,7 +19,7 @@
 | --- | --- | --- |
 | 影视 | Emby、多服务器、OpenList/WebDAV/SMB、已有 HTTP 影视源 | 原播放器、封面墙、Feed、字幕音轨、ISO 与诊断路径保留；本次未重新做设备播放验收 |
 | 直播 | 已有 M3U/TXT/TVBox lives 导入 → 频道/节目单 → 播放 | 复用现有 XMLTV、线路与回看能力；不假定任意订阅提供 EPG |
-| 小说 | 本地 EPUB/TXT → Readium；网络文件或 OPDS → 保存副本 → Readium | 目录、全文搜索与续页、精确 Locator、书签、高亮选文、笔记、排版、离线系统 TTS |
+| 小说 | TXT/Novel → Legado 原生绘页；EPUB → Readium；网络文件或 OPDS 先保存副本 | 目录、全文搜索与续页、精确 Locator、书签、高亮选文、笔记、排版、离线系统 TTS |
 | 漫画 | CBZ/ZIP、选定图片目录、Komga | 数字自然排序、ComicInfo、LTR/RTL/双页、长图宽度适配和拖动、按页分块、书签与页内位置 |
 | PDF | 本地或下载副本 → Android PdfRenderer | 页码恢复、基本翻页；不承诺全文搜索、文本高亮或 TTS |
 | 听书 | 本地 M4B/MP3/M4A/AAC/FLAC/OGG/Opus/WAV；网络存储；ABS；Emby Audio | 独立 MediaSessionService、锁屏控制、音频焦点、倍速、定时/本轨结束睡眠、轨道队列、书签和迷你播放器 |

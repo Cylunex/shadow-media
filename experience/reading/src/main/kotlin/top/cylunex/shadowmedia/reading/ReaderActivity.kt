@@ -107,6 +107,12 @@ class ReaderActivity : FragmentActivity() {
         lifecycleScope.launch {
             try {
                 val item = requireNotNull(id?.let { library.dao.asset(it) }) { "图书已移除" }
+                if (item.format == "txt" || item.providerId.startsWith("novel:")) {
+                    startActivity(android.content.Intent(this@ReaderActivity, NativeTextReaderActivity::class.java)
+                        .putExtra("assetId", item.id).putExtra("novelLocator", intent.getStringExtra("novelLocator")))
+                    finish()
+                    return@launch
+                }
                 asset = item
                 novelPublication = novel.dao.publication(item.id)
                 novelPublication?.let { publication ->

@@ -1,92 +1,52 @@
-# 沉浸阅读与交互
+# 小说原生阅读
 
-适用于 `ReaderActivity` 内的 EPUB、TXT 和 Novel 阅读副本。漫画/PDF 的 `ComicActivity` 保持独立。
+## 引擎与来源
 
-## 阅读入口
+`ReaderActivity` 将本地 TXT 和 `novel:` 阅读包交给 `NativeTextReaderActivity`。普通 EPUB 保留 Readium 3.3.0，漫画/PDF 保留 `ComicActivity`。
 
-进入正文后默认隐藏系统栏和工具栏。点击页面中央 40% 区域显隐菜单，左右各 30% 区域翻页。
-菜单覆盖正文，不改变阅读版心尺寸，避免打开菜单就重排或改变 Locator。
-正文保留章节名和百分比；Novel 章节窗口显示“本段”和“当前下载内容”，不把窗口比例冒充全书比例。
-底部菜单包含可拖动的进度条、前后页、书签/摘录和离线朗读，顶部提供目录、搜索、书签、全屏和阅读设置。
-返回键先收起菜单，再离开阅读。系统边缘滑动仍可临时唤出系统栏。
+TXT/Novel 使用 Android Canvas 原生绘页，移植 Legado 固定提交 `5002ba71f6babf70704f2a0a26cff6aeafd95e3b` 的以下代码：
 
-设置按“外观 / 翻页 / 手势”分组，长面板可滚动；横屏底部菜单限制高度并可滚动。
-TalkBack 开启时默认显示菜单，并提供明确的“阅读菜单”按钮，关闭自定义触摸手势。
+- `ZhLayout` / `HangingLineWidth`：中文断行、标点避头尾；修正 UTF-16 偏移与字簇下标混用。
+- `LineColumnLayout`：行内坐标和两端对齐，段末自然排列，段首两字缩进。
+- `SimulationPageDelegate` 的贝塞尔卷页、镜像背面与阴影，提取为 `LegadoPageCurl`。
 
-## 外观与偏好
+来源、修改范围及 GPL-3.0 全文见 [Legado NOTICE](../third_party/legado/NOTICE.md)，并随 APK 的开源声明分发。未引入书源执行器、脚本、Legado 数据库或账号系统。
 
-- 羊皮纸、米白、护眼绿、纯白、夜间。羊皮纸通过本地生成的 SVG 噪点与渐变生成纹理，不联网。
-- 系统黑体/衬线体/等宽字体，字号 80–220%、加粗、行距、段距、字距、页边距、段首两字缩进。
-- 固定版式 EPUB 的文字排版由原书控制，仍交给 Readium 渲染；不把固定版式重新排成纯文本。
-- 亮度仅作用于当前窗口，支持跟随系统；支持阅读时保持亮屏。无需修改系统亮度权限。
-- 偏好持久化，兼容原有字号、行距、深浅主题和滚动选项。恢复默认排版不重置亮度、手势或纸张。
-- 排版滑杆松手才提交重排；双指缩放结束时提交字号。格式切换仍使用 Readium Locator 保存和恢复位置。
-- 偏好持久化使用用户可读的百分比，传给 Readium 3.3.0 时转换为倍率：字号 115% 对应 `1.15`；普通/加粗字重分别为 `1.0/1.75`，对应 CSS 400/700。Readium 字重参数的合法范围为 `0..2.5`，不能直接传 CSS 字重数值。旧偏好无需删除或重置，转换边界会先归一化异常值。
+## 文本与分页
 
-## 手势与翻页
+TXT 直接解码原文件，支持自动 UTF-8/BOM/GB18030 与手动编码，不再转换成网页排版。按中文章节标题识别目录，跳过空白章节；超长单段按安全字符边界拆分为最多 48,000 UTF-16 单位的阅读段，保留旧 `cN.xhtml` 的坐标换算。原 TXT 不改写，整本上限仍为 32 MiB。
 
-| 操作 | 行为 |
-| --- | --- |
-| 点击中央 | 显示/收起菜单；关闭点击翻页时整页都可呼出菜单 |
-| 点击左右边 | 上一页/下一页，RTL 书籍反转方向 |
-| 左右拖动 | 跟手移动当前页；超过阈值松手后翻页，短拖或取消则回弹 |
-| 左侧 12% 区域上下滑 | 调整阅读亮度，可关闭；优先识别纵向动作 |
-| 双指缩放 | 调整字号，可关闭；多指动作不再被当成单指翻页 |
-| 音量上/下 | 可选上一页/下一页；默认关闭，菜单或朗读期间保留系统音量行为 |
-| 长按正文 | 使用 Readium 原有选区、复制、链接与注释逻辑；选区工具条可直接“保存摘录” |
+Novel 沿用服务端三节点不可变 EPUB 窗口作为下载/缓存容器，只提取已校验 XHTML 的段落文本，正文不进入 WebView。章首重复标题只显示一次。单个 Novel 章节超过 50 万 UTF-16 单位时显示拆分提示，避免整章排版耗尽内存。
 
-翻页方式：仿真（曲线折面、镜像背面、纸色、阴影）、滑动（新旧两页一起平移）、覆盖（当前页移开）、
-无动画、连续滚动。滚动模式保留原生上下滚动，点击用于菜单，不被横向手势强行分页。
+正文使用设备字体、中文标点断行、两端对齐、段首缩进和可配置字号/行距/段距/字距/页边距；配有章名、章序和本章页码。五种纸色共用现有偏好存储。打开菜单覆盖正文，系统栏变化不改变版心。
 
-自定义翻页只截取当前正文一张图片，最长边不超过 1600px，动画结束、取消、旋转或退后台即释放。
-当前实现松手确认后才调用 Readium 导航，等待 Locator 改变与文档加载后展示目标正文；
-拖动过程中露出纸底，尚不提供相邻页正文的实时预览，也不是 OpenGL 3D 网格翻页。
-取消手势不会调用导航或写入临时的下一页进度。跨章慢加载有超时兜底，截图失败时继续正常导航。
+字号或尺寸变化按字符锚点重排，不把旧页码当作位置。分页只保留当前章的模型和最多三张页面位图，关闭时取消任务并释放。断行采用 ICU 字簇，保留扩展汉字、代理对与组合字符。
 
-## 参考项目与取舍
+## 翻页与跨章
 
-起点、掌阅作为用户提出的经典交互目标：正文优先、中央菜单、纸张主题、可配置排版和翻页。
-未获取其私有实现，也未复制其界面素材。可核查的开源参考：
+- 中央点击呼出菜单，左右点击/拖动翻页；短拖回弹不保存下一页位置。
+- 滑动、覆盖、Legado 仿真、无动画和纵向滚动；拖动时显示真实相邻页正文。
+- 到达章末继续翻页自动获取下一可读章，反向回到上一章末页，无需重启 Activity。缺失窗口按需下载，失败保留当前正文；离线可继续读本机相邻章节。
+- 完整目录分页加载，离线回退已下载目录；支持章内进度条、书签、复制/摘录和搜索。TXT 搜索全文，Novel 搜索本机已下载章节，最多显示 200 个匹配。
+- 本机书签跨同版本的 Novel 窗口汇总；点击书签打开其原不可变阅读包。
+- 左侧窄边调亮度、双指字号、可选音量键翻页；无障碍节点提供阅读菜单及前后页操作。
+- 朗读复用 `ReadAloud` 的离线语音、音频焦点和进程级播放协调；退出、切章或其他播放会话抢占时停止。
 
-| 项目 | 参考内容 | 本次取舍 |
-| --- | --- | --- |
-| [Legado / 开源阅读](https://github.com/LegadoTeam/legado) | 阅读配置、主题与翻页交互组织 | 保持独立实现，未引入其源码或书源执行器 |
-| [Readest 阅读操作](https://readest.com/docs/reading) | 中央菜单、页边翻页、左边亮度手势、音量键 | 复用操作习惯，保留 Readium 原生正文 |
-| [Readest 排版](https://readest.com/docs/customization) | 字体、间距、页边距与主题分组 | 原生 Compose 面板，设置传给现有 EpubPreferences |
-| [KOReader](https://github.com/koreader/koreader) | 无干扰正文、多格式阅读与可配置操作 | 不引入 Lua/渲染引擎，控制本次改造范围 |
-| [android-pagecurl](https://github.com/harism/android-pagecurl/blob/master/src/fi/harism/curl/CurlView.java) | 折页方向、纸背与动画生命周期 | 不引入 OpenGL 引擎；当前页 Canvas 折面独立实现 |
-| [Readium Kotlin Toolkit](https://github.com/readium/kotlin-toolkit) | 现有 3.3.0 导航、InputListener、偏好、Locator、JS 扩展 | 保留现有依赖，无新增正式运行时依赖 |
+## 位置与同步
 
-## 验证范围
+`native_text` 保存 schema、chapter_id、version_id、文本投影 SHA-256 和 UTF-16 offset。只有身份及 hash 都匹配时恢复精确字符；旧 Readium/其他设备位置没有此锚点时使用章内 ratio。排版变化、初次打开和目录预览不产生同步写入。
 
-2026-10-20 补充修复：使用 NAS 用户报告的两本真实作品检查完整链路，修复前捕获的异常栈指向
-`EpubPreferences.<init>(EpubPreferences.kt:81)` → `ReaderSettingsStore.epubPreferences`，
-原因是错误传入字重 `400/700`。修正为倍率，并同步修正字号百分比转换。
-打开失败现在区分本地副本、位置恢复、内容解析、排版设置和页面初始化，界面显示具体步骤；
-诊断日志保留原始异常及完整 cause 栈，不把取消阅读当成失败。
+实际翻页、搜索跳转、切章和书签跳转通过原 `ProgressWriter` 写入。同一事务验证资源修订/会话序号并保存本机位置和 Novel outbox，继续沿用冻结请求、幂等重试、revision 冲突和账号作用域。`NovelPublicationMap` 在窗口变化时保留有效字符锚点，移除窗口相关的 totalProgression/position。冲突菜单提供保留本机或采用云端位置。
 
-Robolectric 实际执行 Readium 偏好构造，覆盖默认设置、字号上下界、普通/加粗、所有纸色和翻页模式、异常存储值；
-更新设备测试的倍率断言。指定真实书目的可选测试贯穿 `NovelRepository.prepare`、EPUB 校验、映射、
-本地导入、`PublicationSanitizer`、Readium 解析和 navigator factory 创建，验证服务端进度未写入。
-用 `NOVEL_VALIDATION_URL` 和 `NOVEL_VALIDATION_TARGETS`（逗号分隔的 `work_id:version_id`）提供外部参数，
-不在源码中保存实际入口、作品标识或真实正文。未设置时该用例跳过。
+## 验证入口
 
-本轮阅读器 19 项测试通过（含两本指定真实作品），书库常规单测 56 项通过、2 项仅针对隔离测试库的实时用例跳过；
-App 14 项单测及 Kotlin 编译、阅读器设备测试源编译均通过。Robolectric 的解析和 factory 创建不等于真机 WebView 排版与触屏验收。
-本轮不生成或安装新的 APK，也不修改 NAS 服务或用户的远端进度。
+```sh
+./gradlew :experience:reading:testDebugUnitTest :core:library:testDebugUnitTest :app:testDebugUnitTest
+./gradlew :experience:reading:connectedDebugAndroidTest
+```
 
-主机单测覆盖点击分区、RTL、滚动模式、纵向/短拖过滤、字号和亮度边界。
-设备测试源覆盖旧偏好迁移、所有偏好重开恢复、未知枚举回退、所有纸色/翻页偏好映射、
-正反方向折页绘制及取消释放；编译通过不代表设备执行通过。
+主机用例覆盖中文标点、扩展字/emoji、分页文本完整性、字符锚点重排、旧 TXT 位置与编码、超长单段、真实相邻页与卷页绘制；Room + MockWebServer 验证原生位置经事务/outbox 发往同步接口并保留锚点。
 
-本次仅源码验证，不生成或安装 APK。真机触控、不同 WebView 的截图与纹理、跨章加载、
-200% 字体、横屏、TalkBack、刷新率/内存表现需按 [设备验收](DEVICE_ACCEPTANCE.md) 后续执行。
+可选 `NOVEL_VALIDATION_PACKAGES` 为逗号分隔的本机真实阅读包路径，仅读取、排版并核对内容与锚点；真实正文不进入仓库。`NATIVE_READER_SCREENSHOTS` 指定原生绘制检查图的输出目录。可选 `NOVEL_VALIDATION_URL` / `NOVEL_VALIDATION_TARGETS` 对指定真实书目执行只读端到端打开回归，比较服务端进度前后不变。
 
-### 2026-10-20 源码验证记录
-
-- 全仓 `test lintDebug`、app/benchmark 验收 Kotlin 编译、数据库与阅读 `compileDebugAndroidTestKotlin`、
-  `:app:writeRuntimeInventory --offline` 通过。
-- 阅读模块新增 8 项主机单测通过；新增 4 项设备测试仅编译通过，尚未运行。
-- 完成最后的选区工具条接入后，再次通过阅读单测、Lint、设备测试源编译和 app Debug Kotlin 编译。
-- `dependency-inventory.py` / `verify-release.py` 因本机缺少 `androidx.activity:activity-compose:1.12.4`
-  的缓存 POM 未完成；本次没有新增或升级依赖，未更新许可清单。
+2026-10-21 在 Android 35 arm64 模拟器执行了 `NativeReaderDeviceTest`：真实触屏横滑、前后跨章、字号重排不改进度、退出后按字符恢复，并检查实际截图。模拟器结果不能替代手机字体/刷新率、真实断网调度和两台设备同时阅读的最终验收。

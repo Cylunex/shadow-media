@@ -6,7 +6,7 @@ plugins {
 android {
     namespace = "top.cylunex.shadowmedia.reading"
     compileSdk = 36
-    defaultConfig { minSdk = 26; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { minSdk = 26; targetSdk = 36; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("fixtures/reading"))
     buildFeatures { compose = true }
     compileOptions {
@@ -40,6 +40,8 @@ dependencies {
 
 // Optional real-server regressions must rerun when their external test inputs change.
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    inputs.property("novelValidationPackages", providers.environmentVariable("NOVEL_VALIDATION_PACKAGES").orElse(""))
+    inputs.property("nativeReaderScreenshots", providers.environmentVariable("NATIVE_READER_SCREENSHOTS").orElse(""))
     inputs.property("novelValidationUrl", providers.environmentVariable("NOVEL_VALIDATION_URL").orElse(""))
     inputs.property("novelValidationTargets", providers.environmentVariable("NOVEL_VALIDATION_TARGETS").orElse(""))
 }

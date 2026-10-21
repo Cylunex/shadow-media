@@ -2,6 +2,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <queries><intent><action android:name="android.intent.action.TTS_SERVICE" /></intent></queries>
     <application>
+        <activity android:name=".NativeTextReaderActivity" android:theme="@android:style/Theme.Material.NoActionBar" android:exported="false" />
         <activity android:name=".ReaderActivity" android:exported="false" />
         <activity android:name=".ComicActivity" android:exported="false" />
     </application>

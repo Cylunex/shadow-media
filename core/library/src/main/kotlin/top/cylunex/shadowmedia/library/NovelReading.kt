@@ -49,6 +49,12 @@ class NovelPublicationMap(val json: JSONObject) {
             .put("title", chapter.optString("title")).put("locations", JSONObject().put("progression", ratio))
         if (prior != null && chapterForHref(prior.optString("href"))?.optString("id") == chapter.getString("id")) {
             prior.optJSONObject("text")?.let { result.put("text", it) }
+            // Character anchors are independent of the downloaded EPUB window and page geometry.
+            prior.optJSONObject("native_text")?.takeIf {
+                it.optInt("schema") == 1 && it.optString("chapter_id") == chapter.getString("id") &&
+                    it.optString("version_id") == versionId && it.optString("text_hash").matches(Regex("[a-f0-9]{64}")) &&
+                    it.optInt("offset", -1) >= 0
+            }?.let { result.put("native_text", JSONObject(it.toString())) }
             prior.optJSONObject("locations")?.optJSONArray("fragments")?.let { result.getJSONObject("locations").put("fragments", it) }
         }
         return result

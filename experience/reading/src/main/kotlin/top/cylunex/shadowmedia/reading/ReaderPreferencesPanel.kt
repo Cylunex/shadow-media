@@ -14,7 +14,7 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 
 @Composable
-internal fun ReaderPreferencesPanel(value: ReaderSettings, update: (ReaderSettings) -> Unit, encoding: (@Composable () -> Unit)? = null) {
+internal fun ReaderPreferencesPanel(value: ReaderSettings, update: (ReaderSettings) -> Unit, encoding: (@Composable () -> Unit)? = null, nativeText: Boolean = false) {
     var tab by remember { mutableIntStateOf(0) }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf("外观", "翻页", "手势").forEachIndexed { index, label ->
@@ -77,7 +77,7 @@ internal fun ReaderPreferencesPanel(value: ReaderSettings, update: (ReaderSettin
                 ReaderSwitch("双指缩放调整字号", value.pinchToResize) { update(value.copy(pinchToResize = it)) }
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 Text("操作提示", style = MaterialTheme.typography.titleSmall)
-                Text("• 点击中央：显示或收起菜单\n• 左右滑动：上一页 / 下一页\n• 长按文字：选中、复制或直接“保存摘录”\n• 音量上 / 下：上一页 / 下一页（开启后）\n• 返回键：先收起菜单，再返回书架\n• 目录、搜索、书签与朗读均在菜单中", style = MaterialTheme.typography.bodyMedium)
+                Text((if (nativeText) "• 长按段落：复制或保存摘录\n" else "• 长按文字：选择、复制或保存摘录\n") + "• 点击中央：显示或收起菜单\n• 左右滑动：上一页 / 下一页\n• 音量上 / 下：上一页 / 下一页（开启后）\n• 返回键：先收起菜单，再返回书架\n• 目录、搜索、书签与朗读均在菜单中", style = MaterialTheme.typography.bodyMedium)
             }
         }
         Spacer(Modifier.height(20.dp))
