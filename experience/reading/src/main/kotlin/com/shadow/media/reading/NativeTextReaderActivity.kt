@@ -51,10 +51,7 @@ class NativeTextReaderActivity : ComponentActivity() {
     private var fatal by mutableStateOf<String?>(null)
     private var offset by mutableIntStateOf(0)
     private var pageLabel by mutableStateOf("")
-    private var contents by mutableStateOf<List<NativeChapterRef>>(emptyList())
-    private var contentsOffset = 0
-    private var contentsTotal by mutableIntStateOf(0)
-    private var contentsBusy by mutableStateOf(false)
+    private var jumpHistory by mutableStateOf(NativeJumpHistory())
     private var view: NativeTextView? = null
     private var session: ProgressSession? = null
     private var observer: Job? = null
@@ -71,6 +68,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         installReaderBackNavigation({ panel != null }) { panel = null; applyWindow() }
         library = LibraryRepository(this); novel = NovelRepository(this, library); source = NativeTextSource(library, novel)
         store = ReaderSettingsStore(getSharedPreferences("reader_preferences", MODE_PRIVATE)); style = store.load()
+        jumpHistory = NativeJumpHistory.restore(savedInstanceState?.getString("jump_history"))
         nativeSaved = savedInstanceState?.getString("native_locator")?.let { runCatching { JSONObject(it) }.getOrNull() }
         WindowCompat.setDecorFitsSystemWindows(window, false); applyWindow()
         setContent { Chrome() }
@@ -122,7 +120,28 @@ class NativeTextReaderActivity : ComponentActivity() {
             catch (e: Exception) { busy = false; view?.isEnabled = true; message = e.message ?: "章节获取失败，当前内容已保留" }
         }
     }
-    private fun openChapter(ref: NativeChapterRef, end: Boolean = false) = navigate { loadChapter(ref, end) }
+    private fun location(): NativeReaderLocation? = asset?.let { item -> chapter?.let { NativeReaderLocation(item.id, it.locator(offset).toString()) } }
+    private fun closePanel() { panel = null; menu = false; applyWindow() }
+    private fun openChapter(ref: NativeChapterRef, end: Boolean = false) = navigate {
+        val origin = location()
+        loadChapter(ref, end)
+        jumpHistory = jumpHistory.remember(origin, location())
+    }
+    private fun jumpTo(target: NativeReaderLocation) = navigate {
+        val origin = location()
+        open(requireNotNull(library.dao.asset(target.assetId)) { "跳转对应内容已移除" }, JSONObject(target.locator))
+        saveAfterLayout = true
+        jumpHistory = jumpHistory.remember(origin, location())
+    }
+    private fun returnFromJump() = navigate {
+        val target = jumpHistory.locations.lastOrNull()
+        if (target == null) { busy = false; view?.isEnabled = true }
+        else {
+            open(requireNotNull(library.dao.asset(target.assetId)) { "原位置对应内容已移除" }, JSONObject(target.locator))
+            saveAfterLayout = true
+            jumpHistory = NativeJumpHistory(jumpHistory.locations.dropLast(1))
+        }
+    }
     private suspend fun loadChapter(ref: NativeChapterRef, end: Boolean = false) {
         val currentAsset = requireNotNull(asset)
         val pub = publication
@@ -163,26 +182,6 @@ class NativeTextReaderActivity : ComponentActivity() {
         }
     }
     private fun ref(json: JSONObject) = NativeChapterRef(json.getString("id"), json.optString("title"), json.getInt("ordinal"), "chapters/${json.getString("id")}.xhtml", json.optBoolean("readable", true))
-    private fun directory(more: Boolean = false) {
-        if (contentsBusy) return
-        contentsBusy = true
-        lifecycleScope.launch {
-            try {
-                val pub = publication
-                if (pub == null) { contents = source.local(requireNotNull(asset)).map { it.ref }; contentsTotal = contents.size }
-                else {
-                    val start = if (more) contentsOffset + 100 else 0
-                    val page = novel.get(novel.connection(pub.scope), listOf("works", pub.workId, "contents"), listOf("version_id" to pub.versionId, "offset" to start.toString(), "limit" to "100"))
-                    contents = (if (more) contents else emptyList()) + page.novelObjects("items").map(::ref)
-                    contentsOffset = start; contentsTotal = page.optInt("total")
-                }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) {
-                if (!more) { contents = publication?.let { novel.cachedContents(it).map(::ref) }.orEmpty(); contentsTotal = contents.size }
-                message = e.message ?: "显示本机已下载目录"
-            } finally { contentsBusy = false }
-        }
-    }
     private fun update(value: ReaderSettings) { style = value.normalized(); store.save(style); view?.configure(style); applyWindow() }
     private fun applyWindow() {
         WindowInsetsControllerCompat(window, window.decorView).apply {
@@ -227,10 +226,6 @@ class NativeTextReaderActivity : ComponentActivity() {
                 bookmarkAssets = if (pub == null) listOfNotNull(asset?.id) else novel.dao.publications(pub.scope)
                     .filter { it.workId == pub.workId && it.versionId == pub.versionId }.map { it.assetId }
             }
-            var query by remember { mutableStateOf("") }
-            var hits by remember { mutableStateOf<List<Pair<NativeTextChapter, Int>>>(emptyList()) }
-            var searching by remember { mutableStateOf(false) }
-            var searchJob by remember { mutableStateOf<Job?>(null) }
             Box(Modifier.fillMaxSize().background(Color(style.paper.background)).displayCutoutPadding()) {
                 AndroidView(factory = { context -> NativeTextView(context).also { reader ->
                     view = reader
@@ -259,9 +254,14 @@ class NativeTextReaderActivity : ComponentActivity() {
                     Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding(), tonalElevation = 4.dp) {
                         Column {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                listOf("目录", "排版", "搜索", "书签").forEach { label -> TextButton(onClick = { panel = label; if (label == "目录") directory(); applyWindow() }) { Text(label) } }
+                                listOf("目录", "排版", "搜索", "书签").forEach { label -> TextButton(onClick = { panel = label; applyWindow() }) { Text(label) } }
                             }
-                            ReaderProgressControl((offset.toFloat() / (chapter?.text?.length ?: 1).coerceAtLeast(1)).coerceIn(0f, 1f), !busy && chapter != null, "本章") { ratio -> view?.seek(((chapter?.text?.length ?: 0) * ratio).toInt()) }
+                            if (jumpHistory.locations.isNotEmpty()) TextButton(enabled = !busy, onClick = { closePanel(); returnFromJump() }) { Text("返回跳转前的位置") }
+                            ReaderProgressControl((offset.toFloat() / (chapter?.text?.length ?: 1).coerceAtLeast(1)).coerceIn(0f, 1f), !busy && chapter != null, "本章") { ratio ->
+                                val origin = location()
+                                view?.seek(((chapter?.text?.length ?: 0) * ratio).toInt())
+                                jumpHistory = jumpHistory.remember(origin, location())
+                            }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                                 TextButton(enabled = !busy, onClick = { view?.turn(-1) }) { Text("上一页") }
                                 TextButton(onClick = { chapter?.let { mark(it.locator(offset), it.ref.title) } }) { Text("标记") }
@@ -283,56 +283,17 @@ class NativeTextReaderActivity : ComponentActivity() {
                                 navigate { val item = requireNotNull(asset); library.setTextEncoding(item.id, encoding); source.invalidate(); session = null; open(item, null) }
                             }) { Text(encoding) } } }
                         }) else null)
-                        "目录" -> {
-                            if (contentsBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                            LazyColumn(Modifier.heightIn(max = 480.dp)) {
-                                items(contents, key = { it.id }) { ref -> TextButton(enabled = !busy && ref.readable, onClick = { panel = null; menu = false; applyWindow(); openChapter(ref) }) { Text("${ref.ordinal + 1}. ${ref.title}${if (ref.id == chapter?.ref?.id) " · 正在读" else ""}") } }
-                                if (contents.size < contentsTotal) item { TextButton(enabled = !contentsBusy, onClick = { directory(true) }) { Text("更多目录") } }
-                            }
-                        }
-                        "搜索" -> {
-                            Text(if (publication == null) "搜索本书全文" else "搜索本机已下载章节", style = MaterialTheme.typography.bodySmall)
-                            OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("输入正文内容") })
-                            TextButton(enabled = query.isNotBlank(), onClick = {
-                                searchJob?.cancel(); val term = query.trim()
-                                searchJob = lifecycleScope.launch {
-                                    searching = true
-                                    try {
-                                        val currentAsset = requireNotNull(asset); val pub = publication
-                                        val chapters = if (pub == null) source.local(currentAsset) else {
-                                            novel.cachedContents(pub).mapNotNull { ref ->
-                                                val prepared = novel.cachedChapter(pub.scope, pub.workId, pub.versionId, ref.getString("id"))
-                                                prepared?.let { source.chapter(it.asset, novel.dao.publication(it.asset.id), ref.getString("href")) }
-                                            }
-                                        }
-                                        hits = withContext(Dispatchers.Default) { buildList { for (content in chapters) {
-                                            var index = content.text.indexOf(term, ignoreCase = true)
-                                            while (index >= 0 && size < 200) { ensureActive(); add(content to index); index = content.text.indexOf(term, index + term.length, true) }
-                                            if (size >= 200) break
-                                        } } }
-                                    } catch (e: CancellationException) { throw e }
-                                    catch (e: Exception) { message = e.message }
-                                    finally { searching = false }
-                                }
-                            }) { Text("搜索") }
-                            if (searching) LinearProgressIndicator(Modifier.fillMaxWidth())
-                            LazyColumn(Modifier.heightIn(max = 380.dp)) { items(hits) { (content, found) -> TextButton(onClick = {
-                                panel = null; menu = false; applyWindow()
-                                if (content.ref.id == chapter?.ref?.id) view?.seek(found)
-                                else navigate {
-                                    val pub = publication
-                                    val item = if (pub == null) requireNotNull(asset) else requireNotNull(novel.cachedChapter(pub.scope, pub.workId, pub.versionId, content.ref.id)).asset
-                                    open(item, content.locator(found)); saveAfterLayout = true
-                                }
-                            }) { Text("${content.ref.title}：${content.text.substring((found - 15).coerceAtLeast(0), (found + 65).coerceAtMost(content.text.length))}", maxLines = 3) } } }
+                        "目录" -> asset?.let { item -> chapter?.let { content ->
+                            NativeReaderContentsPanel(item, publication, content, source, novel, !busy) { ref -> closePanel(); openChapter(ref) }
+                        } }
+                        "搜索" -> asset?.let { item ->
+                            NativeReaderSearchPanel(item, publication, source, !busy) { hit -> closePanel(); jumpTo(NativeReaderLocation(hit.assetId, hit.locator)) }
                         }
                         "书签" -> asset?.let { current ->
                             val marks by library.dao.annotationsForAssets(bookmarkAssets).collectAsState(emptyList())
                             LazyColumn(Modifier.heightIn(max = 480.dp)) { items(marks, key = { it.id }) { mark -> Row {
-                                TextButton(modifier = Modifier.weight(1f), onClick = {
-                                    val locator = JSONObject(mark.locatorJson); panel = null
-                                    if (locator.optString("href") == chapter?.ref?.href) view?.seek(chapter!!.restore(locator))
-                                    else navigate { open(requireNotNull(library.dao.asset(mark.assetId)) { "书签对应内容已移除" }, locator); saveAfterLayout = true }
+                                TextButton(enabled = !busy, modifier = Modifier.weight(1f), onClick = {
+                                    closePanel(); jumpTo(NativeReaderLocation(mark.assetId, mark.locatorJson))
                                 }) { Text(mark.note, maxLines = 3) }
                                 TextButton(onClick = { lifecycleScope.launch { library.dao.removeAnnotation(mark.id) } }) { Text("删除") }
                             } } }
@@ -347,7 +308,7 @@ class NativeTextReaderActivity : ComponentActivity() {
             message?.let { text -> AlertDialog(onDismissRequest = { message = null }, text = { Text(text) }, confirmButton = { TextButton(onClick = { message = null }) { Text("确定") } }) }
         }
     }
-    override fun onSaveInstanceState(outState: Bundle) { chapter?.let { outState.putString("native_locator", it.locator(offset).toString()) }; asset?.let { outState.putString("active_asset", it.id) }; super.onSaveInstanceState(outState) }
+    override fun onSaveInstanceState(outState: Bundle) { outState.putString("jump_history", jumpHistory.toJson()); chapter?.let { outState.putString("native_locator", it.locator(offset).toString()) }; asset?.let { outState.putString("active_asset", it.id) }; super.onSaveInstanceState(outState) }
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (style.volumeToTurn && !menu && panel == null && !narrating && keyCode in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) { if (event.repeatCount == 0) view?.turn(if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) 1 else -1); return true }
         return super.onKeyDown(keyCode, event)

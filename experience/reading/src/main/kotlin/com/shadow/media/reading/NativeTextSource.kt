@@ -1,6 +1,7 @@
 package com.shadow.media.reading
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import com.shadow.media.database.LibraryAssetEntity
@@ -63,6 +64,21 @@ internal class NativeTextSource(private val library: LibraryRepository, private 
         localChapters
     }
     fun invalidate() { localAsset = null; localChapters = emptyList() }
+    suspend fun searchEntries(asset: LibraryAssetEntity, publication: NovelPublicationEntity?): List<NativeSearchEntry> = withContext(Dispatchers.IO) {
+        if (publication == null) return@withContext local(asset).map { content -> NativeSearchEntry(asset.id, content.ref) { content } }
+        // Snapshot package metadata once. Overlapping windows must not duplicate search hits.
+        novel.dao.publications(publication.scope)
+            .filter { it.workId == publication.workId && it.versionId == publication.versionId }
+            .flatMap { pub ->
+                ensureActive()
+                val item = library.dao.asset(pub.assetId)
+                if (item == null || !runCatching { library.localFile(item).isFile }.getOrDefault(false)) emptyList()
+                else NovelPublicationMap(JSONObject(pub.mappingJson)).chapters.map { json ->
+                    val ref = NativeChapterRef(json.getString("id"), json.optString("title"), json.getInt("ordinal"), json.getString("href"))
+                    NativeSearchEntry(item.id, ref) { chapter(item, pub, ref.href) }
+                }
+            }.distinctBy { it.ref.id }.sortedBy { it.ref.ordinal }
+    }
     suspend fun chapter(asset: LibraryAssetEntity, publication: NovelPublicationEntity?, href: String?, legacyRatio: Double? = null): NativeTextChapter = withContext(Dispatchers.IO) {
         if (publication == null) {
             val all = local(asset)
