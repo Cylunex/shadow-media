@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -52,14 +53,23 @@ internal val LocalNovelArtwork = staticCompositionLocalOf<NovelArtwork?> { null 
             } }
         }
     }
+    val scheme = MaterialTheme.colorScheme
+    val (paper, ink) = when ((work.optString("title").hashCode() and Int.MAX_VALUE) % 3) {
+        0 -> scheme.primaryContainer to scheme.onPrimaryContainer
+        1 -> scheme.secondaryContainer to scheme.onSecondaryContainer
+        else -> scheme.tertiaryContainer to scheme.onTertiaryContainer
+    }
     Box(modifier.aspectRatio(0.7f).clip(RoundedCornerShape(8.dp)).background(Brush.verticalGradient(
-        listOf(MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.primaryContainer))), contentAlignment = Alignment.Center) {
+        listOf(paper, paper.copy(alpha = .78f)))), contentAlignment = Alignment.Center) {
         if (bitmap != null) Image(bitmap!!, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-        else Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(work.optString("title").take(14), style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onPrimaryContainer, maxLines = 4, overflow = TextOverflow.Ellipsis)
-            if (work.optString("author").isNotBlank()) Text(work.optString("author"), style = MaterialTheme.typography.labelSmall,
-                maxLines = 1, color = MaterialTheme.colorScheme.onPrimaryContainer, overflow = TextOverflow.Ellipsis)
+        else {
+            Box(Modifier.align(Alignment.CenterStart).width(5.dp).fillMaxHeight().background(ink.copy(alpha = .10f)))
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(work.optString("title").take(18), style = MaterialTheme.typography.titleSmall, fontFamily = FontFamily.Serif,
+                    fontWeight = FontWeight.Medium, color = ink, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                if (work.optString("author").isNotBlank()) Text(work.optString("author"), style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1, color = ink.copy(alpha = .8f), overflow = TextOverflow.Ellipsis)
+            }
         }
     }
 }
@@ -120,7 +130,7 @@ internal fun serialLabel(value: String) = when (value) { "completed" -> "完结"
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable internal fun NovelWorkOverview(work: JSONObject, enabled: Boolean, canSearch: Boolean, onRead: () -> Unit, onAuthor: () -> Unit, onSearch: () -> Unit) {
-    val readable = work.novelStrings("availability") != listOf("metadata_only") && work.novelObjects("versions").any { !it.isNull("id") && it.optString("id").isNotBlank() }
+    val readable = novelCanRead(work) && work.novelObjects("versions").any { !it.isNull("id") && it.optString("id").isNotBlank() }
     var expanded by rememberSaveable(work.optString("id")) { mutableStateOf(false) }
     var overflowing by remember(work.optString("description")) { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {

@@ -28,8 +28,6 @@ import com.shadow.media.database.LibraryAssetEntity
 import com.shadow.media.database.NovelPublicationEntity
 import com.shadow.media.library.*
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -43,6 +41,16 @@ internal fun ColumnScope.NativeReaderContentsPanel(
     enabled: Boolean,
     onOpen: (NativeChapterRef) -> Unit,
 ) {
+    if (publication != null) {
+        NovelContentsPanel(novel, runCatching { novel.connection(publication.scope) }.getOrNull(), publication.workId, publication.versionId,
+            enabled, onOpen = { row ->
+                val id = row.getString("id")
+                onOpen(NativeChapterRef(id, row.optString("title"), row.getInt("ordinal"), "chapters/$id.xhtml", row.optBoolean("readable")))
+            },
+            modifier = Modifier.weight(1f).fillMaxWidth(), currentId = current.ref.id, currentOrdinal = current.ref.ordinal,
+            downloadedChapters = { novel.cachedContents(publication) })
+        return
+    }
     var requested by remember { mutableIntStateOf(current.ref.ordinal) }
     var total by remember { mutableIntStateOf(current.total) }
     val start = nativeContentsOffset(requested, total)
@@ -55,27 +63,10 @@ internal fun ColumnScope.NativeReaderContentsPanel(
         loading = true
         notice = null
         try {
-            if (publication == null) {
-                val local = source.local(asset)
-                total = local.size
-                entries = local.drop(start).take(NATIVE_CONTENTS_PAGE_SIZE).map { it.ref }
-                downloaded = entries.map { it.id }.toSet()
-            } else {
-                val cached = withContext(Dispatchers.IO) { novel.cachedContents(publication) }
-                downloaded = cached.map { it.getString("id") }.toSet()
-                try {
-                    val page = novel.get(novel.connection(publication.scope), listOf("works", publication.workId, "contents"),
-                        listOf("version_id" to publication.versionId, "offset" to start.toString(), "limit" to NATIVE_CONTENTS_PAGE_SIZE.toString()))
-                    entries = page.novelObjects("items").map { json -> NativeChapterRef(json.getString("id"), json.optString("title"), json.getInt("ordinal"), "chapters/${json.getString("id")}.xhtml", json.optBoolean("readable", true)) }
-                    total = page.optInt("total", current.total)
-                    if (page.has("_cached_at")) notice = "当前为缓存目录"
-                } catch (e: CancellationException) { throw e }
-                catch (_: Exception) {
-                    entries = cached.filter { it.getInt("ordinal") in start until start + NATIVE_CONTENTS_PAGE_SIZE }
-                        .map { json -> NativeChapterRef(json.getString("id"), json.optString("title"), json.getInt("ordinal"), json.getString("href")) }
-                    notice = "暂时无法获取完整目录，显示本机已下载章节"
-                }
-            }
+            val local = source.local(asset)
+            total = local.size
+            entries = local.drop(start).take(NATIVE_CONTENTS_PAGE_SIZE).map { it.ref }
+            downloaded = entries.map { it.id }.toSet()
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) { notice = e.message ?: "目录加载失败" }
         finally { loading = false }

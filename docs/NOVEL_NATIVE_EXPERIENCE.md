@@ -1,5 +1,8 @@
 # 小说原生书城与阅读交互
 
+2026-10-22 更新：新版服务的有更新筛选、目录全书搜索/正倒序/末章，以及原生网格书架、续读卡片和
+筛选标签已经接入，详见 [Novel 接口与书库体验](NOVEL_LIBRARY_ADAPTATION_2026_10_22.md)。
+
 ## 参考与落地
 
 2026-10-21 查阅官方产品介绍、网站及开源项目：
@@ -10,7 +13,7 @@
 | [番茄小说官方介绍](https://apps.apple.com/cn/app/id1468454200)、[番茄小说网](https://fanqienovel.com/) | 按分类、精选和榜单找书：以书城、书架、书单、排行作为四个主入口，分类、搜索、作家、历史与离线作为次级入口。 |
 | [Legado](https://github.com/LegadoTeam/legado)、[Lumi 阅读器](https://github.com/legado-backup/legado-lumi)、[Readest](https://github.com/readest/readest) | 原生阅读、排版设置与手势分工的参考。继续沿用项目已有的 Legado 原生排版及 Readium EPUB 内核，本次没有复制其他项目代码或增加运行时依赖。 |
 
-这些参考用于发现路径、信息层级和交互选择，界面使用现有 Shadow Material 3 主题。书籍、书单、排行、封面与写入操作全部使用 Novel API；服务端返回的网页链接不参与原生导航。没有嵌入 Novel 网站，也没有调用起点或番茄的私有接口。
+这些参考用于发现路径、信息层级和交互选择，界面使用现有 Shadow Material 3 主题。书籍、书单、排行、封面与写入操作全部使用 Novel API；书城网页链接只提取白名单筛选参数，不加载网页。没有嵌入 Novel 网站，也没有调用起点或番茄的私有接口。
 
 ## 书城、书单与作品
 

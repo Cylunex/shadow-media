@@ -108,9 +108,11 @@ data class NovelQuery(
     val excluded: List<String> = emptyList(), val allGenres: Boolean = false,
     val serialStatus: String = "", val availability: String = "", val status: String = "",
     val group: String = "", val personalTags: List<String> = emptyList(), val minPopularity: String = "",
+    val hasUpdates: Boolean = false,
 ) {
     fun parameters(): List<Pair<String, String>> = buildList {
         add("view" to view); add("sort" to sort)
+        if (hasUpdates) add("has_updates" to "true")
         listOf("q" to q, "serial_status" to serialStatus, "availability" to availability, "status" to status,
             "group" to group, "min_popularity" to minPopularity).filter { it.second.isNotBlank() }.forEach(::add)
         categories.forEach { add("category_id" to it) }; genres.forEach { add("genre_tag" to it) }

@@ -1,6 +1,7 @@
 package com.shadow.media.library
 
 import org.json.JSONObject
+import okhttp3.HttpUrl.Companion.toHttpUrl
 
 /** Source identity and period are kept separate: an external week is never synthesized locally. */
 data class NovelRankingBoard(
@@ -54,10 +55,22 @@ data class NovelRankingPage(val selection: NovelRankingSelection, val data: JSON
 /** Use the server's filter parameters, never launch its web page or infer a category from a label. */
 fun novelSectionQuery(section: JSONObject): NovelQuery {
     val id = section.optString("id")
-    return NovelQuery(sort = if (id == "popular") "popularity" else "recent",
+    val fallback = NovelQuery(sort = if (id == "popular") "popularity" else "recent",
+        minPopularity = if (id == "popular") "0" else "",
         serialStatus = if (id == "completed") "completed" else "",
         availability = if (id in setOf("completed", "shuffle")) "readable" else "",
         categories = if (id.startsWith("category-")) listOf(id.removePrefix("category-")) else emptyList())
+    // Extract only known filter values. Never request, navigate to, or retain the supplied URL.
+    val link = section.optString("filter_link").takeIf { it.contains('?') } ?: return fallback
+    val url = "https://example.com/".toHttpUrl().resolve(link) ?: return fallback
+    fun values(name: String) = url.queryParameterValues(name).filterNotNull().filter(String::isNotBlank).distinct()
+    return fallback.copy(q = url.queryParameter("q").orEmpty().take(512),
+        sort = url.queryParameter("sort")?.takeIf { it in setOf("recent", "title", "popularity") } ?: fallback.sort,
+        categories = values("category_id").ifEmpty { fallback.categories }, genres = values("genre_tag"), excluded = values("exclude_genre_tag"),
+        allGenres = url.queryParameter("tag_mode") == "all",
+        serialStatus = url.queryParameter("serial_status")?.takeIf { it in setOf("ongoing", "completed", "hiatus", "unknown") } ?: fallback.serialStatus,
+        availability = url.queryParameter("availability")?.takeIf { it in setOf("readable", "local", "online", "metadata_only") } ?: fallback.availability,
+        minPopularity = url.queryParameter("min_popularity")?.takeIf { raw -> raw.toDoubleOrNull()?.let { it in 0.0..100.0 } == true } ?: fallback.minPopularity)
 }
 
 /** A new snapshot must restart pagination; offsets belong to the token, not a mutable position. */
