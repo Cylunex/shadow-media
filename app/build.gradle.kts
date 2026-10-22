@@ -14,8 +14,8 @@ android {
         applicationId = "com.shadow.media"
         minSdk = 26
         targetSdk = 36
-        versionCode = 24
-        versionName = "1.1.5"
+        versionCode = 25
+        versionName = "1.1.6"
     }
 
     buildFeatures {
