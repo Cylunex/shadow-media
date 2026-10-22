@@ -22,6 +22,7 @@ android {
         compose = true
         buildConfig = true
     }
+    testOptions { unitTests.isIncludeAndroidResources = true }
 
     buildTypes {
         debug { isMinifyEnabled = false }
@@ -86,6 +87,14 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("org.robolectric:robolectric:4.17")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    inputs.property("nativeReaderScreenshots", providers.environmentVariable("NATIVE_READER_SCREENSHOTS").orElse(""))
 }
 
 // Resolves artifacts only. This task does not compile, package, sign or install an APK.

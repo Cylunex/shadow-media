@@ -188,7 +188,7 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                 roots.forEachIndexed { i, (title, target) -> Tab(selected = i == tab, enabled = !busy,
                     onClick = { stack = emptyList(); search = ""; query = NovelQuery(); if (route == target) execute { load() } else { route = target; data = null } }, text = { Text(title) }) }
             }
-            if (route.kind != "rankings") LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (route.kind in setOf("home", "works", "authors", "lists", "offline")) LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(listOf("分类找书", "搜索", "作家", "历史", "离线")) { label -> AssistChip(enabled = !busy, onClick = {
                     when (label) {
                         "分类找书" -> { query = NovelQuery(); navigate(NovelRoute("works", "city")); filter = true }
@@ -241,32 +241,13 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                     Text("书城里还没有作品，收录到 Novel 的作品会出现在这里。", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (route.kind == "work") data?.let { work ->
-                    item { Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                            NovelBookCover(work, Modifier.width(94.dp))
-                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(work.optString("title"), style = MaterialTheme.typography.titleLarge)
-                                Text(work.optString("author").ifBlank { "作者未知" })
-                                Text(if (work.novelStrings("availability") == listOf("metadata_only")) "已收录资料 · 暂无可读版本" else "已有阅读版本", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                            }
-                        }
-                        Text(work.optString("description").ifBlank { "暂无简介" }, Modifier.padding(vertical = 12.dp))
-                        Text(listOf(work.optString("category"), serialLabel(work.optString("serial_status")), work.novelStrings("genre_tags").joinToString(" · ")).filter(String::isNotBlank).joinToString(" · "))
-                        if (work.optString("aliases").isNotBlank()) Text("别名：${work.optString("aliases")}", style = MaterialTheme.typography.bodySmall)
-                        work.optJSONObject("reading_summary")?.let { Text("${it.optInt("versions")} 个版本 · 最多 ${it.optInt("chapters")} 章 · 本地约 ${it.optLong("local_characters")} 字", style = MaterialTheme.typography.bodySmall) }
-                        work.optJSONObject("popularity")?.let { popularity ->
-                            Text("热度 ${work.opt("popularity_score")} · ${popularity.optString("source")}\n原始${popularity.optString("metric")}：${popularity.optString("raw").ifBlank { popularity.opt("value")?.toString().orEmpty() }}", style = MaterialTheme.typography.bodySmall)
-                            if (popularity.optDouble("observed_at", 0.0) > 0) Text("观测于 ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date((popularity.optDouble("observed_at") * 1000).toLong()))}", style = MaterialTheme.typography.bodySmall)
-                        }
-                        Row { Button(enabled = !busy && work.novelStrings("availability") != listOf("metadata_only"), onClick = { open(route.id) }) { Text(if (work.optJSONObject("progress") != null) "继续阅读" else "开始阅读") }
-                            if (!work.optBoolean("author_unknown") && work.optString("author").isNotBlank()) TextButton(enabled = !busy, onClick = { navigate(NovelRoute("author", name = work.getString("author"))) }) { Text("查看作家") } }
-                        FilledTonalButton(enabled = !busy && !LibraryResources.offlineOnly && work.optString("title").isNotBlank(),
-                            onClick = { sourceSearch = true }, modifier = Modifier.fillMaxWidth()) {
-                            Icon(Icons.Rounded.Search, null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("直接搜索在线书源")
-                        }
+                    item {
+                        NovelWorkOverview(work, !busy, !LibraryResources.offlineOnly && work.optString("title").isNotBlank(),
+                            onRead = { open(route.id) }, onAuthor = { navigate(NovelRoute("author", name = work.getString("author"))) },
+                            onSearch = { sourceSearch = true })
                     }
                     item {
+                        Text("我的阅读", style = MaterialTheme.typography.titleMedium)
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             FilterChip(work.optBoolean("on_shelf"), enabled = editable && !busy, onClick = { execute { change(listOf("me", "books", route.id), "PATCH", JSONObject().put("on_shelf", !work.optBoolean("on_shelf"))) } }, label = { Text(if (work.optBoolean("on_shelf")) "已在书架" else "加入书架") })
                             TextButton(enabled = editable && !busy, onClick = { execute { val result = repository.get(c, listOf("booklists"), listOf("work_id" to route.id, "limit" to PAGE.toString())); memberships = result.novelObjects("items"); membershipOffset = 0; membershipTotal = result.optInt("total") } }) { Text("加入书单") }

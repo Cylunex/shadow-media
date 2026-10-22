@@ -6,6 +6,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -77,7 +81,7 @@ internal fun ReaderPreferencesPanel(value: ReaderSettings, update: (ReaderSettin
                 ReaderSwitch("双指缩放调整字号", value.pinchToResize) { update(value.copy(pinchToResize = it)) }
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 Text("操作提示", style = MaterialTheme.typography.titleSmall)
-                Text((if (nativeText) "• 长按段落：复制或保存摘录\n" else "• 长按文字：选择、复制或保存摘录\n") + "• 点击中央：显示或收起菜单\n• 左右滑动：上一页 / 下一页\n• 音量上 / 下：上一页 / 下一页（开启后）\n• 返回键：先收起菜单，再返回书架\n• 目录、搜索、书签与朗读均在菜单中", style = MaterialTheme.typography.bodyMedium)
+                Text((if (nativeText) "• 长按段落：复制或保存摘录\n" else "• 长按文字：选择、复制或保存摘录\n") + "• 点击中央：显示或收起菜单\n• 左右滑动：上一页 / 下一页\n• 音量上 / 下：上一页 / 下一页（开启后）\n• 返回键：先关闭目录等面板，再返回书架\n• 目录、搜索、书签与朗读均在菜单中", style = MaterialTheme.typography.bodyMedium)
             }
         }
         Spacer(Modifier.height(20.dp))
@@ -94,18 +98,18 @@ internal fun ReaderPreferencesPanel(value: ReaderSettings, update: (ReaderSettin
 }
 
 @Composable private fun ReaderSwitch(label: String, checked: Boolean, change: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(checked, role = Role.Switch, onValueChange = change), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
         Text(label, Modifier.weight(1f).padding(end = 12.dp), style = MaterialTheme.typography.bodyMedium)
-        Switch(checked = checked, onCheckedChange = change)
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 
-@Composable internal fun ReaderProgressControl(progress: Float, enabled: Boolean, label: String, seek: (Float) -> Unit) {
+@Composable internal fun ReaderProgressControl(progress: Float, enabled: Boolean, label: String, compact: Boolean = false, modifier: Modifier = Modifier, seek: (Float) -> Unit) {
     var dragging by remember { mutableStateOf(false) }
     var pending by remember { mutableFloatStateOf(progress) }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
-        Text("$label ${((if (dragging) pending else progress) * 100).roundToInt()}%", style = MaterialTheme.typography.labelMedium)
+    Column(modifier.fillMaxWidth().padding(horizontal = if (compact) 0.dp else 20.dp)) {
+        if (!compact) Text("$label ${((if (dragging) pending else progress) * 100).roundToInt()}%", style = MaterialTheme.typography.labelMedium)
         Slider(value = if (dragging) pending else progress, onValueChange = { dragging = true; pending = it },
-            onValueChangeFinished = { seek(pending); dragging = false }, enabled = enabled)
+            onValueChangeFinished = { seek(pending); dragging = false }, enabled = enabled, modifier = Modifier.semantics { contentDescription = "${label}进度" })
     }
 }

@@ -12,9 +12,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,7 +65,7 @@ class NativeTextReaderActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        installReaderBackNavigation({ panel != null }) { panel = null; applyWindow() }
+        installReaderBackNavigation({ panel != null || excerpt != null }) { if (excerpt != null) excerpt = null else panel = null; applyWindow() }
         library = LibraryRepository(this); novel = NovelRepository(this, library); source = NativeTextSource(library, novel)
         store = ReaderSettingsStore(getSharedPreferences("reader_preferences", MODE_PRIVATE)); style = store.load()
         jumpHistory = NativeJumpHistory.restore(savedInstanceState?.getString("jump_history"))
@@ -217,16 +217,22 @@ class NativeTextReaderActivity : ComponentActivity() {
     }
 
     @Composable private fun Chrome() {
-        val night = style.paper == ReaderPaper.NIGHT
-        MaterialTheme(colorScheme = if (night) darkColorScheme() else lightColorScheme(surface = Color(style.paper.background), background = Color(style.paper.background), primary = Color(0xFF755F39))) {
+        MaterialTheme(colorScheme = readerColorScheme(style.paper)) {
             val writerError by ProgressWriter.error.collectAsState()
+            val snackbar = remember { SnackbarHostState() }
+            LaunchedEffect(message) {
+                val text = message ?: return@LaunchedEffect
+                snackbar.showSnackbar(text)
+                if (message == text) message = null
+            }
             var bookmarkAssets by remember { mutableStateOf(emptyList<String>()) }
             LaunchedEffect(asset?.id) {
                 val pub = publication
                 bookmarkAssets = if (pub == null) listOfNotNull(asset?.id) else novel.dao.publications(pub.scope)
                     .filter { it.workId == pub.workId && it.versionId == pub.versionId }.map { it.assetId }
             }
-            Box(Modifier.fillMaxSize().background(Color(style.paper.background)).displayCutoutPadding()) {
+            BoxWithConstraints(Modifier.fillMaxSize().background(Color(style.paper.background)).displayCutoutPadding()) {
+                val compactControls = maxHeight < 480.dp
                 AndroidView(factory = { context -> NativeTextView(context).also { reader ->
                     view = reader
                     reader.onMenu = ::toggleMenu; reader.onBoundary = ::boundary; reader.onPosition = ::positionChanged
@@ -237,83 +243,87 @@ class NativeTextReaderActivity : ComponentActivity() {
                         if (saveAfterLayout) { saveAfterLayout = false; positionChanged(reader.readingOffset, true) }
                     }
                     pendingShow?.let { (content, title, restored) -> reader.show(content, title, restored, style); pendingShow = null }
-                } }, update = { it.gesturesEnabled = !menu && panel == null && excerpt == null && message == null }, modifier = Modifier.fillMaxSize())
+                } }, update = { it.gesturesEnabled = !menu && panel == null && excerpt == null }, modifier = Modifier.fillMaxSize())
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
                 fatal?.let { text -> Column(Modifier.align(Alignment.Center).padding(28.dp)) { Text(text); TextButton(onClick = { finish() }) { Text("返回书架") } } }
                 if (menu) {
                     Box(Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { menu = false; applyWindow() })
-                    Surface(Modifier.align(Alignment.TopCenter).fillMaxWidth().statusBarsPadding(), tonalElevation = 4.dp) {
-                        Column(Modifier.padding(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) { TextButton(onClick = { finish() }) { Text("返回") }; Text(asset?.title.orEmpty(), Modifier.weight(1f), maxLines = 1) }
-                            Text(chapter?.ref?.title.orEmpty(), style = MaterialTheme.typography.bodySmall)
-                            val status = when { state?.conflictJson?.isNotBlank() == true -> "进度有冲突，请选择保留的位置"; state?.message?.isNotBlank() == true -> state?.message; state?.pending == true -> "进度已保存在本机，等待同步"; publication != null -> "进度已同步"; else -> null }
-                            (writerError ?: status)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                            if (state?.conflictJson?.isNotBlank() == true) Row { TextButton(onClick = { resolve(false) }, enabled = !busy) { Text("保留本机进度") }; TextButton(onClick = { resolve(true) }, enabled = !busy) { Text("使用云端进度") } }
+                    Box(Modifier.align(Alignment.TopCenter)) {
+                        val status = when {
+                            state?.conflictJson?.isNotBlank() == true -> "进度有冲突，请选择保留的位置"
+                            state?.message?.isNotBlank() == true -> state?.message
+                            state?.pending == true -> "进度已保存在本机，等待同步"
+                            publication != null && state != null -> "进度已同步"
+                            else -> "进度保存在本机"
                         }
+                        NativeReaderHeader(asset?.title.orEmpty(), chapter?.ref?.title.orEmpty(), writerError ?: status, !busy,
+                            onBack = { finish() }, onClose = { menu = false; applyWindow() },
+                            onBookmark = { chapter?.let { mark(it.locator(offset), it.ref.title) } },
+                            conflict = if (state?.conflictJson?.isNotBlank() == true) ({
+                                FlowRow(Modifier.padding(horizontal = 12.dp)) {
+                                    TextButton(onClick = { resolve(false) }, enabled = !busy) { Text("保留本机进度") }
+                                    TextButton(onClick = { resolve(true) }, enabled = !busy) { Text("使用云端进度") }
+                                }
+                            }) else null)
                     }
-                    Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding(), tonalElevation = 4.dp) {
-                        Column {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                listOf("目录", "排版", "搜索", "书签").forEach { label -> TextButton(onClick = { panel = label; applyWindow() }) { Text(label) } }
-                            }
-                            if (jumpHistory.locations.isNotEmpty()) TextButton(enabled = !busy, onClick = { closePanel(); returnFromJump() }) { Text("返回跳转前的位置") }
-                            ReaderProgressControl((offset.toFloat() / (chapter?.text?.length ?: 1).coerceAtLeast(1)).coerceIn(0f, 1f), !busy && chapter != null, "本章") { ratio ->
+                    Box(Modifier.align(Alignment.BottomCenter)) {
+                        NativeReaderControls(chapter?.ref?.title.orEmpty(), pageLabel,
+                            (offset.toFloat() / (chapter?.text?.length ?: 1).coerceAtLeast(1)).coerceIn(0f, 1f),
+                            !busy && chapter != null, narrating, jumpHistory.locations.isNotEmpty(),
+                            onReturn = { closePanel(); returnFromJump() }, onSeek = { ratio ->
                                 val origin = location()
+                                stopAloud()
                                 view?.seek(((chapter?.text?.length ?: 0) * ratio).toInt())
                                 jumpHistory = jumpHistory.remember(origin, location())
-                            }
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                                TextButton(enabled = !busy, onClick = { view?.turn(-1) }) { Text("上一页") }
-                                TextButton(onClick = { chapter?.let { mark(it.locator(offset), it.ref.title) } }) { Text("标记") }
-                                Text(pageLabel, style = MaterialTheme.typography.bodySmall)
-                                TextButton(onClick = ::speak) { Text(if (narrating) "停止" else "朗读") }
-                                TextButton(enabled = !busy, onClick = { view?.turn(1) }) { Text("下一页") }
-                            }
-                        }
+                            }, onPrevious = { stopAloud(); view?.turn(-1) }, onNext = { stopAloud(); view?.turn(1) },
+                            onSpeak = ::speak, onPanel = { panel = it; applyWindow() }, compact = compactControls)
                     }
                 }
+                SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp))
             }
-            if (panel != null) ModalBottomSheet(onDismissRequest = { panel = null; applyWindow() }) {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).navigationBarsPadding()) {
-                    Text(panel.orEmpty(), style = MaterialTheme.typography.titleLarge)
+            if (panel != null) ModalBottomSheet(sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), onDismissRequest = { panel = null; applyWindow() }) {
+                Column(Modifier.fillMaxWidth().fillMaxHeight(.92f).padding(horizontal = 20.dp).navigationBarsPadding().imePadding()) {
+                    Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(panel.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                        IconButton(onClick = { panel = null; applyWindow() }) { Icon(Icons.Rounded.Close, "关闭面板") }
+                    }
                     when (panel) {
-                        "排版" -> ReaderPreferencesPanel(style, ::update, nativeText = true, encoding = if (asset?.format == "txt") ({
+                        "排版" -> Column(Modifier.weight(1f)) { ReaderPreferencesPanel(style, ::update, nativeText = true, encoding = if (asset?.format == "txt") ({
                             Text("文本编码：${asset?.let { library.textEncoding(it.id) }}")
                             FlowRow { listOf("自动", "UTF-8", "GB18030", "Big5", "UTF-16LE", "UTF-16BE").forEach { encoding -> TextButton(onClick = {
                                 navigate { val item = requireNotNull(asset); library.setTextEncoding(item.id, encoding); source.invalidate(); session = null; open(item, null) }
                             }) { Text(encoding) } } }
-                        }) else null)
+                        }) else null) }
                         "目录" -> asset?.let { item -> chapter?.let { content ->
                             NativeReaderContentsPanel(item, publication, content, source, novel, !busy) { ref -> closePanel(); openChapter(ref) }
                         } }
                         "搜索" -> asset?.let { item ->
                             NativeReaderSearchPanel(item, publication, source, !busy) { hit -> closePanel(); jumpTo(NativeReaderLocation(hit.assetId, hit.locator)) }
                         }
-                        "书签" -> asset?.let { current ->
+                        "书签" -> asset?.let {
                             val marks by library.dao.annotationsForAssets(bookmarkAssets).collectAsState(emptyList())
-                            LazyColumn(Modifier.heightIn(max = 480.dp)) { items(marks, key = { it.id }) { mark -> Row {
-                                TextButton(enabled = !busy, modifier = Modifier.weight(1f), onClick = {
-                                    closePanel(); jumpTo(NativeReaderLocation(mark.assetId, mark.locatorJson))
-                                }) { Text(mark.note, maxLines = 3) }
-                                TextButton(onClick = { lifecycleScope.launch { library.dao.removeAnnotation(mark.id) } }) { Text("删除") }
-                            } } }
+                            NativeReaderBookmarks(marks, !busy, onOpen = { mark ->
+                                closePanel(); jumpTo(NativeReaderLocation(mark.assetId, mark.locatorJson))
+                            }, onDelete = { mark -> lifecycleScope.launch {
+                                deleteReaderBookmark(library, mark, snackbar)
+                            } })
                         }
                     }
-                    Spacer(Modifier.height(24.dp))
+                    Spacer(Modifier.height(8.dp))
+                    SnackbarHost(snackbar)
                 }
             }
             excerpt?.let { (text, position) -> AlertDialog(onDismissRequest = { excerpt = null }, title = { Text("段落") }, text = { Text(text.take(1500)) },
                 confirmButton = { TextButton(onClick = { chapter?.let { mark(it.locator(position), text.take(1000)) }; excerpt = null }) { Text("保存摘录") } },
-                dismissButton = { TextButton(onClick = { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("正文", text)); excerpt = null }) { Text("复制") } }) }
-            message?.let { text -> AlertDialog(onDismissRequest = { message = null }, text = { Text(text) }, confirmButton = { TextButton(onClick = { message = null }) { Text("确定") } }) }
+                dismissButton = { TextButton(onClick = { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("正文", text)); message = "已复制正文"; excerpt = null }) { Text("复制") } }) }
         }
     }
     override fun onSaveInstanceState(outState: Bundle) { outState.putString("jump_history", jumpHistory.toJson()); chapter?.let { outState.putString("native_locator", it.locator(offset).toString()) }; asset?.let { outState.putString("active_asset", it.id) }; super.onSaveInstanceState(outState) }
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        if (style.volumeToTurn && !menu && panel == null && !narrating && keyCode in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) { if (event.repeatCount == 0) view?.turn(if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) 1 else -1); return true }
+        if (style.volumeToTurn && !menu && panel == null && excerpt == null && !narrating && keyCode in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) { if (event.repeatCount == 0) view?.turn(if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) 1 else -1); return true }
         return super.onKeyDown(keyCode, event)
     }
-    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean = if (style.volumeToTurn && !menu && panel == null && !narrating && keyCode in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) true else super.onKeyUp(keyCode, event)
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean = if (style.volumeToTurn && !menu && panel == null && excerpt == null && !narrating && keyCode in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) true else super.onKeyUp(keyCode, event)
     override fun onStop() { stopAloud(); view?.pause(); if (publication != null) lifecycleScope.launch { ProgressWriter.flush(); NovelRepository.schedule(this@NativeTextReaderActivity) }; super.onStop() }
     override fun onDestroy() { view?.dispose(); view = null; aloud?.close(); super.onDestroy() }
 }
