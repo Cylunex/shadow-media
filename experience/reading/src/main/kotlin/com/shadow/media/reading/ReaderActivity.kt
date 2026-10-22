@@ -73,7 +73,7 @@ class ReaderActivity : FragmentActivity() {
     private var panel by mutableStateOf<String?>(null)
     private var turning: Job? = null
     private var paperJob: Job? = null
-    private var styledResource: Pair<String, ReaderPaper>? = null
+    private var styledResource: Triple<String, ReaderPaper, Float>? = null
     private var gestureMessage by mutableStateOf<String?>(null)
     private var gestureMessageJob: Job? = null
     private var positions by mutableStateOf<List<Locator>>(emptyList())
@@ -275,17 +275,21 @@ class ReaderActivity : FragmentActivity() {
             navigator?.submitPreferences(prefs)
         }
         applyReaderWindow()
-        if (old.paper != readerSettings.paper) applyPaper()
+        if (old.paper != readerSettings.paper || old.paperTexture != readerSettings.paperTexture) applyPaper()
     }
 
     private fun applyPaper() {
         val fragment = navigator ?: return
-        val resource = fragment.currentLocator.value.href.toString() to readerSettings.paper
+        val appearance = readerSettings
+        val resource = Triple(fragment.currentLocator.value.href.toString(), appearance.paper, appearance.paperTexture)
         if (styledResource == resource) return
         paperJob?.cancel()
         paperJob = lifecycleScope.launch {
             try {
-                fragment.evaluateJavascript(readerPaperScript(resource.second))
+                val data = if (appearance.paper == ReaderPaper.PARCHMENT) withContext(Dispatchers.IO) {
+                    ReaderPaperTexture.dataUri(applicationContext)
+                } else ""
+                fragment.evaluateJavascript(readerPaperScript(appearance, data))
                 styledResource = resource
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { /* Solid paper color remains available during resource replacement. */ }
@@ -501,6 +505,10 @@ class ReaderActivity : FragmentActivity() {
                                     if (location != null) asset?.let { library.bookmark(it.id, location.toJSON().toString(), location.text.highlight ?: location.title ?: "书签"); message = "已保存书签或选中文本" }
                                 } }) { Text("${((locator?.locations?.totalProgression ?: 0.0) * 100).toInt()}% · 标记") }
                                 IconButton(onClick = { turnPage(true) }) { Icon(Icons.AutoMirrored.Rounded.NavigateNext, "下一页") }
+                                IconButton(onClick = { updateSettings(readerSettings.toggleNight()) }) {
+                                    Icon(if (readerSettings.paper == ReaderPaper.NIGHT) Icons.Rounded.LightMode else Icons.Rounded.DarkMode,
+                                        if (readerSettings.paper == ReaderPaper.NIGHT) "恢复日间纸张" else "切换夜间阅读")
+                                }
                                 IconButton(onClick = {
                                     if (narrating) aloud?.stop() else scope.launch {
                                         try {

@@ -259,6 +259,7 @@ class NativeTextReaderActivity : ComponentActivity() {
                         NativeReaderHeader(asset?.title.orEmpty(), chapter?.ref?.title.orEmpty(), writerError ?: status, !busy,
                             onBack = { finish() }, onClose = { menu = false; applyWindow() },
                             onBookmark = { chapter?.let { mark(it.locator(offset), it.ref.title) } },
+                            night = style.paper == ReaderPaper.NIGHT, onToggleNight = { update(style.toggleNight()) },
                             conflict = if (state?.conflictJson?.isNotBlank() == true) ({
                                 FlowRow(Modifier.padding(horizontal = 12.dp)) {
                                     TextButton(onClick = { resolve(false) }, enabled = !busy) { Text("保留本机进度") }

@@ -17,6 +17,33 @@ import java.io.File
 @Config(sdk = [28], manifest = Config.NONE)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class NativeTextLayoutTest {
+    private data class Preview(val name: String, val style: ReaderSettings, val width: Int, val height: Int)
+    @Test fun wideScreensHaveCenteredMeasureAndFocusModeReclaimsFurnitureSpace() = runBlocking {
+        val content = chapter("山间的雾气渐渐散去，石阶旁的竹叶还挂着露珠。\n".repeat(140))
+        val wide = layout(content, w = 1200, h = 800)
+        assertEquals(640, wide.contentWidth)
+        assertEquals(280f, wide.margin)
+        val full = layout(content, ReaderSettings(comfortableWidth = false), 1200, 800)
+        assertTrue(full.contentWidth > wide.contentWidth)
+        val focus = layout(content, ReaderSettings(showProgress = false))
+        val normal = layout(content)
+        assertTrue(focus.pages.size <= normal.pages.size)
+        assertTrue(focus.pages.first().lines.first().baseline < normal.pages.first().lines.first().baseline)
+        assertTrue(focus.pages[1].lines.first().baseline < normal.pages[1].lines.first().baseline)
+        val offset = normal.pages[3].start
+        assertTrue(offset in focus.pages[focus.pageAt(offset)].let { it.start..it.end })
+    }
+    @Test fun largeFontAndWideMarginsCannotMakeTheTextColumnWiderThanTheViewport() = runBlocking {
+        val content = chapter("长路漫漫山海之间，雨声穿过竹林。".repeat(30))
+        val result = layout(content, ReaderSettings(fontSize = 220f, margins = 2f, justify = false), 240, 700)
+        assertTrue(result.contentWidth <= 224)
+        assertTrue(result.margin >= 8f)
+        assertEquals(content.text, result.pages.flatMap { it.lines }.flatMap { it.glyphs }.joinToString("") { it.text }.replace("　", ""))
+        val paint = android.text.TextPaint().apply { textSize = 44f; typeface = android.graphics.Typeface.SERIF }
+        for (line in result.pages.flatMap { it.lines }) for (glyph in line.glyphs) {
+            assertTrue(result.margin + glyph.x + paint.measureText(glyph.text) <= 240f)
+        }
+    }
     private fun chapter(body: String) = NativeTextChapter(NativeChapterRef("c0", "第一章 风起青萍", 0, "c0.xhtml"), body, "version1", 3)
     private suspend fun layout(content: NativeTextChapter, settings: ReaderSettings = ReaderSettings(), w: Int = 432, h: Int = 900) = NativeTextLayout.paginate(content, w, h, settings, 1f, 1f)
     @Test fun chinesePunctuationAndSupplementaryCharactersHaveCompleteNonOverlappingLines() = runBlocking {
@@ -97,10 +124,11 @@ class NativeTextLayoutTest {
         val text = ("　　山间的雾气渐渐散去，石阶旁的竹叶还挂着露珠。少年收起书卷，望向远处的灯火。\n" +
             "“今日便出发吗？”她轻声问道。\n" + "　　他点了点头：“路虽远，总要一步一步走。”\n").repeat(24)
         val result = layout(chapter(text))
+        val texture = ReaderPaperTexture.bitmap(org.robolectric.RuntimeEnvironment.getApplication())
         val first = Bitmap.createBitmap(432, 900, Bitmap.Config.ARGB_8888)
         val second = Bitmap.createBitmap(432, 900, Bitmap.Config.ARGB_8888)
-        result.draw(Canvas(first), 0, "山海夜读")
-        result.draw(Canvas(second), 1, "山海夜读")
+        result.draw(Canvas(first), 0, "山海夜读", texture)
+        result.draw(Canvas(second), 1, "山海夜读", texture)
         assertFalse(first.sameAs(second))
         val curl = Bitmap.createBitmap(432, 900, Bitmap.Config.ARGB_8888)
         LegadoPageCurl().draw(Canvas(curl), first, second, .4f, true, ReaderSettings().paper.background)
@@ -110,6 +138,18 @@ class NativeTextLayoutTest {
             File(path).mkdirs()
             for ((name, bitmap) in listOf("native-page" to first, "native-next" to second, "native-curl" to curl)) {
                 File(path, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            }
+            for ((name, style, w, h) in listOf(
+                Preview("reader-parchment-focus", ReaderSettings(showProgress = false), 432, 900),
+                Preview("reader-night", ReaderSettings(paper = ReaderPaper.NIGHT), 432, 900),
+                Preview("reader-wide", ReaderSettings(), 1100, 620),
+                Preview("reader-large-narrow", ReaderTypographyPreset.LARGE.apply(ReaderSettings()), 320, 700)
+            )) {
+                val page = layout(chapter(text), style, w, h)
+                val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                page.draw(Canvas(bitmap), 0, "山海夜读", texture)
+                File(path, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                bitmap.recycle()
             }
         }
     }

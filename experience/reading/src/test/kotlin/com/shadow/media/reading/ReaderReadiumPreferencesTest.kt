@@ -10,6 +10,18 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class ReaderReadiumPreferencesTest {
+    @Test fun paperAndTypographySurviveAStoreRoundTripIncludingTheLastDayTheme() {
+        val preferences = org.robolectric.RuntimeEnvironment.getApplication().getSharedPreferences("paper-test", 0)
+        preferences.edit().clear().commit()
+        val store = ReaderSettingsStore(preferences)
+        assertEquals(ReaderSettings(), store.load())
+        val custom = ReaderSettings(paper = ReaderPaper.GREEN, paperTexture = .3f, justify = false,
+            comfortableWidth = false, showProgress = false).toggleNight()
+        store.save(custom)
+        assertEquals(custom, ReaderSettingsStore(preferences).load())
+        assertEquals(ReaderPaper.GREEN, store.load().toggleNight().paper)
+        assertEquals(org.readium.r2.navigator.preferences.TextAlign.START, custom.epubPreferences().textAlign)
+    }
     @Test fun defaultSettingsConstructValidReadiumPreferences() {
         val preferences = ReaderSettings().epubPreferences()
         assertEquals(1.15, preferences.fontSize!!, 0.00001)

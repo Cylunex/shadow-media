@@ -7,7 +7,7 @@ internal enum class ReaderPageMode(val label: String) {
 }
 
 internal enum class ReaderPaper(val label: String, val background: Int, val foreground: Int) {
-    PARCHMENT("羊皮纸", 0xFFEAD7AE.toInt(), 0xFF403323.toInt()),
+    PARCHMENT("羊皮纸", 0xFFF6EBD2.toInt(), 0xFF302418.toInt()),
     IVORY("米白", 0xFFF6F1E5.toInt(), 0xFF34322C.toInt()),
     GREEN("护眼绿", 0xFFD8E5D3.toInt(), 0xFF2E3B30.toInt()),
     WHITE("纯白", 0xFFFAFAF8.toInt(), 0xFF282828.toInt()),
@@ -27,7 +27,12 @@ internal data class ReaderSettings(
     val font: ReaderFont = ReaderFont.SERIF,
     val bold: Boolean = false,
     val indent: Boolean = true,
+    val justify: Boolean = true,
+    val comfortableWidth: Boolean = true,
+    val showProgress: Boolean = true,
     val paper: ReaderPaper = ReaderPaper.PARCHMENT,
+    val lastDayPaper: ReaderPaper = ReaderPaper.PARCHMENT,
+    val paperTexture: Float = 0.65f,
     val pageMode: ReaderPageMode = ReaderPageMode.SLIDE,
     val fullScreen: Boolean = true,
     val tapToTurn: Boolean = true,
@@ -43,8 +48,34 @@ internal data class ReaderSettings(
         paragraphSpacing = paragraphSpacing.bounded(0f, 2f, 0.6f),
         letterSpacing = letterSpacing.bounded(0f, 0.15f, 0f),
         margins = margins.bounded(0.4f, 2f, 1f),
+        paperTexture = paperTexture.bounded(0f, 1f, 0.65f),
+        lastDayPaper = if (paper != ReaderPaper.NIGHT) paper else lastDayPaper.takeUnless { it == ReaderPaper.NIGHT } ?: ReaderPaper.PARCHMENT,
         brightness = if (brightness == -1f) -1f else brightness.bounded(0.02f, 1f, -1f)
     )
+
+    fun selectPaper(next: ReaderPaper) = copy(paper = next,
+        lastDayPaper = if (paper != ReaderPaper.NIGHT) paper else lastDayPaper).normalized()
+
+    fun toggleNight() = selectPaper(if (paper == ReaderPaper.NIGHT) lastDayPaper else ReaderPaper.NIGHT)
+
+    /** Only properties which change character positions belong here. Colors never trigger pagination. */
+    fun typographyKey() = listOf(fontSize, lineHeight, paragraphSpacing, letterSpacing, margins, font, bold, indent, justify)
+}
+
+internal enum class ReaderTypographyPreset(val label: String) {
+    CLASSIC("经典"), RELAXED("舒展"), LARGE("大字"), COMPACT("紧凑");
+
+    fun apply(value: ReaderSettings): ReaderSettings {
+        val base = value.copy(letterSpacing = 0f, font = ReaderFont.SERIF, bold = false, indent = true, justify = true)
+        return when (this) {
+            CLASSIC -> base.copy(fontSize = 115f, lineHeight = 1.7f, paragraphSpacing = .6f, margins = 1f)
+            RELAXED -> base.copy(fontSize = 120f, lineHeight = 1.9f, paragraphSpacing = .85f, margins = 1.1f)
+            LARGE -> base.copy(fontSize = 150f, lineHeight = 1.65f, paragraphSpacing = .7f, margins = .75f, font = ReaderFont.SANS, justify = false)
+            COMPACT -> base.copy(fontSize = 105f, lineHeight = 1.5f, paragraphSpacing = .4f, margins = .85f)
+        }
+    }
+
+    fun matches(value: ReaderSettings) = apply(value).typographyKey() == value.typographyKey()
 }
 
 private fun Float.bounded(min: Float, max: Float, fallback: Float) = if (isFinite()) coerceIn(min, max) else fallback

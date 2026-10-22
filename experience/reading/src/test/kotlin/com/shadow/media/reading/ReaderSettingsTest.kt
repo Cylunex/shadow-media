@@ -4,6 +4,29 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ReaderSettingsTest {
+    @Test fun nightToggleRestoresTheChosenDayPaperAndPresetsOnlyChangeTypography() {
+        val custom = ReaderSettings(paper = ReaderPaper.GREEN, paperTexture = .4f, brightness = .3f,
+            pageMode = ReaderPageMode.CURL, volumeToTurn = true, comfortableWidth = false, showProgress = false)
+        val night = custom.toggleNight()
+        assertEquals(ReaderPaper.NIGHT, night.paper)
+        assertEquals(ReaderPaper.GREEN, night.toggleNight().paper)
+        assertEquals(ReaderPaper.IVORY, night.selectPaper(ReaderPaper.IVORY).toggleNight().toggleNight().paper)
+        for (preset in ReaderTypographyPreset.entries) {
+            val applied = preset.apply(custom)
+            assertTrue(preset.matches(applied))
+            assertEquals(custom.paper, applied.paper)
+            assertEquals(custom.paperTexture, applied.paperTexture)
+            assertEquals(custom.brightness, applied.brightness)
+            assertEquals(custom.pageMode, applied.pageMode)
+            assertTrue(applied.volumeToTurn)
+            assertFalse(applied.comfortableWidth)
+            assertFalse(applied.showProgress)
+        }
+        assertEquals(.65f, ReaderSettings(paperTexture = Float.NaN).normalized().paperTexture)
+        assertEquals(0f, ReaderSettings(paperTexture = -1f).normalized().paperTexture)
+        assertEquals(1f, ReaderSettings(paperTexture = 4f).normalized().paperTexture)
+        assertEquals(ReaderPaper.PARCHMENT, ReaderSettings(paper = ReaderPaper.NIGHT, lastDayPaper = ReaderPaper.NIGHT).normalized().toggleNight().paper)
+    }
     @Test fun shortQuickSwipesCommitButNoiseAndDirectionReversalsDoNot() {
         assertTrue(readerCommitSwipe(-30f, -1200f, 432, 8f, 50f, 1))
         assertFalse(readerCommitSwipe(-30f, -10f, 432, 8f, 50f, 1))

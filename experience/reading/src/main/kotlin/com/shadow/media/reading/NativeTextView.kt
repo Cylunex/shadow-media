@@ -48,6 +48,7 @@ internal class NativeTextView(context: Context) : View(context) {
     private val scroller = OverScroller(context)
     private var animation: ValueAnimator? = null
     private val bitmaps = mutableMapOf<Int, Bitmap>()
+    private var paperTexture: Bitmap? = null
     private val curl = LegadoPageCurl()
     private val slop = ViewConfiguration.get(context).scaledTouchSlop
     private var downX = 0f
@@ -105,12 +106,17 @@ internal class NativeTextView(context: Context) : View(context) {
     }
     fun configure(value: ReaderSettings) {
         if (value == settings) return
-        val reflow = layoutKey(settings) != layoutKey(value)
+        val previous = settings
+        val reflow = layoutKey(previous) != layoutKey(value)
         settings = value
         if (reflow) { cancelTurn(); reflow() }
-        else invalidate()
+        else {
+            if (previous.paper != value.paper || previous.paperTexture != value.paperTexture) { pause(); clearBitmaps() }
+            if (previous.pageMode != value.pageMode) seek(readingOffset, user = false)
+            invalidate()
+        }
     }
-    private fun layoutKey(s: ReaderSettings) = listOf(s.fontSize, s.lineHeight, s.paragraphSpacing, s.letterSpacing, s.margins, s.font, s.bold, s.indent, s.paper)
+    private fun layoutKey(s: ReaderSettings) = s.typographyKey() + listOf(s.comfortableWidth, s.showProgress)
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) { super.onSizeChanged(w, h, oldw, oldh); if (w != oldw || h != oldh) reflow() }
     private fun reflow() {
         val content = chapter ?: return
@@ -119,12 +125,16 @@ internal class NativeTextView(context: Context) : View(context) {
         val w = width; val h = height; val style = settings
         layoutJob = scope.launch {
             try {
-                val result = withContext(Dispatchers.Default) { NativeTextLayout.paginate(content, w, h, style, resources.displayMetrics.density, resources.displayMetrics.scaledDensity) }
+                val result = withContext(Dispatchers.Default) {
+                    ReaderPaperTexture.bitmap(context.applicationContext)
+                    NativeTextLayout.paginate(content, w, h, style, resources.displayMetrics.density, resources.displayMetrics.scaledDensity)
+                }
+                paperTexture = ReaderPaperTexture.bitmap(context.applicationContext)
                 cancelTurn(); clearBitmaps(); document = result
                 pageIndex = result.pageAt(readingOffset)
-                if (style.pageMode == ReaderPageMode.SCROLL && readingOffset > 0) {
+                if (settings.pageMode == ReaderPageMode.SCROLL && readingOffset > 0) {
                     val line = result.pages[pageIndex].lines.lastOrNull { it.start <= readingOffset }
-                    scrollOffset = ((line?.baseline ?: 48f * resources.displayMetrics.density) - 48f * resources.displayMetrics.density).coerceAtLeast(0f)
+                    scrollOffset = ((line?.baseline ?: result.topInset) - result.topInset).coerceAtLeast(0f)
                 }
                 updateDescription(); invalidate(); onPosition(readingOffset, false); onReady()
             } catch (e: CancellationException) { throw e }
@@ -135,7 +145,7 @@ internal class NativeTextView(context: Context) : View(context) {
         val doc = document ?: return
         cancelTurn(); readingOffset = safeTextOffset(doc.chapter.text, offset); pageIndex = doc.pageAt(readingOffset)
         if (settings.pageMode == ReaderPageMode.SCROLL && readingOffset > 0) {
-            scrollOffset = ((doc.pages[pageIndex].lines.lastOrNull { it.start <= readingOffset }?.baseline ?: 0f) - 48f * resources.displayMetrics.density).coerceAtLeast(0f)
+            scrollOffset = ((doc.pages[pageIndex].lines.lastOrNull { it.start <= readingOffset }?.baseline ?: doc.topInset) - doc.topInset).coerceAtLeast(0f)
         }
         pruneBitmaps(); updateDescription(); invalidate(); onPosition(readingOffset, user)
     }
@@ -175,7 +185,7 @@ internal class NativeTextView(context: Context) : View(context) {
     fun pause() { animation?.cancel(); animation = null; scroller.abortAnimation(); overScroll = 0f; turnProgress = 0f; turnDirection = 0; invalidate() }
     fun cancelTurn() { pause(); scrollOffset = 0f }
     private fun bitmap(page: Int): Bitmap = bitmaps.getOrPut(page) {
-        Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { document!!.draw(Canvas(it), page, bookTitle) }
+        Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { document!!.draw(Canvas(it), page, bookTitle, paperTexture, settings) }
     }
     private fun clearBitmaps() { bitmaps.values.forEach { it.recycle() }; bitmaps.clear() }
     private fun pruneBitmaps() { bitmaps.keys.filter { abs(it - pageIndex) > 1 }.forEach { bitmaps.remove(it)?.recycle() } }

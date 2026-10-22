@@ -16,6 +16,9 @@ internal class ReaderSettingsStore(private val preferences: SharedPreferences) {
             paragraphSpacing = getFloat("paragraph", 0.6f), letterSpacing = getFloat("letter", 0f),
             margins = getFloat("margins", 1f), font = enumValue("fontFamily", ReaderFont.SERIF),
             bold = getBoolean("bold", false), indent = getBoolean("indent", true),
+            justify = getBoolean("justify", true), comfortableWidth = getBoolean("comfortableWidth", true),
+            showProgress = getBoolean("showProgress", true), paperTexture = getFloat("paperTexture", .65f),
+            lastDayPaper = enumValue("lastDayPaper", ReaderPaper.PARCHMENT),
             paper = enumValue("paper", when (getString("theme", null)) {
                 "DARK" -> ReaderPaper.NIGHT; "LIGHT" -> ReaderPaper.WHITE; else -> ReaderPaper.PARCHMENT
             }),
@@ -31,6 +34,8 @@ internal class ReaderSettingsStore(private val preferences: SharedPreferences) {
         preferences.edit().putFloat("font", fontSize).putFloat("line", lineHeight)
             .putFloat("paragraph", paragraphSpacing).putFloat("letter", letterSpacing).putFloat("margins", margins)
             .putString("fontFamily", font.name).putBoolean("bold", bold).putBoolean("indent", indent)
+            .putBoolean("justify", justify).putBoolean("comfortableWidth", comfortableWidth).putBoolean("showProgress", showProgress)
+            .putFloat("paperTexture", paperTexture).putString("lastDayPaper", lastDayPaper.name)
             .putString("paper", paper.name).putString("pageMode", pageMode.name).putBoolean("fullScreen", fullScreen)
             .putBoolean("tapToTurn", tapToTurn).putBoolean("volumeToTurn", volumeToTurn)
             .putBoolean("brightnessGesture", brightnessGesture).putBoolean("pinchToResize", pinchToResize)
@@ -51,21 +56,22 @@ internal fun ReaderSettings.epubPreferences() = with(normalized()) {
         fontFamily = FontFamily(font.css), fontWeight = if (bold) 1.75 else 1.0,
         theme = if (paper == ReaderPaper.NIGHT) Theme.DARK else Theme.LIGHT,
         backgroundColor = Color(paper.background), textColor = Color(paper.foreground),
-        publisherStyles = false, textAlign = TextAlign.JUSTIFY, scroll = pageMode == ReaderPageMode.SCROLL
+        publisherStyles = false, textAlign = if (justify) TextAlign.JUSTIFY else TextAlign.START, scroll = pageMode == ReaderPageMode.SCROLL
     )
 }
 
-/** Generated locally: no remote texture, font download or image dependency. Does not change pagination. */
-internal fun readerPaperScript(paper: ReaderPaper): String {
-    val texture = if (paper == ReaderPaper.PARCHMENT) {
-        "radial-gradient(ellipse at 50% 45%, transparent 30%, rgba(116,74,24,.12) 100%)," +
-            "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Cpath fill='%238b642c' opacity='.12' filter='url(%23n)' d='M0 0h180v180H0z'/%3E%3C/svg%3E\")"
-    } else "none"
+/** The same bundled paper as the native reader. A color overlay controls grain without changing layout. */
+internal fun readerPaperScript(value: ReaderSettings, textureData: String): String {
+    val style = value.normalized()
+    val paper = style.paper
+    val veil = "rgba(${android.graphics.Color.red(paper.background)},${android.graphics.Color.green(paper.background)},${android.graphics.Color.blue(paper.background)},${1f - style.paperTexture})"
+    val texture = if (paper == ReaderPaper.PARCHMENT && style.paperTexture > 0f && textureData.isNotEmpty())
+        "linear-gradient($veil,$veil),url(\"$textureData\")" else "none"
     return """
         (() => {
           let style = document.getElementById('shadow-reader-paper');
           if (!style) { style = document.createElement('style'); style.id = 'shadow-reader-paper'; document.head.appendChild(style); }
-          style.textContent = ${org.json.JSONObject.quote("html { background-image: $texture !important; background-attachment: fixed !important; } body { background-color: transparent !important; }")};
+          style.textContent = ${org.json.JSONObject.quote("html { background-image: $texture !important; background-size: cover !important; background-position: center !important; background-repeat: no-repeat !important; background-attachment: fixed !important; } body { background-color: transparent !important; }")};
         })();
     """.trimIndent()
 }

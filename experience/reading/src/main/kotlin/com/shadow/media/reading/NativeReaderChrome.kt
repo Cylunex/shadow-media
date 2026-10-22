@@ -21,7 +21,7 @@ import com.shadow.media.database.ContentAnnotationEntity
 import com.shadow.media.library.LibraryRepository
 
 @Composable
-internal fun NativeReaderHeader(title: String, chapter: String, status: String?, enabled: Boolean, onBack: () -> Unit, onClose: () -> Unit, onBookmark: () -> Unit, conflict: (@Composable () -> Unit)? = null) {
+internal fun NativeReaderHeader(title: String, chapter: String, status: String?, enabled: Boolean, onBack: () -> Unit, onClose: () -> Unit, onBookmark: () -> Unit, conflict: (@Composable () -> Unit)? = null, night: Boolean = false, onToggleNight: (() -> Unit)? = null) {
     Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
         Column(Modifier.fillMaxWidth().statusBarsPadding().padding(bottom = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -31,6 +31,9 @@ internal fun NativeReaderHeader(title: String, chapter: String, status: String?,
                     Text(chapter, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 IconButton(enabled = enabled, onClick = onBookmark) { Icon(Icons.Rounded.BookmarkAdd, "添加书签") }
+                onToggleNight?.let { toggle ->
+                    IconButton(onClick = toggle) { Icon(if (night) Icons.Rounded.LightMode else Icons.Rounded.DarkMode, if (night) "恢复日间纸张" else "切换夜间阅读") }
+                }
                 IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "收起阅读菜单") }
             }
             status?.let { Text(it, Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }

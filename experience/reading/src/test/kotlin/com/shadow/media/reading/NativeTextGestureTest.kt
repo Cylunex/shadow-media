@@ -16,6 +16,30 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [28], manifest = Config.NONE)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class NativeTextGestureTest {
+    @Test fun changingPaperRefreshesExistingPageWithoutRepaginationOrLosingTheAnchor() {
+        val view = reader()
+        try {
+            view.seek(view.document!!.pages[2].start + 5)
+            val before = view.document
+            val offset = view.readingOffset
+            val page = view.pageIndex
+            var positions = 0; view.onPosition = { _, _ -> positions++ }
+            fun snapshot() = android.graphics.Bitmap.createBitmap(432, 900, android.graphics.Bitmap.Config.ARGB_8888).also { view.draw(android.graphics.Canvas(it)) }
+            val parchment = snapshot()
+            view.configure(ReaderSettings(pageMode = ReaderPageMode.NONE, paper = ReaderPaper.NIGHT))
+            val night = snapshot()
+            view.configure(ReaderSettings(pageMode = ReaderPageMode.NONE, paperTexture = 0f))
+            val plain = snapshot()
+            assertFalse(parchment.sameAs(night)); assertFalse(parchment.sameAs(plain))
+            assertEquals(ReaderPaper.NIGHT.background, night.getPixel(0, 0))
+            assertEquals(ReaderPaper.PARCHMENT.background, plain.getPixel(0, 0))
+            assertSame(before, view.document)
+            assertEquals(offset, view.readingOffset)
+            assertEquals(page, view.pageIndex)
+            assertEquals(0, positions)
+            listOf(parchment, night, plain).forEach { it.recycle() }
+        } finally { view.dispose() }
+    }
     private fun reader(): NativeTextView {
         val view = NativeTextView(RuntimeEnvironment.getApplication())
         view.layout(0, 0, 432, 900)

@@ -33,6 +33,28 @@ import kotlinx.coroutines.runBlocking
 @Config(sdk = [28], qualifiers = "w360dp-h640dp-mdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class NativeReaderUiTest {
+    @Test fun typographyPresetsPreviewAndFineControlsAreReachableWithoutResettingPaper() {
+        var style by mutableStateOf(ReaderSettings())
+        compose.setContent { MaterialTheme(colorScheme = readerColorScheme(style.paper)) { Surface { Column(Modifier.fillMaxSize().padding(20.dp)) {
+            Text("排版与纸张", style = MaterialTheme.typography.titleLarge)
+            ReaderPreferencesPanel(style, { style = it }, nativeText = true)
+        } } } }
+        compose.onNodeWithContentDescription("阅读排版预览").assertIsDisplayed()
+        screenshot("reader-typography-parchment")
+        compose.onNodeWithText("舒展").performClick()
+        compose.runOnIdle { assertEquals(120f, style.fontSize); assertEquals(ReaderPaper.PARCHMENT, style.paper) }
+        compose.onNodeWithContentDescription("增大字号").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(125f, style.fontSize) }
+        compose.onNodeWithText("纸张纹理").performScrollTo().assertIsDisplayed()
+        screenshot("reader-paper-settings")
+        compose.onNodeWithText("精细排版：字体、行距与页边距").performScrollTo().performClick()
+        compose.onNodeWithText("正文两端对齐").performScrollTo().performClick()
+        compose.onNodeWithText("宽屏限制行长").performScrollTo().performClick()
+        compose.onNodeWithText("显示页眉与本章进度").performScrollTo().performClick()
+        compose.runOnIdle { assertFalse(style.justify); assertFalse(style.comfortableWidth); assertFalse(style.showProgress) }
+        compose.onNodeWithText("恢复默认排版").performScrollTo().performClick()
+        compose.runOnIdle { assertTrue(ReaderTypographyPreset.CLASSIC.matches(style)); assertTrue(style.showProgress) }
+    }
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
     private val chapters = (100 until 200).map { NativeChapterRef("c$it", "山间来信与远方的灯火 $it", it, "chapters/c$it.xhtml") }
     private fun screenshot(name: String) {
@@ -147,7 +169,8 @@ class NativeReaderUiTest {
             if (menu) {
                 Box(Modifier.align(Alignment.TopCenter)) {
                     NativeReaderHeader("山海来信与远方灯火的漫长故事", "第一百四十六章 山间来信", "进度已保存在本机，等待同步", true,
-                        onBack = { exited = true }, onClose = { menu = false }, onBookmark = { bookmarks++ })
+                        onBack = { exited = true }, onClose = { menu = false }, onBookmark = { bookmarks++ },
+                        night = paper == ReaderPaper.NIGHT, onToggleNight = { paper = if (paper == ReaderPaper.NIGHT) ReaderPaper.IVORY else ReaderPaper.NIGHT })
                 }
                 Box(Modifier.align(Alignment.BottomCenter)) {
                     NativeReaderControls("第一百四十六章 山间来信", "12 / 36 页", .3f, true, true, true,
@@ -160,8 +183,10 @@ class NativeReaderUiTest {
         compose.onNodeWithContentDescription("添加书签").performClick()
         assertEquals(1, bookmarks)
         screenshot("reader-menu-portrait")
-        compose.runOnIdle { paper = ReaderPaper.NIGHT }
+        compose.onNodeWithContentDescription("切换夜间阅读").assertIsDisplayed().performClick()
         screenshot("reader-menu-night")
+        compose.onNodeWithContentDescription("恢复日间纸张").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(ReaderPaper.IVORY, paper) }
         compose.onNodeWithContentDescription("收起阅读菜单").performClick()
         compose.onNodeWithText("山海来信 · 正文").assertIsDisplayed()
         assertFalse(exited)
