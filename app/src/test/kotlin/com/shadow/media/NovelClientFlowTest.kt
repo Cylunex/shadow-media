@@ -48,8 +48,11 @@ class NovelClientFlowTest {
     private fun scrollTo(value: String) { compose.onAllNodes(hasScrollAction()).onLast().performScrollToNode(hasText(value, substring = true)) }
     private fun screenshot(name: String) {
         System.getenv("NATIVE_READER_SCREENSHOTS")?.let { folder ->
-            val bitmap = compose.runOnIdle { val view = compose.activity.window.decorView
-                Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888).also { view.draw(Canvas(it)) } }
+            val bitmap = compose.runOnIdle {
+                val view = if (name == "novel-intake-choice-320") requireNotNull(org.robolectric.shadows.ShadowDialog.getLatestDialog().window).decorView
+                    else compose.activity.window.decorView
+                Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888).also { view.draw(Canvas(it)) }
+            }
             File(folder).mkdirs(); File(folder, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }; bitmap.recycle()
         }
     }
@@ -142,7 +145,7 @@ class NovelClientFlowTest {
         compose.onNodeWithText("部分目录", substring = true).assertExists()
         scrollTo("过滤预览标题")
         compose.onNodeWithText("过滤预览标题").performTextInput("归")
-        compose.onNodeWithText("正序").performClick()
+        scrollTo("正序"); compose.onNodeWithText("正序").performClick()
         compose.onNodeWithText("倒序").assertExists()
         assertFalse(requests.any { it.first.contains("collect") || it.first.contains("chapters") || it.first.contains("progress") })
     }
@@ -183,6 +186,126 @@ class NovelClientFlowTest {
         scrollTo("搜索", false)
         compose.onNodeWithText("搜索", substring = false).assertIsDisplayed()
         screenshot("novel-online-landscape-keyboard-dark")
+    }
+    private fun modernResponse(request: RecordedRequest): MockResponse = if (request.path == "/novel/api/v1/integration")
+        json("""{"capabilities":{"source_search_modes":true,"source_chapter_open":true,"source_intake_reuse":true}}""") else browserResponse(request)
+
+    @Test fun allModeSendsEntireSelectionAndShowsTruncation() {
+        val ids = (1..25).map { "s$it" }
+        handler = { request -> when {
+            request.path!!.startsWith("/novel/api/v1/source-browser?") -> json(JSONObject().put("items", org.json.JSONArray(ids.map { JSONObject().put("id", it).put("name", it) })).toString())
+            request.path!!.startsWith("/novel/api/v1/source-selection") -> json(JSONObject().put("provider_ids", org.json.JSONArray(ids)).toString())
+            request.path == "/novel/api/v1/jobs/search" -> json(JSONObject().put("state", "succeeded").put("result", JSONObject()
+                .put("mode", "all").put("items", org.json.JSONArray().put(JSONObject(row)))
+                .put("sources", org.json.JSONArray(ids.map { JSONObject().put("provider_id", it).put("ok", true).put("count", 200) }))
+                .put("matched_count", 5001).put("truncated", true).put("remaining", 0).put("concurrency", 8)).toString())
+            else -> modernResponse(request)
+        } }
+        val repo = repository(); val c = connection(); val state = NovelBrowserState("山海")
+        compose.setContent { ShadowMediaTheme { Surface { NovelSourceBrowser(repo, c, state, {}, {}) } } }
+        waitText("范围 · 25 源"); scrollTo("全部书源"); compose.onNodeWithText("全部书源", substring = false).performClick()
+        scrollTo("搜索", false); compose.onNodeWithText("搜索", substring = false).performClick()
+        waitText("结果已达服务端保留上限")
+        val body = JSONObject(requests.single { it.first == "/novel/api/v1/search-jobs" }.second)
+        assertEquals("all", body.getString("mode")); assertEquals(25, body.getJSONArray("provider_ids").length()); assertEquals(12, body.getInt("limit"))
+        compose.runOnIdle { assertTrue(state.remaining.isEmpty()); assertTrue(state.pendingIds.isEmpty()); assertEquals(5001, state.matchedCount) }
+        scrollTo("结果已达服务端保留上限"); screenshot("novel-search-all-truncated-320")
+    }
+    @Test fun autoPauseAndCancellationKeepDifferentContinuationActionsWithoutDroppingResults() {
+        val state = NovelBrowserState("山海")
+        state.jobIds = listOf("s1", "s2", "s3")
+        val result = JSONObject("""{"items":[$row],"sources":[{"provider_id":"s1","ok":true,"count":1}],"remaining":2}""")
+        state.updateSearch(JSONObject().put("state", "cancelled").put("result", result))
+        assertEquals(listOf("s2", "s3"), state.pendingIds); assertTrue(state.remaining.isEmpty()); assertEquals(1, state.rows.size)
+        state.updateSearch(JSONObject().put("state", "succeeded").put("result", result))
+        assertEquals(listOf("s2", "s3"), state.remaining); assertTrue(state.pendingIds.isEmpty()); assertEquals(1, state.rows.size)
+    }
+    @Test fun returningToResultsResumesOriginalSearchWithoutSubmittingAgain() {
+        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+        handler = { request -> if (request.path == "/novel/api/v1/jobs/search")
+            json("{\"state\":\"${if (finished.get()) "succeeded" else "running"}\",\"result\":{\"items\":[$row],\"sources\":[]}}")
+            else modernResponse(request)
+        }
+        val repo = repository(); val c = connection(); val state = NovelBrowserState("山海")
+        var visible by mutableStateOf(true)
+        compose.setContent { ShadowMediaTheme { Surface {
+            if (visible) NovelSourceBrowser(repo, c, state, {}, {}) else TextButton(onClick = { visible = true }) { Text("返回任务") }
+        } } }
+        waitText("范围 · 1 源"); scrollTo("搜索", false); compose.onNodeWithText("搜索", substring = false).performClick()
+        waitText("山海来信")
+        compose.runOnIdle { visible = false }; waitText("返回任务"); finished.set(true)
+        compose.onNodeWithText("返回任务").performClick()
+        compose.waitUntil(15_000) { state.searchJobState == "succeeded" }
+        assertEquals(1, requests.count { it.first == "/novel/api/v1/search-jobs" })
+        assertTrue(requests.count { it.first == "/novel/api/v1/jobs/search" } >= 2)
+        compose.runOnIdle { assertEquals(1, state.rows.size) }
+    }
+    @Test fun previewChapterClickCollectsCurrentWorkAndOpensExactVersionChapter() {
+        handler = { request -> when (request.path) {
+            "/novel/api/v1/source-previews" -> json("""{"job_id":null,"toc":{"items":[{"title":"归来","chapter_url":"https://example.com/chapter/2?part=1"}],"complete":true}}""")
+            "/novel/api/v1/source-results/collect" -> json("""{"work_id":"existing","binding_id":"binding","job_id":"toc"}""")
+            "/novel/api/v1/jobs/toc" -> json("""{"state":"succeeded","result":{"version_id":"fixed"}}""")
+            "/novel/api/v1/source-results/open-chapter" -> json("""{"work_id":"existing","version_id":"fixed","chapter_id":"c2"}""")
+            else -> modernResponse(request)
+        } }
+        val repo = repository(); val c = connection(); var opening: NovelSourceOpening? = null
+        compose.setContent { ShadowMediaTheme { Surface { NovelSourcePreviewSheet(repo, c, JSONObject(row), JSONObject("""{"id":"existing","title":"已有作品"}"""), {}, {}, {}, {}, onRead = { opening = it }) } } }
+        waitText("完整目录预览"); scrollTo("归来"); compose.onNodeWithText("归来", substring = false).performClick()
+        compose.waitUntil(15_000) { opening != null }
+        assertEquals(NovelSourceOpening("existing", "fixed", "c2"), opening)
+        assertEquals("existing", JSONObject(requests.single { it.first.endsWith("/collect") }.second).getString("work_id"))
+        val resolved = JSONObject(requests.single { it.first.endsWith("/open-chapter") }.second)
+        assertEquals("https://example.com/chapter/2?part=1", resolved.getString("chapter_url")); assertEquals("fixed", resolved.getString("version_id"))
+        assertFalse(requests.any { it.first.contains("/chapters/") || it.first.contains("/progress/") })
+    }
+    @Test fun ambiguousReadWaitsForInlineWorkChoiceThenResumesTheSameAction() {
+        handler = { request -> when (request.path) {
+            "/novel/api/v1/source-previews" -> json("""{"job_id":null,"message":"只读预览"}""")
+            "/novel/api/v1/source-results/collect" -> if (!JSONObject(request.body.clone().readUtf8()).has("work_id"))
+                MockResponse().setResponseCode(409).setBody("""{"detail":{"code":"choose_existing_work","candidates":[{"id":"chosen","title":"山海来信","author":"行舟","description":"库内已有简介"}]}}""")
+                else json("""{"work_id":"chosen","binding_id":"binding","job_id":"toc"}""")
+            "/novel/api/v1/jobs/toc" -> json("""{"state":"succeeded","result":{"version_id":"fixed"}}""")
+            else -> modernResponse(request)
+        } }
+        val repo = repository(); val c = connection(); var opening: NovelSourceOpening? = null
+        compose.setContent { ShadowMediaTheme { Surface { NovelSourcePreviewSheet(repo, c, JSONObject(row), null, {}, {}, {}, {}, onRead = { opening = it }) } } }
+        waitText("只读预览"); scrollTo("阅读此来源"); compose.onNodeWithText("阅读此来源").performClick()
+        waitText("选择已有作品"); assertNull(opening)
+        assertEquals(1, requests.count { it.first.endsWith("/collect") })
+        scrollTo("关联《山海来信》"); screenshot("novel-intake-choice-320")
+        compose.onNodeWithText("关联《山海来信》", substring = true).performClick()
+        compose.waitUntil(15_000) { opening != null }
+        assertEquals(NovelSourceOpening("chosen", "fixed"), opening)
+        val bodies = requests.filter { it.first.endsWith("/collect") }.map { JSONObject(it.second) }
+        assertEquals(2, bodies.size); assertEquals("chosen", bodies.last().getString("work_id")); assertTrue(bodies.none { it.has("create_new") })
+    }
+    @Test fun independentCollectionIsOnlySentAfterExplicitChoice() {
+        handler = { request -> when (request.path) {
+            "/novel/api/v1/source-previews" -> json("""{"job_id":null,"message":"只读预览"}""")
+            "/novel/api/v1/source-results/collect" -> if (!JSONObject(request.body.clone().readUtf8()).optBoolean("create_new"))
+                MockResponse().setResponseCode(409).setBody("""{"detail":{"code":"choose_existing_work","candidates":[{"id":"existing","title":"山海来信","author":""}]}}""")
+                else json("""{"work_id":"separate"}""")
+            else -> modernResponse(request)
+        } }
+        val repo = repository(); val c = connection()
+        compose.setContent { ShadowMediaTheme { Surface { NovelSourcePreviewSheet(repo, c, JSONObject(row), null, {}, {}, {}, {}) } } }
+        waitText("只读预览"); scrollTo("收录作品"); compose.onNodeWithText("收录作品", substring = false).performClick()
+        waitText("选择已有作品"); scrollTo("作为独立作品收录"); compose.onNodeWithText("作为独立作品收录").performClick()
+        compose.waitUntil(15_000) { requests.count { it.first.endsWith("/collect") } == 2 }
+        val bodies = requests.filter { it.first.endsWith("/collect") }.map { JSONObject(it.second) }
+        assertFalse(bodies.first().has("create_new")); assertTrue(bodies.last().getBoolean("create_new")); assertFalse(bodies.last().has("work_id"))
+    }
+    @Test fun metadataSourceWithTocNeverOffersChapterReading() {
+        handler = { request -> if (request.path == "/novel/api/v1/source-previews")
+            json("""{"job_id":null,"toc":{"items":[{"title":"仅供浏览章节","chapter_url":"https://example.com/c"}],"complete":true}}""") else modernResponse(request)
+        }
+        val metadata = JSONObject(row).put("capabilities", org.json.JSONArray(listOf("search", "detail", "toc")))
+        val repo = repository(); val c = connection()
+        compose.setContent { ShadowMediaTheme { Surface { NovelSourcePreviewSheet(repo, c, metadata, null, {}, {}, {}, {}) } } }
+        waitText("完整目录预览"); scrollTo("仅供浏览章节")
+        compose.onNodeWithText("仅供浏览章节").assertHasNoClickAction()
+        compose.onNodeWithText("阅读此来源").assertDoesNotExist()
+        assertFalse(requests.any { it.first.endsWith("/collect") || it.first.endsWith("/open-chapter") })
     }
     private fun scrollTo(value: String, substring: Boolean) { compose.onAllNodes(hasScrollAction()).onLast().performScrollToNode(hasText(value, substring = substring)) }
 }

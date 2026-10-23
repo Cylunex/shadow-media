@@ -16,6 +16,8 @@ fun novelScope(c: CatalogConnection) = "novel:${c.id}"
 
 class NovelApiException(val status: Int, val code: String, val detail: JSONObject) : IOException(
     when (code) {
+        "choose_existing_work" -> "库内存在同名作品，请选择要关联的作品"
+        "already_linked" -> "此来源已关联其他作品，不能转移；请选择其他来源"
         "progress_conflict" -> "另一设备已有新进度，请选择继续位置"
         "version_unavailable" -> "暂无可读版本，请选择可用版本或先在 Novel 获取正文"
         "content_changed" -> "内容已变化，请重新选择版本"

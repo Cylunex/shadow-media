@@ -48,19 +48,64 @@ internal class NovelTask(private val scope: CoroutineScope) {
 }
 internal fun novelTags(value: String) = value.split(',', '，', '\n').map(String::trim).filter(String::isNotBlank).distinct()
 
+internal data class NovelIntakeAction(val read: Boolean = false, val chapterUrl: String? = null)
+
 @Composable internal fun NovelSourcePreviewSheet(repository: NovelRepository, connection: CatalogConnection, row: JSONObject,
-    bindingWork: JSONObject?, onDismiss: () -> Unit, onAuthor: (String) -> Unit, onWork: (String) -> Unit, onBound: () -> Unit) {
+    bindingWork: JSONObject?, onDismiss: () -> Unit, onAuthor: (String) -> Unit, onWork: (String) -> Unit, onBound: () -> Unit,
+    features: NovelSourceFeatures? = null, onRead: (NovelSourceOpening) -> Unit = {}) {
     val context = LocalContext.current
     val task = rememberNovelTask()
+    var supported by remember(row) { mutableStateOf(features) }
     var preview by remember(row) { mutableStateOf<JSONObject?>(null) }
     var receipt by remember(row) { mutableStateOf<JSONObject?>(null) }
+    var version by remember(row) { mutableStateOf<String?>(null) }
+    var chosenWork by remember(row, bindingWork) { mutableStateOf(bindingWork?.novelId("id")) }
+    var candidates by remember(row) { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var pending by remember(row) { mutableStateOf(NovelIntakeAction()) }
     var tocQuery by remember(row) { mutableStateOf("") }
     var descending by remember(row) { mutableStateOf(false) }
-    fun load(toc: Boolean) = task.run { preview = mergeNovelPreview(preview, repository.sourceSearch.preview(connection, row, toc)) }
+    fun load(toc: Boolean) = task.run {
+        if (supported == null) supported = repository.sourceSearch.features(connection)
+        preview = mergeNovelPreview(preview, repository.sourceSearch.preview(connection, row, toc))
+    }
     LaunchedEffect(row) { load(false) }
     val detail = novelSourceDetail(row, preview)
-    val workId = receipt?.novelId("work_id") ?: preview?.novelId("work_id") ?: row.novelId("library_work_id")
+    val workId = chosenWork ?: receipt?.novelId("work_id") ?: preview?.novelId("work_id") ?: row.novelId("library_work_id")
     val toc = preview?.optJSONObject("toc")
+    val readable = readableNovelSource(detail)
+    val canCollect = supported != null && (bindingWork == null || supported?.intakeReuse == true || readable)
+    fun intake(action: NovelIntakeAction, target: String? = chosenWork, createNew: Boolean = false, retryDirectory: Boolean = false) {
+        pending = action
+        task.run {
+            try {
+                if (receipt == null || retryDirectory) {
+                    receipt = repository.sourceSearch.collect(connection, detail, target, createNew, requireNotNull(supported))
+                    chosenWork = receipt!!.getString("work_id")
+                    version = null
+                }
+                candidates = emptyList()
+                val collected = requireNotNull(receipt)
+                task.message = "资料已收录" + if (collected.novelId("job_id") != null) "，正在获取目录；失败仍保留资料" else ""
+                if (collected.novelId("job_id") != null && version == null) version = repository.sourceSearch.collectionVersion(connection, collected)
+                if (action.read) {
+                    val fixedVersion = requireNotNull(version) { "此来源暂无可读版本" }
+                    val opening = if (action.chapterUrl != null) {
+                        require(supported?.chapterOpen == true) { "此服务尚不支持按预览章节打开" }
+                        repository.sourceSearch.openChapter(connection, collected, fixedVersion, action.chapterUrl)
+                    } else NovelSourceOpening(collected.getString("work_id"), fixedVersion)
+                    onRead(opening)
+                } else {
+                    task.message = if (version != null) "目录已获取，可选择此来源阅读" else "资料已收录"
+                    if (bindingWork != null) onBound()
+                }
+            } catch (e: NovelApiException) {
+                if (e.code != "choose_existing_work" || bindingWork != null) throw e
+                candidates = e.detail.novelObjects("candidates")
+                require(candidates.isNotEmpty()) { "作品身份待确认，服务未返回候选，请刷新重试" }
+                task.message = "库内有同名作品，请选择要关联的作品，或明确单独收录。"
+            }
+        }
+    }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         LazyColumn(Modifier.fillMaxWidth().imePadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
@@ -70,20 +115,35 @@ internal fun novelTags(value: String) = value.split(',', '，', '\n').map(String
                 NovelTaskStatus(task)
                 preview?.novelId("message")?.let { Text(it) }; preview?.novelId("error")?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (detail.optString("author").isNotBlank()) TextButton(onClick = { onAuthor(detail.optString("author")) }) { Text("作者：${detail.optString("author")} · 继续搜索") }
+                if (bindingWork != null) Text("关联到《${bindingWork.optString("title")}》，保留原版本、书架与进度。", style = MaterialTheme.typography.bodySmall)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(enabled = !task.busy && receipt == null, onClick = { task.run {
-                        receipt = repository.sourceSearch.collect(connection, detail)
-                        task.message = if (receipt?.novelId("job_id") == null) "资料已收录" else "已收录，正在获取目录；失败仍保留资料"
-                        receipt?.novelId("job_id")?.let { repository.sourceSearch.awaitJob(connection, it) {} }
-                        task.message = "已收录，可打开作品查看可用版本"
-                    } }) { Text(if (receipt != null) "已收录" else "收录作品") }
+                    Button(enabled = !task.busy && receipt == null && canCollect && candidates.isEmpty(), onClick = { intake(NovelIntakeAction()) }) {
+                        Text(if (receipt != null) "已收录" else if (bindingWork != null) "关联当前作品" else "收录作品")
+                    }
+                    if (readable) TextButton(enabled = !task.busy && canCollect && candidates.isEmpty(), onClick = { intake(NovelIntakeAction(read = true)) }) {
+                        Text(if (bindingWork != null) "使用此来源继续阅读" else "阅读此来源")
+                    }
                     if (workId != null) TextButton(onClick = { onWork(workId) }) { Text("打开已收录作品") }
-                    if (bindingWork != null && readableNovelSource(detail)) TextButton(enabled = !task.busy, onClick = { task.run {
-                        repository.sourceSearch.bind(connection, bindingWork.getString("id"), detail); onBound()
-                    } }) { Text("关联当前作品") }
+                    if (receipt?.novelId("job_id") != null && version == null && !task.busy) {
+                        TextButton(onClick = { intake(pending) }) { Text("继续查看目录任务") }
+                        TextButton(onClick = { intake(pending, retryDirectory = true) }) { Text("重新获取目录") }
+                    }
                     TextButton(onClick = { try { openNovelWeb(context, row.getString("bookUrl")) } catch (e: Exception) { task.error = e.message } }) { Text("源网页") }
                 }
-                Text(if (readableNovelSource(detail)) "收录后由服务获取目录；目录成功后才能选择版本阅读。" else "此来源只收录资料，不提供可读正文。", style = MaterialTheme.typography.bodySmall)
+                if (candidates.isNotEmpty()) {
+                    Text("选择已有作品", style = MaterialTheme.typography.titleMedium)
+                    candidates.forEach { candidate ->
+                        TextButton(enabled = !task.busy, onClick = { intake(pending, target = candidate.getString("id")) }) {
+                            Column(Modifier.fillMaxWidth()) {
+                                Text("关联《${candidate.optString("title")}》 · ${candidate.optString("author").ifBlank { "作者待确认" }}")
+                                Text(candidate.optString("description"), maxLines = 3, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                    TextButton(enabled = !task.busy && supported?.intakeReuse == true, onClick = { intake(pending, target = null, createNew = true) }) { Text("作为独立作品收录") }
+                }
+                if (!canCollect && supported != null) Text("当前服务不支持把纯资料来源关联到已有作品，请更新服务后再试。")
+                Text(if (readable) "收录后由服务获取目录；阅读此来源沿用版本定位与进度冲突规则。" else "此来源只收录资料，不提供可读正文。", style = MaterialTheme.typography.bodySmall)
                 Text(detail.optString("intro").ifBlank { "暂无简介" })
                 listOf("kind" to "分类", "category" to "类别", "word_count" to "字数", "latest_chapter" to "最新章节", "source_updated_at" to "来源更新", "status" to "状态").forEach { (key, title) ->
                     detail.novelId(key)?.let { Text("$title：$it", style = MaterialTheme.typography.bodyMedium) }
@@ -92,7 +152,8 @@ internal fun novelTags(value: String) = value.split(',', '，', '\n').map(String
                     TextButton(enabled = !task.busy, onClick = { load(false) }) { Text("重试详情") }
                     if (detail.novelStrings("capabilities").containsAll(listOf("detail", "toc"))) TextButton(enabled = !task.busy, onClick = { load(true) }) { Text(if (toc == null) "预览目录" else "刷新目录预览") }
                 }
-                Text("预览不收录、不下载正文，也不改阅读进度。", style = MaterialTheme.typography.bodySmall)
+                Text("查看预览不收录、不下载正文，也不改阅读进度。点击可读章节会先收录或关联，再打开该章。", style = MaterialTheme.typography.bodySmall)
+                if (readable && supported?.chapterOpen == false) Text("当前服务暂不支持点击预览章节；可收录后从作品目录选章。", style = MaterialTheme.typography.bodySmall)
                 preview?.novelId("toc_error")?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
             if (toc != null) {
@@ -102,7 +163,12 @@ internal fun novelTags(value: String) = value.split(',', '，', '\n').map(String
                     OutlinedTextField(tocQuery, { tocQuery = it }, Modifier.fillMaxWidth(), label = { Text("过滤预览标题") }, singleLine = true)
                     FilterChip(descending, { descending = !descending }, label = { Text(if (descending) "倒序" else "正序") })
                 }
-                items(novelPreviewTitles(preview, tocQuery, descending)) { Text(it) }
+                items(novelPreviewChapters(preview, tocQuery, descending)) { chapter ->
+                    val url = chapter.novelId("chapter_url")
+                    if (readable && supported?.chapterOpen == true && url != null) {
+                        TextButton(enabled = !task.busy && canCollect && candidates.isEmpty(), onClick = { intake(NovelIntakeAction(read = true, chapterUrl = url)) }) { Text(chapter.optString("title")) }
+                    } else Text(chapter.optString("title"))
+                }
             }
         }
     }

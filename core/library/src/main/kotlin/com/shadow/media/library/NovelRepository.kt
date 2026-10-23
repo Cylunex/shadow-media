@@ -126,7 +126,7 @@ class NovelRepository(private val context: Context, private val library: Library
         }
         val selectedVersion = open.getString("version_id")
         val remote = open.optJSONObject("position")
-        if (chapterId == null && open.optString("quality") != "exact") error("版本间位置无法精确恢复，请从目录选择章节")
+        if (chapterId == null && open.optString("quality") != "exact") throw NovelVersionSelectionRequired(workId, selectedVersion)
         val chosen = chapterId ?: remote?.optString("chapter_id")?.takeIf(String::isNotBlank) ?: open.getString("first_chapter_id")
         val chapters = open.novelObjects("chapters")
         val offset = chapters.indexOfFirst { it.getString("id") == chosen && it.optBoolean("readable") }

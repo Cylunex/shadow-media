@@ -33,9 +33,11 @@ fun novelSourceDetail(row: JSONObject, preview: JSONObject?): JSONObject = JSONO
         if (!detail.isNull(key) && detail.optString(key).isNotBlank()) merged.put(key, detail.get(key))
     } }
 }
+fun novelPreviewChapters(preview: JSONObject?, query: String, descending: Boolean): List<JSONObject> =
+    preview?.optJSONObject("toc")?.novelObjects("items").orEmpty()
+        .filter { it.optString("title").contains(query.trim(), ignoreCase = true) }.let { if (descending) it.reversed() else it }
 fun novelPreviewTitles(preview: JSONObject?, query: String, descending: Boolean): List<String> =
-    preview?.optJSONObject("toc")?.novelObjects("items").orEmpty().map { it.optString("title") }
-        .filter { it.contains(query.trim(), ignoreCase = true) }.let { if (descending) it.reversed() else it }
+    novelPreviewChapters(preview, query, descending).map { it.optString("title") }
 fun JSONObject.novelId(key: String): String? = if (isNull(key)) null else optString(key).takeIf(String::isNotBlank)
 
 class NovelLibraryTools(private val api: NovelApi) {

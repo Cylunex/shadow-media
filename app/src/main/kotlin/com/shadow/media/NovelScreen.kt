@@ -54,6 +54,7 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     var editingConnection by remember { mutableStateOf<CatalogConnection?>(null) }
     var filter by remember { mutableStateOf(false) }
     var sourceSearch by remember(connection?.id, route) { mutableStateOf(false) }
+    val workSourceStates = remember(connection?.id) { mutableMapOf<String, NovelBrowserState>() }
     var editor by remember { mutableStateOf<NovelEdit?>(null) }
     var memberships by remember { mutableStateOf<List<JSONObject>?>(null) }
     var membershipOffset by remember { mutableIntStateOf(0) }
@@ -142,8 +143,8 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
         }
     }
     fun updateQuery(value: NovelQuery) { if (query != value) { query = value; data = null } }
-    fun navigate(target: NovelRoute, nextQuery: NovelQuery = query, nextSearch: String = "") {
-        if (busy) return
+    fun navigate(target: NovelRoute, nextQuery: NovelQuery = query, nextSearch: String = "", allowWhileBusy: Boolean = false) {
+        if (busy && !allowWhileBusy) return
         if (target == route) {
             search = nextSearch
             if (query == nextQuery) execute { load() } else updateQuery(nextQuery)
@@ -159,8 +160,13 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
         else onBack()
     }
     fun open(work: String, version: String? = null, chapter: String? = null) = execute {
-        val prepared = repository.prepare(requireNotNull(connection), work, version, chapter)
-        context.startActivity(Intent(context, ReaderActivity::class.java).putExtra("assetId", prepared.asset.id).putExtra("novelLocator", prepared.locator))
+        try {
+            val prepared = repository.prepare(requireNotNull(connection), work, version, chapter)
+            context.startActivity(Intent(context, ReaderActivity::class.java).putExtra("assetId", prepared.asset.id).putExtra("novelLocator", prepared.locator))
+        } catch (e: NovelVersionSelectionRequired) {
+            navigate(NovelRoute("contents", e.workId, version = e.versionId), allowWhileBusy = true)
+            message = e.message
+        }
     }
     suspend fun change(path: List<String>, method: String, body: JSONObject? = null) {
         repository.mutate(requireNotNull(connection), path, method, body)
@@ -235,7 +241,8 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                 TextButton(enabled = !busy, onClick = { execute { load() } }) { Text("搜索") }
             }
             pageStates.SaveableStateProvider("${c.id}:${route}") {
-            if (route.kind == "sources") NovelSourceBrowser(repository, c, browserState, onWork = { navigate(NovelRoute("work", it)) }, onManage = { navigate(NovelRoute("tools")) })
+            if (route.kind == "sources") NovelSourceBrowser(repository, c, browserState, onWork = { navigate(NovelRoute("work", it)) }, onManage = { navigate(NovelRoute("tools")) },
+                onRead = { open(it.workId, it.versionId, it.chapterId) })
             else if (route.kind == "tools") NovelToolsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = {
                 rememberSearch(it); navigate(NovelRoute("works", "search"), NovelQuery(q = it), it)
             })
@@ -396,9 +403,12 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     } })
     if (filter) NovelFilterSheet(query.copy(view = if (route.kind == "works") route.id else query.view), navigation, onDismiss = { filter = false }, onApply = { updateQuery(it); filter = false })
     if (sourceSearch && c != null && route.kind == "work") data?.let { work ->
-        NovelSourceSearchSheet(repository, c, work, onDismiss = { sourceSearch = false }, onWork = { sourceSearch = false; navigate(NovelRoute("work", it)) }, onBound = {
+        NovelSourceSearchSheet(repository, c, work,
+            state = workSourceStates.getOrPut(work.getString("id")) { NovelBrowserState(work.optString("title").take(200)) },
+            onRead = { sourceSearch = false; open(it.workId, it.versionId, it.chapterId) },
+            onDismiss = { sourceSearch = false }, onWork = { sourceSearch = false; navigate(NovelRoute("work", it)) }, onBound = {
             sourceSearch = false
-            execute { load(); message = "已关联书源并获取目录，可选择版本阅读" }
+            execute { load(); message = "已关联来源，可查看作品资料与可用版本" }
         })
     }
     editor?.let { edit -> NovelEditSheet(edit, busy, error, onDismiss = { editor = null }, onSave = { values -> execute { edit.save(values); editor = null } }) }
