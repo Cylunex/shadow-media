@@ -88,6 +88,7 @@ internal fun novelFilterLabels(query: NovelQuery, navigation: JSONObject): List<
     query.excluded.forEach { add("排除 $it" to query.copy(excluded = query.excluded - it)) }
     if (query.serialStatus.isNotBlank()) add(serialLabel(query.serialStatus).ifBlank { "状态未知" } to query.copy(serialStatus = ""))
     if (query.availability.isNotBlank()) add((mapOf("readable" to "可阅读", "local" to "本地版本", "online" to "在线版本", "metadata_only" to "仅资料")[query.availability] ?: query.availability) to query.copy(availability = ""))
+    if (query.precise) add("精确搜索" to query.copy(precise = false))
     if (query.hasUpdates) add("有更新" to query.copy(hasUpdates = false))
     if (query.status.isNotBlank()) add((mapOf("want" to "想读", "reading" to "在读", "read" to "已读", "paused" to "暂停")[query.status] ?: query.status) to query.copy(status = ""))
     if (query.group.isNotBlank()) add("分组 ${query.group}" to query.copy(group = ""))

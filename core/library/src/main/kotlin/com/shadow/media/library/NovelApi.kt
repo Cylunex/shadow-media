@@ -20,7 +20,12 @@ class NovelApiException(val status: Int, val code: String, val detail: JSONObjec
         "version_unavailable" -> "暂无可读版本，请选择可用版本或先在 Novel 获取正文"
         "content_changed" -> "内容已变化，请重新选择版本"
         "authentication_required" -> "登录已失效，请重新登录统一账号"
-        else -> "Novel 请求失败（HTTP $status，${code.ifBlank { "request_failed" }}）"
+        else -> when {
+            status == 409 -> "数据已被更新，输入已保留，请读取最新版本后合并"
+            status == 413 -> "文件超过服务器允许的大小"
+            detail.optString("message").isNotBlank() -> detail.optString("message").take(300)
+            else -> "Novel 请求失败（HTTP $status，${code.ifBlank { "request_failed" }}）"
+        }
     }
 )
 
@@ -38,7 +43,7 @@ class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
         }.build()
 
     private fun sameOrigin(a: HttpUrl, b: HttpUrl) = a.scheme == b.scheme && a.host == b.host && a.port == b.port
-    private suspend fun <T> execute(c: CatalogConnection, url: HttpUrl, method: String, body: JSONObject?, consume: (Response) -> T): T = withContext(Dispatchers.IO) {
+    private suspend fun <T> execute(c: CatalogConnection, url: HttpUrl, method: String, body: RequestBody?, consume: (Response) -> T): T = withContext(Dispatchers.IO) {
         check(!LibraryResources.offlineOnly) { "仅离线模式已开启" }
         require(sameOrigin(c.base(), url) && (url.isHttps || c.allowHttp) && url.username.isBlank() && url.password.isBlank()) { "拒绝跨源 Novel 请求" }
         val scoped = client.newBuilder().addNetworkInterceptor { chain ->
@@ -56,7 +61,7 @@ class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
             if (access.isNotBlank()) header("Authorization", "Bearer $access")
             else if (c.username.isNotBlank()) header("Authorization", Credentials.basic(c.username, c.password))
             header("Accept", "application/json, application/epub+zip")
-            method(method, body?.toString()?.toRequestBody("application/json".toMediaType())
+            method(method, body
                 ?: if (method in setOf("POST", "PUT", "PATCH")) "{}".toRequestBody("application/json".toMediaType()) else null)
         }.build())
         activeCall.set(call)
@@ -70,7 +75,7 @@ class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
                 if (!response.isSuccessful) {
                     val value = response.body?.byteStream()?.use { SafeArchives.readBounded(it, 128 * 1024) }?.toString(Charsets.UTF_8)
                     val parsed = runCatching { JSONObject(value.orEmpty()) }.getOrNull()
-                    val detail = parsed?.optJSONObject("detail") ?: parsed ?: JSONObject()
+                    val detail = parsed?.optJSONObject("detail") ?: if (parsed?.opt("detail") is String) JSONObject().put("message", parsed.getString("detail")) else parsed ?: JSONObject()
                     throw NovelApiException(response.code, detail.optString("code"), detail)
                 }
                 consume(response)
@@ -79,10 +84,47 @@ class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
         finally { cancellation.cancel() }
     }
     suspend fun json(c: CatalogConnection, path: List<String>, query: List<Pair<String, String>> = emptyList(), method: String = "GET", body: JSONObject? = null): JSONObject =
-        execute(c, url(c, path, query), method, body) { response ->
+        execute(c, url(c, path, query), method, body?.toString()?.toRequestBody("application/json".toMediaType())) { response ->
             val text = response.body?.byteStream()?.use { SafeArchives.readBounded(it, 16L * 1024 * 1024) }?.toString(Charsets.UTF_8).orEmpty()
             if (text.isBlank() || text == "null") JSONObject() else JSONObject(text)
         }
+    /** Streams SAF content; reopening the input also makes an OIDC refresh retry safe. */
+    suspend fun upload(c: CatalogConnection, filename: String, input: () -> java.io.InputStream): JSONObject {
+        require(filename.substringAfterLast('.').lowercase() in setOf("txt", "epub")) { "仅支持 TXT 或 EPUB 文件" }
+        val body = object : RequestBody() {
+            override fun contentType() = "application/octet-stream".toMediaType()
+            override fun writeTo(sink: okio.BufferedSink) {
+                input().use { source ->
+                    val buffer = ByteArray(64 * 1024); var total = 0L
+                    while (true) {
+                        val count = source.read(buffer); if (count < 0) break
+                        total += count
+                        require(total <= 64L * 1024 * 1024) { "文件超过客户端 64 MiB 上传上限" }
+                        sink.write(buffer, 0, count)
+                    }
+                    require(total > 0) { "文件不能为空" }
+                }
+            }
+        }
+        return execute(c, url(c, listOf("library", "files"), listOf("filename" to filename)), "POST", body) {
+            JSONObject(SafeArchives.readBounded(requireNotNull(it.body).byteStream(), 1024 * 1024).toString(Charsets.UTF_8))
+        }
+    }
+
+    /** Export responses may be JSON arrays, OPML, or large backup archives. Never parse as JSONObject. */
+    suspend fun export(c: CatalogConnection, path: List<String>, output: () -> java.io.OutputStream,
+        method: String = "GET", body: JSONObject? = null, maximum: Long = 2L * 1024 * 1024 * 1024) =
+        execute(c, url(c, path), method, body?.toString()?.toRequestBody("application/json".toMediaType())) { response ->
+            requireNotNull(response.body).byteStream().use { source -> output().use { sink ->
+                val buffer = ByteArray(64 * 1024); var total = 0L
+                while (true) {
+                    val count = source.read(buffer); if (count < 0) break
+                    total += count; require(total <= maximum) { "导出文件超过大小上限" }
+                    sink.write(buffer, 0, count)
+                }
+            } }
+        }
+
     suspend fun cover(c: CatalogConnection, workId: String): ByteArray =
         execute(c, url(c, listOf("works", workId, "cover")), "GET", null) { response ->
             require(response.body?.contentType()?.type == "image") { "Novel 封面格式无效" }
@@ -108,10 +150,11 @@ data class NovelQuery(
     val excluded: List<String> = emptyList(), val allGenres: Boolean = false,
     val serialStatus: String = "", val availability: String = "", val status: String = "",
     val group: String = "", val personalTags: List<String> = emptyList(), val minPopularity: String = "",
-    val hasUpdates: Boolean = false,
+    val hasUpdates: Boolean = false, val precise: Boolean = false,
 ) {
     fun parameters(): List<Pair<String, String>> = buildList {
         add("view" to view); add("sort" to sort)
+        if (precise) add("precise" to "true")
         if (hasUpdates) add("has_updates" to "true")
         listOf("q" to q, "serial_status" to serialStatus, "availability" to availability, "status" to status,
             "group" to group, "min_popularity" to minPopularity).filter { it.second.isNotBlank() }.forEach(::add)

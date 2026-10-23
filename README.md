@@ -15,6 +15,7 @@ Shadow Novel 提供原生书城、书单、排行榜、作家、个人书架与�
 支持离线位置和进度冲突选择。接入与验收范围见 [Novel 原生接入](docs/SHADOW_NOVEL_INTEGRATION.md)。
 书城、榜单和阅读交互说明见 [小说原生体验](docs/NOVEL_NATIVE_EXPERIENCE.md)。
 新版书架筛选、封面网格与全书目录检索见 [Novel 接口与书库体验](docs/NOVEL_LIBRARY_ADAPTATION_2026_10_22.md)。
+在线搜索、原生预览、书源分组、订阅与文件工具见 [Novel 客户端适配](docs/NOVEL_CLIENT_ADAPTATION_2026_10_23.md)。
 
 接入方法、支持范围及未完成项见 [全媒介实施说明](docs/MULTIMEDIA_IMPLEMENTATION.md)。
 后续设计与本轮队列恢复、进度隔离改动见 [vNext 补充研究](docs/VNEXT_RESEARCH_2026_09_10.md)。

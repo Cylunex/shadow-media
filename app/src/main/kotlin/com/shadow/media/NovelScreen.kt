@@ -31,7 +31,7 @@ import com.shadow.media.reading.ReaderActivity
 import com.shadow.media.reading.NovelContentsPanel
 
 private data class NovelRoute(val kind: String, val id: String = "", val name: String = "", val version: String = "")
-private data class NovelDestination(val route: NovelRoute, val query: NovelQuery, val search: String)
+private data class NovelDestination(val route: NovelRoute, val query: NovelQuery, val search: String, val data: JSONObject?, val navigation: JSONObject, val offset: Int)
 private data class NovelEdit(val title: String, val fields: List<Pair<String, String>>, val save: suspend (Map<String, String>) -> Unit)
 
 @Composable internal fun NovelScreen(repository: NovelRepository, onBack: () -> Unit) {
@@ -61,6 +61,7 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     var deletedLists by remember { mutableStateOf(false) }
     var disconnectedDownloads by remember { mutableStateOf<List<com.shadow.media.database.LibraryAssetEntity>>(emptyList()) }
     val pageStates = rememberSaveableStateHolder()
+    val browserState = remember(connection?.id) { NovelBrowserState() }
     val login = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         try {
             connections = repository.store.load()
@@ -106,7 +107,7 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                 home.await().put("_continue", history.await().novelObjects("items").firstOrNull())
                     .put("_booklists", lists.await().optJSONArray("items") ?: JSONArray())
             }
-            "rankings", "contents" -> JSONObject()
+            "rankings", "contents", "sources", "tools" -> JSONObject()
             "works" -> repository.get(c, listOf("works"), query.copy(view = route.id).parameters() + pagination)
             "authors" -> repository.get(c, listOf("authors"), listOf("q" to search) + pagination)
             "author" -> repository.get(c, listOf("authors", "detail"), listOf("name" to route.name, "q" to search, "sort" to query.sort, "serial_status" to query.serialStatus) + pagination)
@@ -122,11 +123,22 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
             (data?.novelObjects("items").orEmpty() + result.novelObjects("items")).forEach(combined::put)
             result.put("items", combined)
         }
+        if (requestedRoute.kind == "work") result.novelId("id")?.let { route = requestedRoute.copy(id = it) }
         data = result; offset = start
         if (route.kind == "works") {
             val facets = try { repository.get(c, listOf("navigation"), requestedQuery.copy(view = requestedRoute.id).parameters()) }
                 catch (e: CancellationException) { throw e } catch (_: Exception) { JSONObject() }
             if (connection?.id == c.id && route == requestedRoute && query == requestedQuery) navigation = facets
+        }
+    }
+    fun rememberSearch(keyword: String) {
+        val c = connection ?: return
+        val term = keyword.trim().take(200)
+        if (term.isBlank()) return
+        scope.launch {
+            try { repository.mutate(c, listOf("library", "search-history"), "POST", JSONObject().put("q", term)) }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { if (connection?.id == c.id) message = "搜索历史未保存：${novelToolError(e)}" }
         }
     }
     fun updateQuery(value: NovelQuery) { if (query != value) { query = value; data = null } }
@@ -137,12 +149,12 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
             if (query == nextQuery) execute { load() } else updateQuery(nextQuery)
             return
         }
-        stack = stack + NovelDestination(route, query, search)
+        stack = stack + NovelDestination(route, query, search, data, navigation, offset)
         route = target; query = nextQuery; search = nextSearch; data = null; navigation = JSONObject(); error = null; message = null
     }
     fun back() {
         job?.cancel(); busy = false; error = null; message = null
-        if (stack.isNotEmpty()) { val previous = stack.last(); route = previous.route; query = previous.query; search = previous.search; stack = stack.dropLast(1); data = null }
+        if (stack.isNotEmpty()) { val previous = stack.last(); route = previous.route; query = previous.query; search = previous.search; stack = stack.dropLast(1); data = previous.data; navigation = previous.navigation; offset = previous.offset }
         else if (connection != null) { connection = null; data = null }
         else onBack()
     }
@@ -156,12 +168,12 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     }
     LaunchedEffect(Unit) { try { connections = repository.store.load() } catch (e: Exception) { error = e.message } }
     LaunchedEffect(connection?.id, route, query, deletedLists) {
-        if (connection != null) { while (busy) delay(40); execute { load() } }
+        if (connection != null && data == null) { while (busy) delay(40); execute { load() } }
     }
     DisposableEffect(Unit) { onDispose { job?.cancel() } }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle, connection, route) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME && connection != null) { NovelRepository.schedule(context); if (!busy) execute { load() } } }
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME && connection != null) { NovelRepository.schedule(context); if (!busy && route.kind in setOf("work", "home", "offline")) execute { load() } } }
         lifecycle.addObserver(observer); onDispose { lifecycle.removeObserver(observer) }
     }
     BackHandler(onBack = ::back)
@@ -171,11 +183,12 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         TopAppBar(title = { Text(if (c == null) "Shadow Novel" else when (route.kind) {
             "work" -> data?.optString("title") ?: "作品"; "author" -> route.name; "list" -> data?.optString("title") ?: "书单"; "contents" -> "版本目录"
-            "home" -> "书城"; "lists" -> "我的书单"; "rankings" -> "排行榜"; "offline" -> "离线阅读"
+            "sources" -> "在线找书"; "tools" -> "书库工具"; "home" -> "书城"; "lists" -> "我的书单"; "rankings" -> "排行榜"; "offline" -> "离线阅读"
             "works" -> if (route.id == "shelf") "我的书架" else if (route.id == "history") "阅读历史" else "发现好书"; else -> c.name
         }, maxLines = 1) }, navigationIcon = { IconButton(onClick = ::back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") } }, actions = {
             if (c == null) IconButton(onClick = { editingConnection = null; connectionEditor = true }) { Icon(Icons.Rounded.Add, "添加 Novel") }
-            else if (route.kind !in setOf("rankings", "contents")) IconButton(enabled = !busy, onClick = { execute { load() } }) { Icon(Icons.Rounded.Refresh, "刷新") }
+            else if (route.kind !in setOf("rankings", "contents", "sources", "tools")) IconButton(enabled = !busy, onClick = { execute { load() } }) { Icon(Icons.Rounded.Refresh, "刷新") }
+            if (c != null && route.kind != "tools") IconButton(enabled = !busy, onClick = { navigate(NovelRoute("tools")) }) { Icon(Icons.Rounded.Settings, "书库工具") }
         })
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         error?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.error) }
@@ -185,8 +198,10 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
             item { Text("连接自己的小说服务，在这里找书、管理书单与排行榜，接着上次的位置继续读。") }
             items(connections, key = { it.id }) { item -> Card {
                 Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(enabled = !busy, onClick = { execute { repository.discover(item); connection = item; route = NovelRoute("home"); stack = emptyList(); NovelRepository.schedule(context) } }, modifier = Modifier.weight(1f)) { Text(item.name) }
-                    TextButton(enabled = !busy, onClick = { connection = item; route = NovelRoute("offline"); stack = emptyList() }) { Text("离线") }
+                    TextButton(enabled = !busy, onClick = { execute { repository.discover(item); connection = item; route = when (context.getSharedPreferences("novel_library_ui", android.content.Context.MODE_PRIVATE).getString("default:${item.id}", "home")) {
+                        "shelf" -> NovelRoute("works", "shelf"); "sources" -> NovelRoute("sources"); "offline" -> NovelRoute("offline"); else -> NovelRoute("home")
+                    }; data = null; stack = emptyList(); NovelRepository.schedule(context) } }, modifier = Modifier.weight(1f)) { Text(item.name) }
+                    TextButton(enabled = !busy, onClick = { connection = item; route = NovelRoute("offline"); data = null; stack = emptyList() }) { Text("离线") }
                     if (item.oidcIssuer.isNotBlank()) TextButton(enabled = !busy, onClick = {
                         if (item.oidcAuthState.isBlank()) signIn(item.name, item.url, item)
                         else execute { repository.oidc.logout(item); connections = repository.store.load(); message = "已退出统一账号；离线内容保留" }
@@ -220,21 +235,25 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                 TextButton(enabled = !busy, onClick = { execute { load() } }) { Text("搜索") }
             }
             pageStates.SaveableStateProvider("${c.id}:${route}") {
-            if (route.kind == "rankings") NovelRankingsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = { title ->
+            if (route.kind == "sources") NovelSourceBrowser(repository, c, browserState, onWork = { navigate(NovelRoute("work", it)) }, onManage = { navigate(NovelRoute("tools")) })
+            else if (route.kind == "tools") NovelToolsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = {
+                rememberSearch(it); navigate(NovelRoute("works", "search"), NovelQuery(q = it), it)
+            })
+            else if (route.kind == "rankings") NovelRankingsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = { title ->
                 navigate(NovelRoute("works", "search"), NovelQuery(q = title), title)
             }, onLogin = { signIn(c.name, c.url, c) }) else if (route.kind == "contents") {
                 NovelContentsPanel(repository, c, route.id, route.version, !busy, onOpen = { open(route.id, route.version, it.getString("id")) },
                     modifier = Modifier.weight(1f).fillMaxWidth().imePadding().padding(horizontal = 20.dp))
             } else if (route.kind == "works") {
                 NovelWorksPage(route.id, query, search, navigation, data, busy,
-                    onSearch = { search = it }, onSubmit = { if (query.q != search.trim()) { query = query.copy(q = search.trim()); data = null } else execute { load() } },
+                    onSearch = { search = it }, onSubmit = { rememberSearch(search); if (query.q != search.trim()) { query = query.copy(q = search.trim()); data = null } else execute { load() } },
                     onQuery = ::updateQuery, onFilter = { filter = true }, onMore = { execute { load(true) } },
                     onWork = { navigate(NovelRoute("work", it)) }, onRead = { open(it) })
             } else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (route.kind == "home") {
                     item {
                         NovelHomeHeader(data?.optInt("total"), search, { search = it }, !busy,
-                            onSubmit = { val term = search.trim(); navigate(NovelRoute("works", "search"), NovelQuery(q = term), term) },
+                            onSubmit = { val term = search.trim(); rememberSearch(term); navigate(NovelRoute("works", "search"), NovelQuery(q = term), term) },
                             onBrowse = { action -> when (action) {
                                 "authors" -> navigate(NovelRoute("authors"))
                                 else -> {
@@ -247,6 +266,10 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                                 }
                             } })
                     }
+                    item { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilledTonalButton(enabled = !busy, onClick = { browserState.keyword = search; navigate(NovelRoute("sources")) }) { Text("搜索在线书源") }
+                        TextButton(enabled = !busy, onClick = { browserState.explore = true; browserState.filter = browserState.filter.copy(capability = "", exploreEnabled = "true"); navigate(NovelRoute("sources")) }) { Text("书源发现") }
+                    } }
                     data?.optJSONObject("_continue")?.takeIf(::novelCanRead)?.let { work -> item {
                         NovelContinueCard(work, !busy, onRead = { open(work.getString("id")) }, onDetail = { navigate(NovelRoute("work", work.getString("id"))) })
                     } }
@@ -320,13 +343,13 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                 if (route.kind == "author") data?.let { author -> item {
                     Text(author.optString("biography").ifBlank { "暂无作家简介" }); Text("${author.optJSONObject("stats")?.optInt("works") ?: 0} 部作品 · ${author.optJSONObject("stats")?.optInt("readable") ?: 0} 部可读 · ${author.optJSONObject("stats")?.optInt("completed") ?: 0} 部完结", style = MaterialTheme.typography.bodySmall)
                     Text(author.novelObjects("categories").joinToString(" · ") { "${it.optString("name")} ${it.optInt("count")}" }, style = MaterialTheme.typography.bodySmall)
-                    NovelChoices("作品排序", query.sort, listOf("title" to "书名", "recent" to "最近", "popularity" to "热度")) { query = query.copy(sort = it) }
-                    NovelChoices("连载状态", query.serialStatus, listOf("" to "全部", "ongoing" to "连载", "completed" to "完结", "hiatus" to "停更")) { query = query.copy(serialStatus = it) }
+                    NovelChoices("作品排序", query.sort, listOf("title" to "书名", "recent" to "最近", "popularity" to "热度")) { updateQuery(query.copy(sort = it)) }
+                    NovelChoices("连载状态", query.serialStatus, listOf("" to "全部", "ongoing" to "连载", "completed" to "完结", "hiatus" to "停更")) { updateQuery(query.copy(serialStatus = it)) }
                     TextButton(enabled = editable && !busy, onClick = { editor = NovelEdit("编辑作家简介", listOf("简介" to author.optString("biography"))) { values -> change(listOf("authors", "profile"), "PATCH", JSONObject().put("name", route.name).put("biography", values.getValue("简介"))) } }) { Text("编辑简介") }
                 } }
                 if (route.kind == "lists") item { Row {
                     TextButton(enabled = editable && !busy, onClick = { editor = NovelEdit("新建书单", listOf("名称" to "", "简介" to "")) { values -> change(listOf("booklists"), "POST", JSONObject().put("title", values.getValue("名称")).put("description", values.getValue("简介"))) } }) { Text("新建书单") }
-                    FilterChip(deletedLists, enabled = !busy, onClick = { deletedLists = !deletedLists }, label = { Text("已删除") })
+                    FilterChip(deletedLists, enabled = !busy, onClick = { deletedLists = !deletedLists; data = null }, label = { Text("已删除") })
                 } }
                 if (route.kind == "list") data?.let { list -> item {
                     Text(list.optString("description").ifBlank { "暂无书单简介" })
@@ -373,7 +396,7 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     } })
     if (filter) NovelFilterSheet(query.copy(view = if (route.kind == "works") route.id else query.view), navigation, onDismiss = { filter = false }, onApply = { updateQuery(it); filter = false })
     if (sourceSearch && c != null && route.kind == "work") data?.let { work ->
-        NovelSourceSearchSheet(repository, c, work, onDismiss = { sourceSearch = false }, onBound = {
+        NovelSourceSearchSheet(repository, c, work, onDismiss = { sourceSearch = false }, onWork = { sourceSearch = false; navigate(NovelRoute("work", it)) }, onBound = {
             sourceSearch = false
             execute { load(); message = "已关联书源并获取目录，可选择版本阅读" }
         })
@@ -460,6 +483,7 @@ private fun splitTags(text: String) = text.split(',', '，').map(String::trim).f
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { facets.novelObjects("genre_tags").forEach { genre -> val tag = genre.getString("value"); FilterChip(tag in value.genres, onClick = { value = value.copy(genres = toggle(value.genres, tag), excluded = value.excluded - tag) }, label = { Text(tag) }) } }
         }
         item { Text("排除题材"); FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { facets.novelObjects("genre_tags").forEach { genre -> val tag = genre.getString("value"); FilterChip(tag in value.excluded, onClick = { value = value.copy(excluded = toggle(value.excluded, tag), genres = value.genres - tag) }, label = { Text(tag) }) } } }
+        item { FilterChip(value.precise, onClick = { value = value.copy(precise = !value.precise) }, label = { Text("精确搜索书名、作者或分类") }) }
         item { NovelChoices("连载", value.serialStatus, listOf("" to "全部", "ongoing" to "连载", "completed" to "完结", "hiatus" to "停更", "unknown" to "未知")) { value = value.copy(serialStatus = it) } }
         if (query.view == "shelf") item { FilterChip(value.hasUpdates, onClick = { value = value.copy(hasUpdates = !value.hasUpdates) }, label = { Text("只看有新章节的作品") }) }
         item { NovelChoices("内容", value.availability, listOf("" to "全部", "readable" to "可读", "local" to "本地版本", "online" to "在线版本", "metadata_only" to "仅资料")) { value = value.copy(availability = it) } }

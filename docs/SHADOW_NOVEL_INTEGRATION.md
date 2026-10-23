@@ -1,5 +1,7 @@
 # Shadow Novel 原生接入
 
+2026-10-23：新增在线选源搜索、发现、收录前原生详情、书源/书架管理、订阅与文件入口，详见 [最新客户端适配](NOVEL_CLIENT_ADAPTATION_2026_10_23.md)。
+
 ## 使用入口与实现范围
 
 阅读页的「Shadow Novel · 书城与书单」或来源页的「Shadow Novel」进入原生页面。连接自己的 Novel 服务根地址（支持反向代理子路径），验证 `/api/v1/integration` 后保存；无预置地址。连接复用 Keystore AES-GCM 存储格式，使用独立 vault、密钥别名和 `novel:<connection-id>` 作用域。内部沿用通用 `CatalogConnection` 数据结构，不通过 OPDS 请求业务数据。
@@ -17,7 +19,7 @@
 | 阅读 | Legado 原生中文排版、真实相邻页与卷页、自动跨章；目录、搜索、书签、主题、字体和离线朗读 |
 | 离线 | 已下载章节窗口、页面缓存时间提示、本机位置和待同步状态；移除连接后仍可在本地阅读书架访问下载 |
 
-使用现有 `/api/v1` 产品接口。基础阅读契约见 Novel 的 `docs/media-integration.md`，排行接口见 `docs/rankings-and-interactions.md`；原生书城与交互细节见[小说原生体验](NOVEL_NATIVE_EXPERIENCE.md)。来源规则导入/测试、采集任务管理、元数据观察与关联管理继续在 Novel 维护；客户端没有实现完整的服务端运维控制台。阅读器搜索作用于本机已下载章节，朗读当前章；章末翻页自动获取下一可读章，完整目录可跳转其他章节。
+使用现有 `/api/v1` 产品接口。基础阅读契约见 Novel 的 `docs/media-integration.md`，排行接口见 `docs/rankings-and-interactions.md`；原生书城与交互细节见[小说原生体验](NOVEL_NATIVE_EXPERIENCE.md)。来源规则导入/编辑/搜索检查、分组和订阅已有原生工具入口，实际抓取与规则执行仍在 Novel；深度诊断、元数据观察和完整恢复继续由服务端工具维护。阅读器搜索作用于本机已下载章节，朗读当前章；章末翻页自动获取下一可读章，完整目录可跳转其他章节。
 
 ## 数据与阅读包
 
