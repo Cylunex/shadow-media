@@ -34,6 +34,7 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     testImplementation(libs.junit)
+    testImplementation("com.squareup.okhttp3:mockwebserver:5.1.0")
     testImplementation("org.robolectric:robolectric:4.17")
     testImplementation(platform(libs.androidx.compose.bom))
     testImplementation("androidx.compose.ui:ui-test-junit4")

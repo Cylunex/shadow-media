@@ -46,7 +46,7 @@ internal fun NativeReaderHeader(title: String, chapter: String, status: String?,
 internal fun NativeReaderControls(
     chapter: String, pageLabel: String, progress: Float, enabled: Boolean, narrating: Boolean,
     canReturn: Boolean, onReturn: () -> Unit, onSeek: (Float) -> Unit, onPrevious: () -> Unit,
-    onNext: () -> Unit, onSpeak: () -> Unit, onPanel: (String) -> Unit, compact: Boolean = false,
+    onNext: () -> Unit, onSpeak: () -> Unit, onPanel: (String) -> Unit, compact: Boolean = false, sources: Boolean = false,
 ) {
     Surface(shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), tonalElevation = 4.dp, shadowElevation = 8.dp) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(top = if (compact) 4.dp else 16.dp, bottom = 4.dp)) {
@@ -77,8 +77,9 @@ internal fun NativeReaderControls(
                 HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant)
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                listOf("目录" to Icons.AutoMirrored.Rounded.MenuBook, "排版" to Icons.Rounded.TextFields,
-                    "搜索" to Icons.Rounded.Search, "书签" to Icons.Rounded.Bookmarks).forEach { (label, icon) ->
+                (listOf("目录" to Icons.AutoMirrored.Rounded.MenuBook, "排版" to Icons.Rounded.TextFields,
+                    "搜索" to Icons.Rounded.Search, "书签" to Icons.Rounded.Bookmarks) +
+                    if (sources) listOf("书源" to Icons.Rounded.SwapHoriz) else emptyList()).forEach { (label, icon) ->
                     ReaderTool(label, icon, enabled, Modifier.weight(1f)) { onPanel(label) }
                 }
             }

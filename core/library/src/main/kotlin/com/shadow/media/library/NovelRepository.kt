@@ -3,7 +3,6 @@ package com.shadow.media.library
 import android.content.Context
 import androidx.room.withTransaction
 import androidx.work.*
-import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -36,6 +35,9 @@ class NovelRepository(private val context: Context, private val library: Library
         catch (_: Exception) { null }
     }
     val dao = database.novelDao()
+    val cache = NovelReadingCache(context, library, this.api, dao, database.libraryStateDao())
+    val downloads = NovelDownloads(context)
+    val cacheJobs = NovelCacheJobs(this.api)
     fun connection(scope: String) = connections().singleOrNull { novelScope(it) == scope } ?: error("Novel 连接已移除，离线内容与进度仍保留")
     suspend fun discover(c: CatalogConnection): JSONObject = api.json(c, listOf("integration")).also {
         require(it.optString("schema") == "shadow.novel.integration/v1" && it.optInt("api_version") == 1) { "此服务不支持 Novel 原生接入 v1" }
@@ -48,7 +50,14 @@ class NovelRepository(private val context: Context, private val library: Library
         try {
             return api.json(c, path, query).also { value ->
                 val clean = (novelCacheValue(value) as JSONObject).toString()
-                if (clean.toByteArray().size <= 2 * 1024 * 1024) cache.cacheCatalogPage(CatalogPageEntity(key, clean, System.currentTimeMillis()))
+                if (clean.toByteArray().size <= 2 * 1024 * 1024) {
+                    val now = System.currentTimeMillis()
+                    cache.cacheCatalogPage(CatalogPageEntity(key, clean, now))
+                    if (path.size == 2 && path.first() == "works") value.novelId("id")?.takeIf { it != path[1] }?.let { canonical ->
+                        val canonicalKey = "novel-page:" + hash(scopedContentId(novelScope(c), "works/$canonical", query.toString()))
+                        cache.cacheCatalogPage(CatalogPageEntity(canonicalKey, clean, now))
+                    }
+                }
             }
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) {
@@ -58,13 +67,22 @@ class NovelRepository(private val context: Context, private val library: Library
         }
     }
     suspend fun mutate(c: CatalogConnection, path: List<String>, method: String, body: JSONObject? = null): JSONObject = api.json(c, path, method = method, body = body)
-    suspend fun downloaded(scope: String): List<LibraryAssetEntity> = dao.publications(scope).mapNotNull { library.dao.asset(it.assetId) }.filter { it.localUri.isNotBlank() }.sortedByDescending { it.addedAt }
+    suspend fun downloaded(scope: String): List<LibraryAssetEntity> {
+        return dao.publications(scope).groupBy { it.workId to it.versionId }.mapNotNull { (identity, publications) ->
+            val saved = dao.state(stateId(scope, identity.first))?.localPosition?.takeIf(String::isNotBlank)?.let(::JSONObject)
+            val preferred = saved?.takeIf { it.optString("version_id") == identity.second }?.optString("asset_id")
+            val prior = publications.associate { it.assetId to (library.dao.progress(it.assetId)?.updatedAt ?: 0) }
+            publications.sortedWith(compareByDescending<NovelPublicationEntity> { it.assetId == preferred }
+                .thenByDescending { prior[it.assetId] ?: 0 }
+                .thenBy { JSONObject(it.mappingJson).optInt("offset") }).firstNotNullOfOrNull { pub ->
+                    library.dao.asset(pub.assetId)?.takeIf { runCatching { library.localFile(it).isFile }.getOrDefault(false) }
+                }
+        }.sortedByDescending { it.addedAt }
+    }
+
     fun observe(scope: String, workId: String) = dao.observe(stateId(scope, workId))
-    suspend fun cachedContents(publication: NovelPublicationEntity): List<JSONObject> = dao.publications(publication.scope)
-        .filter { it.workId == publication.workId && it.versionId == publication.versionId }
-        .filter { library.dao.asset(it.assetId)?.let { asset -> runCatching { library.localFile(asset).isFile }.getOrDefault(false) } == true }
-        .flatMap { NovelPublicationMap(JSONObject(it.mappingJson)).chapters }
-        .distinctBy { it.getString("id") }.sortedBy { it.getInt("ordinal") }.map { JSONObject(it.toString()).put("readable", true) }
+    suspend fun cachedContents(publication: NovelPublicationEntity): List<JSONObject> =
+        cache.chapters(publication.scope, publication.workId, publication.versionId)
 
     suspend fun nextChapter(publication: NovelPublicationEntity): String? {
         val current = NovelPublicationMap(JSONObject(publication.mappingJson))
@@ -131,57 +149,37 @@ class NovelRepository(private val context: Context, private val library: Library
         val chapters = open.novelObjects("chapters")
         val offset = chapters.indexOfFirst { it.getString("id") == chosen && it.optBoolean("readable") }
         require(offset >= 0) { "章节不属于所选版本" }
-        var query = listOf("version_id" to selectedVersion, "offset" to offset.toString(), "limit" to WINDOW.toString())
-        var manifest = api.json(c, listOf("works", workId, "reading-manifest"), query)
-        require(manifest.optString("schema") == "shadow.novel.reading/v1" && manifest.getString("version_id") == selectedVersion) { "阅读清单身份不匹配" }
-        val temp = withContext(Dispatchers.IO) { File.createTempFile("novel-", ".epub", context.cacheDir) }
-        try {
-            try { api.download(c, listOf("works", workId, "publication.epub"), temp, query) }
-            catch (e: NovelApiException) {
-                if (e.code != "publication_not_cached") throw e
-                val missing = e.detail.novelStrings("missing_chapter_ids")
-                require(missing.size <= WINDOW && missing.isNotEmpty()) { "请缩小阅读窗口后重试" }
-                val allowed = manifest.novelObjects("items").filter { it.optBoolean("readable") }.map { it.getString("id") }.toSet()
-                require(missing.all { it in allowed }) { "服务端请求载入窗口以外的章节" }
-                for (id in missing) {
-                    currentCoroutineContext().ensureActive()
-                    try { api.json(c, listOf("chapters", id)) }
-                    catch (cancelled: CancellationException) { throw cancelled }
-                    catch (failure: Exception) {
-                        if (id == chosen) throw failure
-                        // A broken following chapter must not block the current readable chapter.
-                        query = query.filterNot { it.first == "limit" } + ("limit" to "1")
-                        manifest = api.json(c, listOf("works", workId, "reading-manifest"), query)
-                        break
-                    }
-                }
-                api.download(c, listOf("works", workId, "publication.epub"), temp, query)
-            }
-            val mapping = withContext(Dispatchers.IO) {
-                SafeArchives.validate(temp)
-                NovelPublicationMap(JSONObject(SafeArchives.read(temp, "shadow-novel.json", 2L * 1024 * 1024).toString(Charsets.UTF_8)))
-            }
-            require(mapping.workId == workId && mapping.versionId == selectedVersion && mapping.chapter(chosen) != null) { "阅读包身份不匹配" }
-            require(mapping.chapters.map { it.getString("id") } == manifest.novelObjects("items").filter { it.optBoolean("readable") }.map { it.getString("id") }) { "阅读包与目录不一致" }
-            val packageRevision = withContext(Dispatchers.IO) { temp.inputStream().use { stream ->
-                val digest = MessageDigest.getInstance("SHA-256"); val buffer = ByteArray(65536)
-                while (true) { val count = stream.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
-                digest.digest().joinToString("") { "%02x".format(it) }
-            } }
-            val assetId = hash(scopedContentId(scope, workId, selectedVersion, packageRevision))
-            val asset = library.importPrepared(assetId, scope, selectedVersion, manifest.getString("title"), "epub", temp)
-            val position = (if (chapterId == null) remote else null) ?: JSONObject().put("version_id", selectedVersion).put("chapter_id", chosen).put("ratio", 0)
-            val initialPosition = JSONObject(position.toString()).put("asset_id", asset.id)
-            val initialLocator = mapping.locator(position)?.toString()
-            database.withTransaction {
-                dao.putPublication(NovelPublicationEntity(asset.id, scope, workId, selectedVersion, mapping.json.toString(), packageRevision))
-                val latest = dao.state(stateId(scope, workId))
-                if (latest == null) dao.putState(NovelReadingStateEntity(stateId(scope, workId), scope, workId, UUID.randomUUID().toString(), revision = open.optLong("revision"), localPosition = initialPosition.toString()))
-                else if (!latest.pending && latest.conflictJson.isBlank()) dao.putState(latest.copy(revision = open.optLong("revision"), localPosition = initialPosition.toString()))
-                if (initialLocator != null) library.dao.seedProgress(ContentProgressEntity(asset.id, locatorType = "text", locatorJson = initialLocator, updatedAt = System.currentTimeMillis()))
-            }
-            Prepared(asset, initialLocator)
-        } finally { temp.delete() }
+        val cached = try { cache.window(c, workId, selectedVersion, offset, WINDOW, chosen, allowPartial = true) }
+        catch (e: NovelCachedChapterUnreadable) {
+            if (e.chapterId == chosen) throw e
+            cache.window(c, workId, selectedVersion, offset, 1, chosen)
+        }
+        val asset = cached.asset
+        val mapping = cached.mapping
+        val position = (if (chapterId == null) remote else null) ?: JSONObject().put("version_id", selectedVersion).put("chapter_id", chosen).put("ratio", 0)
+        val initialPosition = JSONObject(position.toString()).put("asset_id", asset.id)
+        val initialLocator = mapping.locator(position)?.toString()
+        database.withTransaction {
+            val latest = dao.state(stateId(scope, workId))
+            if (latest == null) dao.putState(NovelReadingStateEntity(stateId(scope, workId), scope, workId, UUID.randomUUID().toString(), revision = open.optLong("revision"), localPosition = initialPosition.toString()))
+            else if (!latest.pending && latest.conflictJson.isBlank()) dao.putState(latest.copy(revision = open.optLong("revision"), localPosition = initialPosition.toString()))
+            if (initialLocator != null) library.dao.seedProgress(ContentProgressEntity(asset.id, locatorType = "text", locatorJson = initialLocator, updatedAt = System.currentTimeMillis()))
+        }
+        Prepared(asset, initialLocator)
+    }
+
+    /** A downloaded book becomes a reading session only when the reader intentionally opens it. */
+    suspend fun beginReading(publication: NovelPublicationEntity, locator: JSONObject?) {
+        val id = stateId(publication.scope, publication.workId)
+        if (dao.state(id) != null) return
+        val revision = if (LibraryResources.offlineOnly) 0 else try {
+            withTimeout(1_500) { api.json(connection(publication.scope), listOf("me", "progress", publication.workId)).optLong("revision") }
+        } catch (_: TimeoutCancellationException) { 0 } catch (e: CancellationException) { throw e } catch (_: Exception) { 0 }
+        val mapping = NovelPublicationMap(JSONObject(publication.mappingJson))
+        val position = locator?.let(mapping::position)?.put("asset_id", publication.assetId)?.toString().orEmpty()
+        database.withTransaction {
+            if (dao.state(id) == null) dao.putState(NovelReadingStateEntity(id, publication.scope, publication.workId, UUID.randomUUID().toString(), revision = revision, localPosition = position))
+        }
     }
 
     /** At most one process-owned sync loop; HTTP never holds a Room transaction. */

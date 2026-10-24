@@ -87,8 +87,22 @@ class NovelIntakeContractTest {
         s.enqueue(MockResponse().setResponseCode(404).setBody("""{"detail":{"message":"章节不在版本中"}}"""))
         try { api.openChapter(c, receipt, "v", "https://example.com/c"); fail("missing chapter") } catch (e: NovelApiException) { assertEquals(404, e.status) }
         s.enqueue(MockResponse().setBody("""{"work_id":"other","version_id":"v","chapter_id":"chapter"}"""))
+        s.enqueue(MockResponse().setBody("""{"id":"work"}"""))
         try { api.openChapter(c, receipt, "v", "https://example.com/c"); fail("wrong identity") } catch (_: IllegalArgumentException) {}
-        assertEquals(2, s.requestCount)
+        assertEquals(3, s.requestCount)
+    }
+    @Test fun redirectedExistingWorkKeepsItsIdentityDuringSourceIntakeAndChapterOpening() = server { s, api, c ->
+        s.enqueue(MockResponse().setBody("""{"work_id":"canonical","binding_id":"binding","job_id":"toc"}"""))
+        s.enqueue(MockResponse().setBody("""{"id":"canonical"}"""))
+        val receipt = api.collect(c, row(), "old-work", features = NovelSourceFeatures(intakeReuse = true))
+        assertEquals("canonical", receipt.getString("work_id"))
+        val first = s.takeRequest()
+        assertEquals("old-work", JSONObject(first.body.readUtf8()).getString("work_id"))
+        assertEquals("/novel/api/v1/works/old-work", s.takeRequest().path)
+        s.enqueue(MockResponse().setBody("""{"work_id":"canonical","version_id":"v","chapter_id":"chapter"}"""))
+        s.enqueue(MockResponse().setBody("""{"id":"canonical"}"""))
+        assertEquals("canonical", api.openChapter(c, JSONObject().put("work_id", "old-work").put("binding_id", "binding"), "v", "https://example.com/c").workId)
+        assertEquals(4, s.requestCount)
     }
     @Test fun resumePollsOriginalJobAndRetainsCancelledPartialResultWithoutNewSearch() = server { s, api, c ->
         s.enqueue(MockResponse().setBody("""{"state":"cancelled","result":{"items":[{"name":"已返回"}],"remaining":27,"truncated":true}}"""))

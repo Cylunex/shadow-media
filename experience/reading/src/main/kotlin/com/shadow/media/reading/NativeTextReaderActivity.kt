@@ -56,6 +56,8 @@ class NativeTextReaderActivity : ComponentActivity() {
     private var session: ProgressSession? = null
     private var observer: Job? = null
     private var sync: Job? = null
+    private var prefetch: Job? = null
+    private var cacheStatus by mutableStateOf<String?>(null)
     private var aloud: ReadAloud? = null
     private var aloudJob: Job? = null
     private var narrating by mutableStateOf(false)
@@ -90,6 +92,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         val content = source.chapter(item, pub, locator?.optString("href"),
             if (locator?.optJSONObject("native_text") == null) locator?.optJSONObject("locations")?.optDouble("progression", 0.0)?.takeIf { it.isFinite() } else null)
         val restored = if (lastPage) content.text.length else content.restore(locator)
+        if (pub != null) novel.beginReading(pub, locator ?: content.locator(restored))
         val newSession = if (asset?.id != item.id || session == null) ProgressWriter.begin(library, item) else session
         asset = item; publication = pub; chapter = content; offset = restored; session = newSession
         if (pub != null) {
@@ -98,6 +101,23 @@ class NativeTextReaderActivity : ComponentActivity() {
         } else { observer?.cancel(); state = null }
         pendingShow = Triple(content, item.title, restored)
         view?.let { it.isEnabled = false; it.show(content, item.title, restored, style); pendingShow = null }
+        prefetchFollowing(pub, content.ref.ordinal)
+    }
+    private fun prefetchFollowing(pub: NovelPublicationEntity?, ordinal: Int) {
+        prefetch?.cancel(); cacheStatus = null
+        if (pub == null || LibraryResources.offlineOnly) return
+        prefetch = lifecycleScope.launch {
+            repeat(3) { attempt ->
+                try {
+                    novel.cache.prefetch(novel.connection(pub.scope), pub, ordinal)
+                    cacheStatus = "后续章节已提前缓存"; return@launch
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) {
+                    cacheStatus = "后续章节暂未缓存，联网后可重试"
+                    if (attempt < 2) delay(5_000L * (attempt + 1))
+                }
+            }
+        }
     }
     private fun positionChanged(value: Int, user: Boolean) {
         offset = value
@@ -172,6 +192,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         if (direction < 0 && ordinal == 0 || direction > 0 && ordinal >= mapping.json.getInt("total") - 1) return null
         val cached = novel.cachedContents(pub).map(::ref)
         cached.firstOrNull { it.ordinal == ordinal + direction }?.let { return it }
+        novel.cache.adjacent(pub.scope, pub.workId, pub.versionId, ordinal, direction)?.let { return it.chapter?.let(::ref) }
         var start = if (direction > 0) ordinal + 1 else (ordinal - 100).coerceAtLeast(0)
         while (true) {
             val page = novel.get(novel.connection(pub.scope), listOf("works", pub.workId, "contents"), listOf("version_id" to pub.versionId, "offset" to start.toString(), "limit" to "100"))
@@ -201,6 +222,15 @@ class NativeTextReaderActivity : ComponentActivity() {
             open(prepared.asset, prepared.locator?.let(::JSONObject))
         } else { novel.keepLocal(pub.scope, pub.workId); busy = false; view?.isEnabled = true }
     }
+    private fun switchSource(version: String, chapterId: String?) = navigate {
+        val pub = requireNotNull(publication)
+        val origin = location()
+        val prepared = novel.prepare(novel.connection(pub.scope), pub.workId, version, chapterId)
+        open(prepared.asset, prepared.locator?.let(::JSONObject))
+        saveAfterLayout = true
+        jumpHistory = jumpHistory.remember(origin, location())
+        closePanel()
+    }
     private fun stopAloud() { aloudJob?.cancel(); aloud?.stop(); narrating = false }
     private fun speak() {
         if (narrating) { stopAloud(); return }
@@ -220,6 +250,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         MaterialTheme(colorScheme = readerColorScheme(style.paper)) {
             val writerError by ProgressWriter.error.collectAsState()
             val snackbar = remember { SnackbarHostState() }
+            val sourceState = remember(publication?.scope, publication?.workId) { NovelReaderSourceState() }
             LaunchedEffect(message) {
                 val text = message ?: return@LaunchedEffect
                 snackbar.showSnackbar(text)
@@ -253,7 +284,7 @@ class NativeTextReaderActivity : ComponentActivity() {
                             state?.conflictJson?.isNotBlank() == true -> "进度有冲突，请选择保留的位置"
                             state?.message?.isNotBlank() == true -> state?.message
                             state?.pending == true -> "进度已保存在本机，等待同步"
-                            publication != null && state != null -> "进度已同步"
+                            publication != null && state != null -> listOfNotNull("进度已同步", cacheStatus).joinToString(" · ")
                             else -> "进度保存在本机"
                         }
                         NativeReaderHeader(asset?.title.orEmpty(), chapter?.ref?.title.orEmpty(), writerError ?: status, !busy,
@@ -277,7 +308,7 @@ class NativeTextReaderActivity : ComponentActivity() {
                                 view?.seek(((chapter?.text?.length ?: 0) * ratio).toInt())
                                 jumpHistory = jumpHistory.remember(origin, location())
                             }, onPrevious = { stopAloud(); view?.turn(-1) }, onNext = { stopAloud(); view?.turn(1) },
-                            onSpeak = ::speak, onPanel = { panel = it; applyWindow() }, compact = compactControls)
+                            onSpeak = ::speak, onPanel = { panel = it; applyWindow() }, compact = compactControls, sources = publication != null)
                     }
                 }
                 SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp))
@@ -297,6 +328,9 @@ class NativeTextReaderActivity : ComponentActivity() {
                         }) else null) }
                         "目录" -> asset?.let { item -> chapter?.let { content ->
                             NativeReaderContentsPanel(item, publication, content, source, novel, !busy) { ref -> closePanel(); openChapter(ref) }
+                        } }
+                        "书源" -> publication?.let { pub -> chapter?.let { content ->
+                            NovelReaderSourcesPanel(novel, pub, asset?.title.orEmpty(), content.ref.title, !busy, sourceState, ::switchSource)
                         } }
                         "搜索" -> asset?.let { item ->
                             NativeReaderSearchPanel(item, publication, source, !busy) { hit -> closePanel(); jumpTo(NativeReaderLocation(hit.assetId, hit.locator)) }
@@ -325,6 +359,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         return super.onKeyDown(keyCode, event)
     }
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean = if (style.volumeToTurn && !menu && panel == null && excerpt == null && !narrating && keyCode in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) true else super.onKeyUp(keyCode, event)
-    override fun onStop() { stopAloud(); view?.pause(); if (publication != null) lifecycleScope.launch { ProgressWriter.flush(); NovelRepository.schedule(this@NativeTextReaderActivity) }; super.onStop() }
+    override fun onStart() { super.onStart(); chapter?.let { prefetchFollowing(publication, it.ref.ordinal) } }
+    override fun onStop() { prefetch?.cancel(); stopAloud(); view?.pause(); if (publication != null) lifecycleScope.launch { ProgressWriter.flush(); NovelRepository.schedule(this@NativeTextReaderActivity) }; super.onStop() }
     override fun onDestroy() { view?.dispose(); view = null; aloud?.close(); super.onDestroy() }
 }

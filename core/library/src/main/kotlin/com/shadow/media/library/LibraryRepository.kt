@@ -177,7 +177,8 @@ class LibraryRepository(context: Context) {
                 }
             }
         }
-        if (!target.exists()) {
+        // Repair a damaged local cache with the verified incoming bytes, preserving its identity/locator.
+        if (!target.exists() || fileDigest(target) != revision) {
             val staging = File.createTempFile("install-", ".part", folder(id))
             try {
                 input.inputStream().use { stream -> staging.outputStream().use { output ->

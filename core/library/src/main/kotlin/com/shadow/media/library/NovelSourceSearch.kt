@@ -42,7 +42,7 @@ class NovelSourceSearch(private val api: NovelApi) {
         val body = JSONObject().put("work_id", workId).put("provider_id", row.getString("provider_id"))
             .put("url", row.getString("bookUrl"))
         val binding = api.json(connection, listOf("source-bindings"), method = "POST", body = body)
-        require(binding.getString("work_id") == workId) { "关联结果与当前作品不一致，请刷新详情" }
+        requireNovelWork(api, connection, workId, binding.getString("work_id"))
         awaitJob(connection, binding.getString("job_id")) {}
         return binding
     }
@@ -62,7 +62,7 @@ class NovelSourceSearch(private val api: NovelApi) {
             require(readableNovelSource(row)) { "此服务暂不支持将纯资料来源关联到已有作品" }
             return api.json(connection, listOf("source-bindings"), method = "POST", body = JSONObject()
                 .put("work_id", workId).put("provider_id", row.getString("provider_id")).put("url", row.getString("bookUrl")))
-                .also { require(it.novelId("work_id") == workId) { "关联结果与当前作品不一致" } }
+                .also { requireNovelWork(api, connection, workId, it.getString("work_id")) }
         }
         val body = JSONObject().put("provider_id", row.getString("provider_id")).put("url", row.getString("bookUrl"))
             .put("title", row.getString("name").take(512)).put("author", row.optString("author").take(256)).put("intro", row.optString("intro").take(2000))
@@ -71,7 +71,8 @@ class NovelSourceSearch(private val api: NovelApi) {
         if (createNew) body.put("create_new", true)
         // Collection is idempotent. Keep the receipt even if a subsequent TOC job fails.
         return api.json(connection, listOf("source-results", "collect"), method = "POST", body = body).also {
-            require(it.novelId("work_id") != null && (workId == null || it.novelId("work_id") == workId)) { "收录结果与作品身份不一致" }
+            require(it.novelId("work_id") != null) { "收录结果与作品身份不一致" }
+            if (workId != null) requireNovelWork(api, connection, workId, it.getString("work_id"))
         }
     }
 
@@ -84,7 +85,8 @@ class NovelSourceSearch(private val api: NovelApi) {
         require(version.isNotBlank() && chapterUrl.isNotBlank()) { "所选章节缺少固定版本或地址" }
         val body = JSONObject().put("binding_id", receipt.getString("binding_id")).put("version_id", version).put("chapter_url", chapterUrl)
         val result = api.json(connection, listOf("source-results", "open-chapter"), method = "POST", body = body)
-        require(result.novelId("work_id") == receipt.novelId("work_id") && result.novelId("version_id") == version && result.novelId("chapter_id") != null) { "章节身份与所选作品版本不一致" }
+        require(result.novelId("version_id") == version && result.novelId("chapter_id") != null) { "章节身份与所选作品版本不一致" }
+        requireNovelWork(api, connection, receipt.getString("work_id"), result.getString("work_id"))
         return NovelSourceOpening(result.getString("work_id"), version, result.getString("chapter_id"))
     }
 

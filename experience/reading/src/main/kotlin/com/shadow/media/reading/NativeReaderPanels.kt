@@ -48,7 +48,7 @@ internal fun ColumnScope.NativeReaderContentsPanel(
                 onOpen(NativeChapterRef(id, row.optString("title"), row.getInt("ordinal"), "chapters/$id.xhtml", row.optBoolean("readable")))
             },
             modifier = Modifier.weight(1f).fillMaxWidth(), currentId = current.ref.id, currentOrdinal = current.ref.ordinal,
-            downloadedChapters = { novel.cachedContents(publication) })
+            downloadedChapters = { novel.cachedContents(publication) }, contentScope = publication.scope)
         return
     }
     var requested by remember { mutableIntStateOf(current.ref.ordinal) }

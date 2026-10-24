@@ -1,6 +1,8 @@
 package com.shadow.media.reading
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -15,11 +17,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.shadow.media.library.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +38,7 @@ fun NovelContentsPanel(
     enabled: Boolean, onOpen: (JSONObject) -> Unit, modifier: Modifier = Modifier,
     currentId: String? = null, currentOrdinal: Int? = null,
     downloadedChapters: suspend () -> List<JSONObject> = { emptyList() },
+    contentScope: String? = connection?.let(::novelScope),
 ) {
     key(connection?.id, workId, versionId) {
         var term by rememberSaveable { mutableStateOf("") }
@@ -44,11 +50,23 @@ fun NovelContentsPanel(
         var loading by remember(query) { mutableStateOf(true) }
         var error by remember(query) { mutableStateOf<String?>(null) }
         var retry by remember { mutableIntStateOf(0) }
+        var showDownloads by rememberSaveable { mutableStateOf(false) }
+        val cacheUpdates by repository.cache.changes.collectAsState()
+        LaunchedEffect(cacheUpdates, retry) {
+            val cached = withContext(Dispatchers.IO) {
+                if (contentScope != null) repository.cache.chapters(contentScope, workId, versionId) else downloadedChapters()
+            }
+            downloaded = cached.map { it.getString("id") }.toSet()
+            if (page?.optBoolean("_downloaded_only") == true && contentScope != null) {
+                repository.cache.savedDirectory(contentScope, workId, versionId)?.let { page = novelSavedDirectoryContents(it, query) }
+            }
+        }
         LaunchedEffect(query, retry) {
             loading = true; error = null
             try {
-                val cached = withContext(Dispatchers.IO) { downloadedChapters() }
-                downloaded = cached.map { it.getString("id") }.toSet()
+                val cached = withContext(Dispatchers.IO) {
+                    if (contentScope != null) repository.cache.chapters(contentScope, workId, versionId) else downloadedChapters()
+                }
                 try {
                     requireNotNull(connection) { "连接已移除" }
                     page = repository.get(connection, listOf("works", workId, "contents"), query.parameters()).also {
@@ -56,15 +74,28 @@ fun NovelContentsPanel(
                     }
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
-                    if (cached.isEmpty()) throw e
-                    page = novelOfflineContents(cached, query)
-                    error = if (e is NovelApiException && e.status == 401) "登录已失效，当前仅显示本机已下载目录" else "暂时无法获取完整目录，当前仅显示本机已下载目录"
+                    val saved = contentScope?.let { repository.cache.savedDirectory(it, workId, versionId) }
+                    if (saved == null && cached.isEmpty()) throw e
+                    page = saved?.let { novelSavedDirectoryContents(it, query) } ?: novelOfflineContents(cached, query)
+                    error = if (e is NovelApiException && e.status in setOf(401, 403)) "登录已失效，当前显示本机目录" else if (saved == null) "暂时无法获取完整目录，当前仅显示本机已下载目录" else null
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { error = e.message ?: "目录加载失败，请重试" }
             finally { loading = false }
         }
         Column(modifier) {
+            if (contentScope != null) {
+                TextButton(onClick = { showDownloads = !showDownloads }) { Icon(Icons.Rounded.Download, null); Spacer(Modifier.width(6.dp)); Text(if (showDownloads) "收起缓存与下载" else "缓存与下载") }
+                if (showDownloads) Dialog(onDismissRequest = { showDownloads = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+                    Surface(shape = MaterialTheme.shapes.extraLarge, modifier = Modifier.fillMaxWidth(.94f).widthIn(max = 560.dp)
+                        .heightIn(max = (LocalConfiguration.current.screenHeightDp * .9f).dp).imePadding()) {
+                        Column(Modifier.verticalScroll(rememberScrollState())) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { IconButton(onClick = { showDownloads = false }) { Icon(Icons.Rounded.Close, "关闭缓存与下载") } }
+                            NovelDownloadPanel(repository, connection, contentScope, workId, versionId, currentOrdinal)
+                        }
+                    }
+                }
+            }
             NovelContentsBody(query, page, loading, error, downloaded, currentId, currentOrdinal, enabled,
                 onQuery = { term = it.q; descending = it.descending; offset = it.offset }, onRetry = { retry++ }, onOpen = { id ->
                     val chapter = page?.novelObjects("items")?.firstOrNull { it.optString("id") == id }
@@ -133,7 +164,8 @@ internal fun ColumnScope.NovelContentsBody(
     if (error != null) Row(verticalAlignment = Alignment.CenterVertically) {
         Text(error, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
         TextButton(enabled = !loading, onClick = onRetry) { Text("重试") }
-    } else if (page?.has("_cached_at") == true) Text("缓存目录 · 联网后可刷新", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    } else if (page?.has("_directory_cached") == true) Text("完整目录已缓存 · 未下载章节需联网获取", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    else if (page?.has("_cached_at") == true) Text("缓存目录 · 联网后可刷新", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (!loading && page != null && entries.isEmpty()) item {
             ReaderEmptyState(Icons.Rounded.SearchOff, "没有匹配的章节", if (query.q.isBlank()) "此版本暂无目录，可返回选择其他版本。" else "试试更短的章节名，或清除关键词。")

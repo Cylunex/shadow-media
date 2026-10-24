@@ -99,6 +99,7 @@ interface LibraryDao {
     @Query("UPDATE library_assets SET favorite = :favorite WHERE id = :id")
     suspend fun legacyFavorite(id: String, favorite: Boolean)
     @Query("INSERT OR IGNORE INTO user_collection SELECT 'default', id, 1, favorite, addedAt FROM library_assets WHERE id = :id") suspend fun seedPersonalState(id: String)
+    @Query("UPDATE user_collection SET collected = 0 WHERE assetId = :id AND profileId = 'default' AND favorite = 0") suspend fun hideCacheWindow(id: String)
     @Query("UPDATE user_collection SET favorite = :favorite, collected = 1 WHERE assetId = :id AND profileId = 'default'") suspend fun userFavorite(id: String, favorite: Boolean)
     @Transaction suspend fun favorite(id: String, favorite: Boolean) {
         seedPersonalState(id); userFavorite(id, favorite); legacyFavorite(id, favorite)

@@ -34,3 +34,14 @@ fun novelOfflineContents(chapters: List<JSONObject>, query: NovelContentsQuery):
         .put("next_offset", (start + rows.size).takeIf { it < filtered.size } ?: JSONObject.NULL)
         .put("latest", JSONObject.NULL)
 }
+
+/** A saved complete TOC includes uncached chapters; availability badges still come from local files. */
+fun novelSavedDirectoryContents(directory: JSONObject, query: NovelContentsQuery): JSONObject {
+    require(directory.getString("version_id") == query.versionId)
+    val entries = directory.novelObjects("items")
+    return novelOfflineContents(entries, query).apply {
+        remove("_downloaded_only")
+        put("_directory_cached", true)
+        put("latest", entries.lastOrNull { it.optBoolean("readable") } ?: JSONObject.NULL)
+    }
+}

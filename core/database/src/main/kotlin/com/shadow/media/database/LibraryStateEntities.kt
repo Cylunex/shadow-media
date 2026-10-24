@@ -63,6 +63,7 @@ data class ContinueRow(val rowId: String, val assetId: String?, val providerId: 
     @Query("SELECT * FROM catalog_pages WHERE id = :id") suspend fun catalogPage(id: String): CatalogPageEntity?
     @Query("DELETE FROM catalog_pages WHERE id IN (SELECT id FROM catalog_pages ORDER BY updatedAt DESC LIMIT -1 OFFSET 256)") suspend fun trimCatalogPages()
     @Query("SELECT * FROM catalog_pages") suspend fun allCatalogPages(): List<CatalogPageEntity>
+    @Query("SELECT * FROM catalog_pages WHERE id LIKE :prefix ORDER BY updatedAt DESC") suspend fun catalogPages(prefix: String): List<CatalogPageEntity>
     @Query("DELETE FROM catalog_pages WHERE id = :id") suspend fun removeCatalogPage(id: String)
     @Upsert suspend fun putCatalogPage(page: CatalogPageEntity)
     @Query("SELECT COALESCE(SUM(length(CAST(payload AS BLOB))), 0) FROM catalog_pages") suspend fun catalogBytes(): Long

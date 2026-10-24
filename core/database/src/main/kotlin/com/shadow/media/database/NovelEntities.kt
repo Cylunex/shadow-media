@@ -28,6 +28,8 @@ data class NovelReadingStateEntity(
     @Query("SELECT * FROM novel_publications WHERE scope = :scope AND workId = :work AND versionId = :version LIMIT 1")
     suspend fun publication(scope: String, work: String, version: String): NovelPublicationEntity?
     @Query("SELECT * FROM novel_publications WHERE scope = :scope") suspend fun publications(scope: String): List<NovelPublicationEntity>
+    @Query("SELECT * FROM novel_publications WHERE scope = :scope AND workId = :work AND versionId = :version")
+    suspend fun windows(scope: String, work: String, version: String): List<NovelPublicationEntity>
     @Upsert suspend fun putPublication(value: NovelPublicationEntity)
     @Query("SELECT * FROM novel_reading_states WHERE id = :id") suspend fun state(id: String): NovelReadingStateEntity?
     @Query("SELECT * FROM novel_reading_states WHERE id = :id") fun observe(id: String): Flow<NovelReadingStateEntity?>
