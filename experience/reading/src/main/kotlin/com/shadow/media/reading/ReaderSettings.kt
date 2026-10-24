@@ -17,6 +17,7 @@ internal enum class ReaderPaper(val label: String, val background: Int, val fore
 internal enum class ReaderFont(val label: String, val css: String) {
     SANS("黑体", "sans-serif"), SERIF("宋体", "serif"), MONO("等宽", "monospace")
 }
+internal enum class ReaderTitleAlignment(val label: String) { START("居左"), CENTER("居中") }
 
 internal data class ReaderSettings(
     val fontSize: Float = 115f,
@@ -40,7 +41,16 @@ internal data class ReaderSettings(
     val brightnessGesture: Boolean = true,
     val pinchToResize: Boolean = true,
     val keepAwake: Boolean = true,
-    val brightness: Float = -1f
+    val brightness: Float = -1f,
+    val verticalMargins: Float = 1f,
+    val indentSize: Int = 2,
+    val showChapterTitle: Boolean = true,
+    val titleScale: Float = 1.2f,
+    val titleSpacing: Float = .85f,
+    val titleAlignment: ReaderTitleAlignment = ReaderTitleAlignment.START,
+    val customFontId: String = "",
+    val customFontName: String = "",
+    val haptics: Boolean = true,
 ) {
     fun normalized() = copy(
         fontSize = fontSize.bounded(80f, 220f, 115f),
@@ -48,6 +58,12 @@ internal data class ReaderSettings(
         paragraphSpacing = paragraphSpacing.bounded(0f, 2f, 0.6f),
         letterSpacing = letterSpacing.bounded(0f, 0.15f, 0f),
         margins = margins.bounded(0.4f, 2f, 1f),
+        verticalMargins = verticalMargins.bounded(.5f, 2.5f, 1f),
+        indentSize = indentSize.coerceIn(1, 4),
+        titleScale = titleScale.bounded(1f, 1.8f, 1.2f),
+        titleSpacing = titleSpacing.bounded(.25f, 2f, .85f),
+        customFontId = customFontId.takeIf { it.matches(Regex("[a-f0-9]{64}")) }.orEmpty(),
+        customFontName = customFontName.take(120),
         paperTexture = paperTexture.bounded(0f, 1f, 0.65f),
         lastDayPaper = if (paper != ReaderPaper.NIGHT) paper else lastDayPaper.takeUnless { it == ReaderPaper.NIGHT } ?: ReaderPaper.PARCHMENT,
         brightness = if (brightness == -1f) -1f else brightness.bounded(0.02f, 1f, -1f)
@@ -59,14 +75,16 @@ internal data class ReaderSettings(
     fun toggleNight() = selectPaper(if (paper == ReaderPaper.NIGHT) lastDayPaper else ReaderPaper.NIGHT)
 
     /** Only properties which change character positions belong here. Colors never trigger pagination. */
-    fun typographyKey() = listOf(fontSize, lineHeight, paragraphSpacing, letterSpacing, margins, font, bold, indent, justify)
+    fun typographyKey() = listOf(fontSize, lineHeight, paragraphSpacing, letterSpacing, margins, verticalMargins,
+        font, customFontId, bold, indent, indentSize, justify, showChapterTitle, titleScale, titleSpacing, titleAlignment)
 }
 
 internal enum class ReaderTypographyPreset(val label: String) {
     CLASSIC("经典"), RELAXED("舒展"), LARGE("大字"), COMPACT("紧凑");
 
     fun apply(value: ReaderSettings): ReaderSettings {
-        val base = value.copy(letterSpacing = 0f, font = ReaderFont.SERIF, bold = false, indent = true, justify = true)
+        val base = value.copy(letterSpacing = 0f, font = ReaderFont.SERIF, bold = false, indent = true, justify = true,
+            verticalMargins = 1f, indentSize = 2, showChapterTitle = true, titleScale = 1.2f, titleSpacing = .85f, titleAlignment = ReaderTitleAlignment.START)
         return when (this) {
             CLASSIC -> base.copy(fontSize = 115f, lineHeight = 1.7f, paragraphSpacing = .6f, margins = 1f)
             RELAXED -> base.copy(fontSize = 120f, lineHeight = 1.9f, paragraphSpacing = .85f, margins = 1.1f)

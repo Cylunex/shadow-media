@@ -8,6 +8,10 @@ import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -47,6 +51,8 @@ class NativeTextReaderActivity : ComponentActivity() {
     private var menu by mutableStateOf(false)
     private var panel by mutableStateOf<String?>(null)
     private var busy by mutableStateOf(true)
+    private var acquiring = true
+    private var navigationJob: Job? = null
     private var message by mutableStateOf<String?>(null)
     private var fatal by mutableStateOf<String?>(null)
     private var offset by mutableIntStateOf(0)
@@ -67,7 +73,10 @@ class NativeTextReaderActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        installReaderBackNavigation({ panel != null || excerpt != null }) { if (excerpt != null) excerpt = null else panel = null; applyWindow() }
+        installReaderBackNavigation({ panel != null || excerpt != null || menu || acquiring && chapter != null }) {
+            when { excerpt != null -> excerpt = null; panel != null -> panel = null; menu -> menu = false; else -> navigationJob?.cancel() }
+            applyWindow()
+        }
         library = LibraryRepository(this); novel = NovelRepository(this, library); source = NativeTextSource(library, novel)
         store = ReaderSettingsStore(getSharedPreferences("reader_preferences", MODE_PRIVATE)); style = store.load()
         jumpHistory = NativeJumpHistory.restore(savedInstanceState?.getString("jump_history"))
@@ -83,7 +92,7 @@ class NativeTextReaderActivity : ComponentActivity() {
                     ?: library.dao.progress(item.id)?.locatorJson?.let(::JSONObject)
                 open(item, locator)
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { busy = false; fatal = e.message ?: "正文打开失败" }
+            catch (e: Exception) { acquiring = false; busy = false; fatal = e.message ?: "正文打开失败" }
         }
     }
     private suspend fun open(item: LibraryAssetEntity, locator: JSONObject?, lastPage: Boolean = false) {
@@ -100,6 +109,7 @@ class NativeTextReaderActivity : ComponentActivity() {
             observer = lifecycleScope.launch { novel.observe(pub.scope, pub.workId).collectLatest { state = it } }
         } else { observer?.cancel(); state = null }
         pendingShow = Triple(content, item.title, restored)
+        acquiring = false
         view?.let { it.isEnabled = false; it.show(content, item.title, restored, style); pendingShow = null }
         prefetchFollowing(pub, content.ref.ordinal)
     }
@@ -133,11 +143,12 @@ class NativeTextReaderActivity : ComponentActivity() {
     }
     private fun navigate(block: suspend () -> Unit) {
         if (busy) return
-        stopAloud(); busy = true; view?.isEnabled = false
-        lifecycleScope.launch {
+        stopAloud(); acquiring = true; busy = true; view?.isEnabled = false
+        navigationJob = lifecycleScope.launch {
             try { ProgressWriter.flush(); block() }
-            catch (e: CancellationException) { throw e }
-            catch (e: Exception) { busy = false; view?.isEnabled = true; message = e.message ?: "章节获取失败，当前内容已保留" }
+            catch (e: CancellationException) { busy = false; view?.isEnabled = true; view?.boundaryResolved("已取消章节加载"); throw e }
+            catch (e: Exception) { busy = false; view?.isEnabled = true; view?.boundaryResolved(); message = e.message ?: "章节获取失败，当前内容已保留" }
+            finally { acquiring = false }
         }
     }
     private fun location(): NativeReaderLocation? = asset?.let { item -> chapter?.let { NativeReaderLocation(item.id, it.locator(offset).toString()) } }
@@ -146,12 +157,14 @@ class NativeTextReaderActivity : ComponentActivity() {
         val origin = location()
         loadChapter(ref, end)
         jumpHistory = jumpHistory.remember(origin, location())
+        closePanel()
     }
     private fun jumpTo(target: NativeReaderLocation) = navigate {
         val origin = location()
         open(requireNotNull(library.dao.asset(target.assetId)) { "跳转对应内容已移除" }, JSONObject(target.locator))
         saveAfterLayout = true
         jumpHistory = jumpHistory.remember(origin, location())
+        closePanel()
     }
     private fun returnFromJump() = navigate {
         val target = jumpHistory.locations.lastOrNull()
@@ -160,6 +173,7 @@ class NativeTextReaderActivity : ComponentActivity() {
             open(requireNotNull(library.dao.asset(target.assetId)) { "原位置对应内容已移除" }, JSONObject(target.locator))
             saveAfterLayout = true
             jumpHistory = NativeJumpHistory(jumpHistory.locations.dropLast(1))
+            closePanel()
         }
     }
     private suspend fun loadChapter(ref: NativeChapterRef, end: Boolean = false) {
@@ -181,9 +195,8 @@ class NativeTextReaderActivity : ComponentActivity() {
         val current = requireNotNull(chapter)
         val next = adjacent(current.ref.ordinal, direction)
         if (next == null) {
-            message = if (direction > 0) "已到本书末尾" else "已到本书开头"
             busy = false; view?.isEnabled = true
-            if (direction > 0) view?.seek(current.text.length)
+            view?.boundaryResolved(if (direction > 0) "已到本书末尾" else "已到本书开头")
         } else loadChapter(next, direction < 0)
     }
     private suspend fun adjacent(ordinal: Int, direction: Int): NativeChapterRef? {
@@ -208,7 +221,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         WindowInsetsControllerCompat(window, window.decorView).apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             isAppearanceLightStatusBars = style.paper != ReaderPaper.NIGHT; isAppearanceLightNavigationBars = style.paper != ReaderPaper.NIGHT
-            if (style.fullScreen && !menu && panel == null) hide(WindowInsetsCompat.Type.systemBars()) else show(WindowInsetsCompat.Type.systemBars())
+            if (style.fullScreen) hide(WindowInsetsCompat.Type.systemBars()) else show(WindowInsetsCompat.Type.systemBars())
         }
         if (style.keepAwake) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.attributes = window.attributes.apply { screenBrightness = style.brightness }
@@ -251,6 +264,13 @@ class NativeTextReaderActivity : ComponentActivity() {
             val writerError by ProgressWriter.error.collectAsState()
             val snackbar = remember { SnackbarHostState() }
             val sourceState = remember(publication?.scope, publication?.workId) { NovelReaderSourceState() }
+            val fontPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                if (uri != null) lifecycleScope.launch {
+                    try { val (id, name) = ReaderFonts(this@NativeTextReaderActivity).import(uri); update(style.copy(customFontId = id, customFontName = name)); message = "已应用字体：$name" }
+                    catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { message = e.message ?: "字体导入失败，原设置已保留" }
+                }
+            }
             LaunchedEffect(message) {
                 val text = message ?: return@LaunchedEffect
                 snackbar.showSnackbar(text)
@@ -268,18 +288,21 @@ class NativeTextReaderActivity : ComponentActivity() {
                     view = reader
                     reader.onMenu = ::toggleMenu; reader.onBoundary = ::boundary; reader.onPosition = ::positionChanged
                     reader.onSettings = ::update; reader.onExcerpt = { text, position -> excerpt = text to position }
+                    reader.onBrightnessPreview = { brightness -> window.attributes = window.attributes.apply { screenBrightness = brightness ?: style.brightness } }
                     reader.onError = { fatal = it; busy = false }
-                    reader.onReady = {
+                    reader.onReady = ready@{
+                        if (acquiring) return@ready
                         busy = false; reader.isEnabled = true
                         if (saveAfterLayout) { saveAfterLayout = false; positionChanged(reader.readingOffset, true) }
                     }
                     pendingShow?.let { (content, title, restored) -> reader.show(content, title, restored, style); pendingShow = null }
-                } }, update = { it.gesturesEnabled = !menu && panel == null && excerpt == null }, modifier = Modifier.fillMaxSize())
+                } }, update = { it.gesturesEnabled = !busy && !menu && panel == null && excerpt == null }, modifier = Modifier.fillMaxSize())
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
                 fatal?.let { text -> Column(Modifier.align(Alignment.Center).padding(28.dp)) { Text(text); TextButton(onClick = { finish() }) { Text("返回书架") } } }
                 if (menu) {
                     Box(Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { menu = false; applyWindow() })
-                    Box(Modifier.align(Alignment.TopCenter)) {
+                }
+                    AnimatedVisibility(menu, Modifier.align(Alignment.TopCenter), enter = fadeIn(tween(160)) + slideInVertically(tween(160)) { -it / 3 }, exit = fadeOut(tween(120))) {
                         val status = when {
                             state?.conflictJson?.isNotBlank() == true -> "进度有冲突，请选择保留的位置"
                             state?.message?.isNotBlank() == true -> state?.message
@@ -287,7 +310,7 @@ class NativeTextReaderActivity : ComponentActivity() {
                             publication != null && state != null -> listOfNotNull("进度已同步", cacheStatus).joinToString(" · ")
                             else -> "进度保存在本机"
                         }
-                        NativeReaderHeader(asset?.title.orEmpty(), chapter?.ref?.title.orEmpty(), writerError ?: status, !busy,
+                        NativeReaderHeader(asset?.title.orEmpty(), chapter?.ref?.title.orEmpty(), writerError ?: status, menu && !busy,
                             onBack = { finish() }, onClose = { menu = false; applyWindow() },
                             onBookmark = { chapter?.let { mark(it.locator(offset), it.ref.title) } },
                             night = style.paper == ReaderPaper.NIGHT, onToggleNight = { update(style.toggleNight()) },
@@ -298,47 +321,47 @@ class NativeTextReaderActivity : ComponentActivity() {
                                 }
                             }) else null)
                     }
-                    Box(Modifier.align(Alignment.BottomCenter)) {
+                    AnimatedVisibility(menu, Modifier.align(Alignment.BottomCenter), enter = fadeIn(tween(180)) + slideInVertically(tween(180)) { it / 3 }, exit = fadeOut(tween(120))) {
                         NativeReaderControls(chapter?.ref?.title.orEmpty(), pageLabel,
                             (offset.toFloat() / (chapter?.text?.length ?: 1).coerceAtLeast(1)).coerceIn(0f, 1f),
-                            !busy && chapter != null, narrating, jumpHistory.locations.isNotEmpty(),
-                            onReturn = { closePanel(); returnFromJump() }, onSeek = { ratio ->
+                            menu && !busy && chapter != null, narrating, jumpHistory.locations.isNotEmpty(),
+                            onReturn = ::returnFromJump, onSeek = { ratio ->
                                 val origin = location()
                                 stopAloud()
                                 view?.seek(((chapter?.text?.length ?: 0) * ratio).toInt())
                                 jumpHistory = jumpHistory.remember(origin, location())
                             }, onPrevious = { stopAloud(); view?.turn(-1) }, onNext = { stopAloud(); view?.turn(1) },
-                            onSpeak = ::speak, onPanel = { panel = it; applyWindow() }, compact = compactControls, sources = publication != null)
+                            onSpeak = ::speak, onPanel = { if (it == "书源") sourceState.selectedVersion = null; panel = it; applyWindow() }, compact = compactControls, sources = publication != null)
                     }
-                }
-                SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp))
+                if (panel == null) SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp))
             }
             if (panel != null) ModalBottomSheet(sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), onDismissRequest = { panel = null; applyWindow() }) {
-                Column(Modifier.fillMaxWidth().fillMaxHeight(.92f).padding(horizontal = 20.dp).navigationBarsPadding().imePadding()) {
+                Column(Modifier.fillMaxWidth().fillMaxHeight(if (panel == "排版") .76f else .92f).padding(horizontal = 20.dp).navigationBarsPadding().imePadding()) {
                     Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(panel.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                         IconButton(onClick = { panel = null; applyWindow() }) { Icon(Icons.Rounded.Close, "关闭面板") }
                     }
                     when (panel) {
-                        "排版" -> Column(Modifier.weight(1f)) { ReaderPreferencesPanel(style, ::update, nativeText = true, encoding = if (asset?.format == "txt") ({
+                        "排版" -> Column(Modifier.weight(1f)) { ReaderPreferencesPanel(style, ::update, nativeText = true,
+                            importFont = { fontPicker.launch(arrayOf("font/*", "application/x-font-ttf", "application/vnd.ms-opentype", "application/octet-stream")) }, encoding = if (asset?.format == "txt") ({
                             Text("文本编码：${asset?.let { library.textEncoding(it.id) }}")
                             FlowRow { listOf("自动", "UTF-8", "GB18030", "Big5", "UTF-16LE", "UTF-16BE").forEach { encoding -> TextButton(onClick = {
-                                navigate { val item = requireNotNull(asset); library.setTextEncoding(item.id, encoding); source.invalidate(); session = null; open(item, null) }
+                                navigate { val item = requireNotNull(asset); val locator = chapter?.locator(offset); library.setTextEncoding(item.id, encoding); source.invalidate(); session = null; open(item, locator) }
                             }) { Text(encoding) } } }
                         }) else null) }
                         "目录" -> asset?.let { item -> chapter?.let { content ->
-                            NativeReaderContentsPanel(item, publication, content, source, novel, !busy) { ref -> closePanel(); openChapter(ref) }
+                            NativeReaderContentsPanel(item, publication, content, source, novel, !busy, ::openChapter)
                         } }
                         "书源" -> publication?.let { pub -> chapter?.let { content ->
                             NovelReaderSourcesPanel(novel, pub, asset?.title.orEmpty(), content.ref.title, !busy, sourceState, ::switchSource)
                         } }
                         "搜索" -> asset?.let { item ->
-                            NativeReaderSearchPanel(item, publication, source, !busy) { hit -> closePanel(); jumpTo(NativeReaderLocation(hit.assetId, hit.locator)) }
+                            NativeReaderSearchPanel(item, publication, source, !busy) { hit -> jumpTo(NativeReaderLocation(hit.assetId, hit.locator)) }
                         }
                         "书签" -> asset?.let {
                             val marks by library.dao.annotationsForAssets(bookmarkAssets).collectAsState(emptyList())
                             NativeReaderBookmarks(marks, !busy, onOpen = { mark ->
-                                closePanel(); jumpTo(NativeReaderLocation(mark.assetId, mark.locatorJson))
+                                jumpTo(NativeReaderLocation(mark.assetId, mark.locatorJson))
                             }, onDelete = { mark -> lifecycleScope.launch {
                                 deleteReaderBookmark(library, mark, snackbar)
                             } })

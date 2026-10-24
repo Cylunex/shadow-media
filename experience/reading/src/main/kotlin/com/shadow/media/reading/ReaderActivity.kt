@@ -96,7 +96,10 @@ class ReaderActivity : FragmentActivity() {
         // The factory requires an asynchronously opened publication. Restore our versioned Locator,
         // not Android's eagerly reconstructed fragment with an unavailable publication instance.
         super.onCreate(null)
-        installReaderBackNavigation({ panel != null }) { panel = null; applyReaderWindow() }
+        installReaderBackNavigation({ panel != null || chromeVisible }) {
+            if (panel != null) panel = null else chromeVisible = false
+            applyReaderWindow()
+        }
         library = LibraryRepository(this)
         novel = NovelRepository(this, library)
         val id = intent.getStringExtra("assetId")
@@ -301,7 +304,7 @@ class ReaderActivity : FragmentActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             isAppearanceLightStatusBars = readerSettings.paper != ReaderPaper.NIGHT
             isAppearanceLightNavigationBars = readerSettings.paper != ReaderPaper.NIGHT
-            if (readerSettings.fullScreen && !chromeVisible && panel == null) hide(WindowInsetsCompat.Type.systemBars())
+            if (readerSettings.fullScreen) hide(WindowInsetsCompat.Type.systemBars())
             else show(WindowInsetsCompat.Type.systemBars())
         }
         if (readerSettings.keepAwake) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

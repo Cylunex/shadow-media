@@ -33,6 +33,28 @@ import kotlinx.coroutines.runBlocking
 @Config(sdk = [28], qualifiers = "w360dp-h640dp-mdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class NativeReaderUiTest {
+    @Test @Config(qualifiers = "w640dp-h360dp-mdpi") fun shortSettingsPanelKeepsEveryTabReachableAndExposesNewTypographyControls() {
+        var style by mutableStateOf(ReaderSettings())
+        var imports = 0
+        compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxWidth().height(240.dp).padding(horizontal = 16.dp)) {
+            ReaderPreferencesPanel(style, { style = it }, nativeText = true, importFont = { imports++ })
+        } } } }
+        compose.onNodeWithText("导入字体").performScrollTo().performClick()
+        assertEquals(1, imports)
+        compose.onNodeWithText("3 字").performScrollTo().performClick()
+        assertEquals(3, style.indentSize)
+        compose.onNodeWithText("页面", substring = false).performClick()
+        compose.onNodeWithText("上下留白").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("居中", substring = false).performScrollTo().performClick()
+        assertEquals(ReaderTitleAlignment.CENTER, style.titleAlignment)
+        compose.onNodeWithText("标题与正文间距").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("显示章节标题").performScrollTo().performClick()
+        assertFalse(style.showChapterTitle)
+        compose.onNodeWithText("标题与正文间距").assertDoesNotExist()
+        compose.onNodeWithText("手势", substring = false).performClick()
+        compose.onNodeWithText("边界与长按触感反馈").performScrollTo().performClick()
+        assertFalse(style.haptics)
+    }
     @Test fun typographyPresetsPreviewAndFineControlsAreReachableWithoutResettingPaper() {
         var style by mutableStateOf(ReaderSettings())
         compose.setContent { MaterialTheme(colorScheme = readerColorScheme(style.paper)) { Surface { Column(Modifier.fillMaxSize().padding(20.dp)) {
@@ -45,10 +67,12 @@ class NativeReaderUiTest {
         compose.runOnIdle { assertEquals(120f, style.fontSize); assertEquals(ReaderPaper.PARCHMENT, style.paper) }
         compose.onNodeWithContentDescription("增大字号").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(125f, style.fontSize) }
+        compose.onNodeWithText("页面", substring = false).performClick()
         compose.onNodeWithText("纸张纹理").performScrollTo().assertIsDisplayed()
         screenshot("reader-paper-settings")
-        compose.onNodeWithText("精细排版：字体、行距与页边距").performScrollTo().performClick()
+        compose.onNodeWithText("文字", substring = false).performClick()
         compose.onNodeWithText("正文两端对齐").performScrollTo().performClick()
+        compose.onNodeWithText("页面", substring = false).performClick()
         compose.onNodeWithText("宽屏限制行长").performScrollTo().performClick()
         compose.onNodeWithText("显示页眉与本章进度").performScrollTo().performClick()
         compose.runOnIdle { assertFalse(style.justify); assertFalse(style.comfortableWidth); assertFalse(style.showProgress) }

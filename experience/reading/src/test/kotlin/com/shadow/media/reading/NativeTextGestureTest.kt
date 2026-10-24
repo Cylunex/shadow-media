@@ -91,4 +91,131 @@ class NativeTextGestureTest {
             assertEquals(0, view.readingOffset)
         } finally { view.dispose() }
     }
+
+    private fun event(view: NativeTextView, action: Int, x: Float, y: Float, time: Long, elapsed: Long) {
+        MotionEvent.obtain(time, time + elapsed, action, x, y, 0).also { view.onTouchEvent(it); it.recycle() }
+    }
+    private fun waitLayout(view: NativeTextView, condition: () -> Boolean) {
+        val until = System.nanoTime() + 5_000_000_000
+        while (!condition() && System.nanoTime() < until) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(10) }
+        assertTrue(condition())
+    }
+    @Test fun chapterBoundaryWaitsForReleaseAndLateTouchEventsCannotTurnAgain() {
+        val view = reader()
+        try {
+            view.seek(view.document!!.pages.last().start)
+            val anchor = view.readingOffset
+            var boundaries = 0; var menus = 0
+            view.onBoundary = { boundaries++ }; view.onMenu = { menus++ }
+            val time = SystemClock.uptimeMillis()
+            event(view, MotionEvent.ACTION_DOWN, 380f, 450f, time, 0)
+            event(view, MotionEvent.ACTION_MOVE, 90f, 450f, time, 60)
+            assertEquals(0, boundaries); assertEquals(anchor, view.readingOffset)
+            event(view, MotionEvent.ACTION_UP, 90f, 450f, time, 120)
+            assertEquals(1, boundaries)
+            view.boundaryResolved("已到本书末尾")
+            event(view, MotionEvent.ACTION_UP, 216f, 450f, time, 140)
+            assertEquals(1, boundaries); assertEquals(0, menus); assertEquals(anchor, view.readingOffset)
+        } finally { view.dispose() }
+    }
+    @Test fun cancelledBoundaryDragNeverOpensAnotherChapter() {
+        val view = reader()
+        try {
+            view.seek(view.document!!.pages.last().start)
+            var boundaries = 0; view.onBoundary = { boundaries++ }
+            gesture(view, 380f, 90f, cancel = true)
+            assertEquals(0, boundaries)
+        } finally { view.dispose() }
+    }
+    @Test fun scrollingFlingStopsAtChapterEndWithoutAnAutomaticChapterJump() {
+        val view = reader()
+        try {
+            view.configure(ReaderSettings(pageMode = ReaderPageMode.SCROLL))
+            view.seek(view.document!!.pages[view.document!!.pages.lastIndex - 1].start)
+            var boundaries = 0; view.onBoundary = { boundaries++ }
+            val time = SystemClock.uptimeMillis()
+            event(view, MotionEvent.ACTION_DOWN, 216f, 650f, time, 0)
+            event(view, MotionEvent.ACTION_MOVE, 216f, 450f, time, 20)
+            event(view, MotionEvent.ACTION_UP, 216f, 450f, time, 40)
+            repeat(120) { shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(16)); view.computeScroll() }
+            assertEquals(0, boundaries)
+            assertEquals(view.document!!.pages.lastIndex, view.pageIndex)
+        } finally { view.dispose() }
+    }
+    @Test fun scrollingPastTheEndRequiresARealPullAndRelease() {
+        val view = reader()
+        try {
+            view.configure(ReaderSettings(pageMode = ReaderPageMode.SCROLL))
+            view.seek(view.document!!.pages.last().start)
+            var boundaries = 0; view.onBoundary = { boundaries++ }
+            val time = SystemClock.uptimeMillis()
+            event(view, MotionEvent.ACTION_DOWN, 216f, 650f, time, 0)
+            event(view, MotionEvent.ACTION_MOVE, 216f, 250f, time, 60)
+            assertEquals(0, boundaries)
+            event(view, MotionEvent.ACTION_UP, 216f, 250f, time, 120)
+            assertEquals(1, boundaries)
+        } finally { view.dispose() }
+    }
+    @Test fun brightnessDragPreviewsImmediatelyButCommitsOnlyOnReleaseAndCancelRestores() {
+        val view = reader()
+        try {
+            var commits = 0; var previews = 0; var restored = false
+            view.onSettings = { commits++ }
+            view.onBrightnessPreview = { if (it == null) restored = true else previews++ }
+            val time = SystemClock.uptimeMillis()
+            event(view, MotionEvent.ACTION_DOWN, 12f, 450f, time, 0)
+            event(view, MotionEvent.ACTION_MOVE, 12f, 650f, time, 60)
+            assertTrue(previews > 0); assertEquals(0, commits)
+            event(view, MotionEvent.ACTION_CANCEL, 12f, 650f, time, 120)
+            assertTrue(restored); assertEquals(0, commits)
+            event(view, MotionEvent.ACTION_DOWN, 12f, 450f, time + 200, 0)
+            event(view, MotionEvent.ACTION_MOVE, 12f, 250f, time + 200, 60)
+            event(view, MotionEvent.ACTION_UP, 12f, 250f, time + 200, 120)
+            assertEquals(1, commits)
+        } finally { view.dispose() }
+    }
+    @Test fun repaginationDropsTheOldGestureAndPreservesTheCharacterAnchor() {
+        val view = reader()
+        try {
+            val anchor = view.document!!.pages[2].start + 4
+            view.seek(anchor)
+            var menus = 0; view.onMenu = { menus++ }
+            val old = view.document
+            val time = SystemClock.uptimeMillis()
+            event(view, MotionEvent.ACTION_DOWN, 216f, 450f, time, 0)
+            view.configure(ReaderSettings(fontSize = 150f, verticalMargins = 1.8f, pageMode = ReaderPageMode.NONE))
+            waitLayout(view) { view.document !== old }
+            event(view, MotionEvent.ACTION_UP, 216f, 450f, time, 120)
+            assertEquals(0, menus); assertEquals(anchor, view.readingOffset)
+        } finally { view.dispose() }
+    }
+
+    @Test fun aSecondTapCannotCancelAnAlreadyCommittedPageAnimation() {
+        val view = reader()
+        try {
+            view.configure(ReaderSettings(pageMode = ReaderPageMode.SLIDE))
+            var menus = 0; view.onMenu = { menus++ }
+            view.turn(1)
+            gesture(view, 216f, 216f)
+            shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(400))
+            assertEquals(1, view.pageIndex); assertEquals(0, menus)
+        } finally { view.dispose() }
+    }
+    @Test fun longPressOnThePageHeaderCannotSelectAnUnrelatedParagraph() {
+        val view = reader()
+        try {
+            var excerpts = 0; view.onExcerpt = { _, _ -> excerpts++ }
+            val time = SystemClock.uptimeMillis()
+            event(view, MotionEvent.ACTION_DOWN, 216f, 15f, time, 0)
+            shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(700))
+            event(view, MotionEvent.ACTION_UP, 216f, 15f, time, 750)
+            assertEquals(0, excerpts)
+            val line = view.document!!.pages.first().lines.first()
+            val next = SystemClock.uptimeMillis()
+            event(view, MotionEvent.ACTION_DOWN, 216f, line.baseline - 4, next, 0)
+            shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(700))
+            event(view, MotionEvent.ACTION_UP, 216f, line.baseline - 4, next, 750)
+            assertEquals(1, excerpts)
+        } finally { view.dispose() }
+    }
 }

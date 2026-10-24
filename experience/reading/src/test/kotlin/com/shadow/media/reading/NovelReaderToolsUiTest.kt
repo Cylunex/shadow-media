@@ -65,6 +65,9 @@ class NovelReaderToolsUiTest {
         assertEquals("", opened)
         compose.onNodeWithText("接着读当前章").performClick()
         assertEquals("v2/next", opened)
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        waitText("搜索其他书源")
+        assertNull(state.selectedVersion)
         assertFalse(requests.any { it.first.contains("progress") || it.first.endsWith("/open") })
     }
 

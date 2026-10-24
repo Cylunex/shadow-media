@@ -14,6 +14,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.VelocityTracker
 import androidx.core.view.ViewCompat
+import androidx.core.graphics.withClip
 import androidx.core.view.WindowInsetsCompat
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.OverScroller
@@ -32,6 +33,17 @@ internal class NativeTextView(context: Context) : View(context) {
     var onError: (String) -> Unit = {}
     var onSettings: (ReaderSettings) -> Unit = {}
     var onExcerpt: (String, Int) -> Unit = { _, _ -> }
+    var onBrightnessPreview: (Float?) -> Unit = {}
+    private var touchActive = false
+    private var gestureCancelled = false
+    private var boundaryPending = false
+    private var edgeDragX = 0f
+    private var edgeAnimation: ValueAnimator? = null
+    private var notice: String? = null
+    private val clearNotice = Runnable { notice = null; invalidate() }
+    private val feedbackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val fonts = ReaderFonts(context)
+    private val scrollStride get() = (height - 2 * (document?.topInset ?: 0f)).coerceAtLeast(1f)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var layoutJob: Job? = null
     private var chapter: NativeTextChapter? = null
@@ -66,31 +78,33 @@ internal class NativeTextView(context: Context) : View(context) {
     private val scale = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
             if (!settings.pinchToResize) return false
-            scaling = true; pinchFont = settings.fontSize; pause(); return true
+            scaling = true; pinchFont = settings.fontSize; stopMotion(); return true
         }
-        override fun onScale(detector: ScaleGestureDetector): Boolean { pinchFont = (pinchFont * detector.scaleFactor).coerceIn(80f, 220f); return true }
-        override fun onScaleEnd(detector: ScaleGestureDetector) { onSettings(settings.copy(fontSize = pinchFont)) }
+        override fun onScale(detector: ScaleGestureDetector): Boolean { pinchFont = (pinchFont * detector.scaleFactor).coerceIn(80f, 220f); showNotice("字号 ${(pinchFont / 5).toInt()} sp"); return true }
+        override fun onScaleEnd(detector: ScaleGestureDetector) { if (!gestureCancelled) onSettings(settings.copy(fontSize = pinchFont)) }
     })
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent) = true
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            if (!gesturesEnabled || systemEdge || multiTouch || longPress || scaling || dragging || brightnessDrag) return true
+            if (!touchActive || !gesturesEnabled || systemEdge || multiTouch || longPress || scaling || dragging || brightnessDrag) return true
             val direction = readerTap(e.x / width.coerceAtLeast(1), settings.tapToTurn, settings.pageMode == ReaderPageMode.SCROLL, false)
             if (direction == 0) onMenu() else turn(direction)
             return true
         }
         override fun onLongPress(e: MotionEvent) {
-            if (!gesturesEnabled || systemEdge || multiTouch || dragging || scaling || brightnessDrag) return
+            if (!touchActive || !gesturesEnabled || systemEdge || multiTouch || dragging || scaling || brightnessDrag) return
             longPress = true
             val doc = document ?: return
+            if (e.x < doc.margin || e.x > width - doc.margin || e.y < doc.topInset || e.y > height - doc.topInset) return
             val line = doc.pages[pageIndex].lines.minByOrNull { abs(it.baseline - (e.y + scrollOffset)) } ?: return
+            if (settings.haptics) performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
             val text = doc.chapter.text
             val start = text.lastIndexOf('\n', (line.start - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
             val end = text.indexOf('\n', line.end).let { if (it < 0) text.length else it }
             onExcerpt(text.substring(start, end).trim(), line.start)
         }
         override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
-            if (settings.pageMode != ReaderPageMode.SCROLL || systemEdge || multiTouch || longPress || scaling || brightnessDrag) return false
+            if (!touchActive || overScroll != 0f || settings.pageMode != ReaderPageMode.SCROLL || systemEdge || multiTouch || longPress || scaling || brightnessDrag) return false
             scrollLastY = 0
             scroller.fling(0, 0, 0, -velocityY.toInt(), 0, 0, -height * 4, height * 4)
             postInvalidateOnAnimation(); return true
@@ -99,7 +113,7 @@ internal class NativeTextView(context: Context) : View(context) {
     init { isFocusable = true; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES }
 
     fun show(chapter: NativeTextChapter, title: String, offset: Int, value: ReaderSettings) {
-        cancelTurn()
+        cancelTurn(); boundaryPending = false
         this.chapter = chapter; bookTitle = title; readingOffset = safeTextOffset(chapter.text, offset)
         settings = value
         reflow()
@@ -127,14 +141,14 @@ internal class NativeTextView(context: Context) : View(context) {
             try {
                 val result = withContext(Dispatchers.Default) {
                     ReaderPaperTexture.bitmap(context.applicationContext)
-                    NativeTextLayout.paginate(content, w, h, style, resources.displayMetrics.density, resources.displayMetrics.scaledDensity)
+                    NativeTextLayout.paginate(content, w, h, style, resources.displayMetrics.density, resources.displayMetrics.scaledDensity, fonts.typeface(style))
                 }
                 paperTexture = ReaderPaperTexture.bitmap(context.applicationContext)
                 cancelTurn(); clearBitmaps(); document = result
                 pageIndex = result.pageAt(readingOffset)
                 if (settings.pageMode == ReaderPageMode.SCROLL && readingOffset > 0) {
                     val line = result.pages[pageIndex].lines.lastOrNull { it.start <= readingOffset }
-                    scrollOffset = ((line?.baseline ?: result.topInset) - result.topInset).coerceAtLeast(0f)
+                    scrollOffset = if (pageIndex == result.pages.lastIndex) 0f else ((line?.baseline ?: result.topInset) - result.topInset).coerceIn(0f, scrollStride - 1f)
                 }
                 updateDescription(); invalidate(); onPosition(readingOffset, false); onReady()
             } catch (e: CancellationException) { throw e }
@@ -145,21 +159,21 @@ internal class NativeTextView(context: Context) : View(context) {
         val doc = document ?: return
         cancelTurn(); readingOffset = safeTextOffset(doc.chapter.text, offset); pageIndex = doc.pageAt(readingOffset)
         if (settings.pageMode == ReaderPageMode.SCROLL && readingOffset > 0) {
-            scrollOffset = ((doc.pages[pageIndex].lines.lastOrNull { it.start <= readingOffset }?.baseline ?: doc.topInset) - doc.topInset).coerceAtLeast(0f)
+            scrollOffset = if (pageIndex == doc.pages.lastIndex) 0f else ((doc.pages[pageIndex].lines.lastOrNull { it.start <= readingOffset }?.baseline ?: doc.topInset) - doc.topInset).coerceIn(0f, scrollStride - 1f)
         }
         pruneBitmaps(); updateDescription(); invalidate(); onPosition(readingOffset, user)
     }
     private fun changePage(target: Int) {
         val doc = document ?: return
-        if (target !in doc.pages.indices) { onBoundary(if (target < 0) -1 else 1); return }
+        if (target !in doc.pages.indices) { requestBoundary(if (target < 0) -1 else 1); return }
         pageIndex = target; readingOffset = doc.pages[target].start
         pruneBitmaps(); updateDescription(); onPosition(readingOffset, true); invalidate()
     }
     fun turn(direction: Int) {
         val doc = document ?: return
-        if (!isEnabled || layoutJob?.isActive == true || animation != null) return
+        if (!isEnabled || boundaryPending || layoutJob?.isActive == true || animation != null) return
         scroller.abortAnimation()
-        if (pageIndex + direction !in doc.pages.indices) { onBoundary(direction); return }
+        if (pageIndex + direction !in doc.pages.indices) { requestBoundary(direction); return }
         if (settings.pageMode == ReaderPageMode.NONE || settings.pageMode == ReaderPageMode.SCROLL) { cancelTurn(); changePage(pageIndex + direction); return }
         turnDirection = direction; animateTurn(true)
     }
@@ -182,7 +196,53 @@ internal class NativeTextView(context: Context) : View(context) {
             start()
         }
     }
-    fun pause() { animation?.cancel(); animation = null; scroller.abortAnimation(); overScroll = 0f; turnProgress = 0f; turnDirection = 0; invalidate() }
+    private fun stopMotion() {
+        animation?.cancel(); animation = null; edgeAnimation?.cancel(); edgeAnimation = null
+        scroller.abortAnimation(); overScroll = 0f; edgeDragX = 0f; turnProgress = 0f; turnDirection = 0; invalidate()
+    }
+    fun pause() {
+        gestureCancelled = true; touchActive = false
+        val now = android.os.SystemClock.uptimeMillis()
+        MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, downX, downY, 0).also {
+            gestures.onTouchEvent(it); scale.onTouchEvent(it); it.recycle()
+        }
+        if (brightnessDrag) onBrightnessPreview(null)
+        brightnessDrag = false; dragging = false; velocity?.recycle(); velocity = null
+        stopMotion()
+    }
+    fun boundaryResolved(message: String? = null) { boundaryPending = false; pause(); message?.let(::showNotice) }
+    private fun requestBoundary(direction: Int) {
+        if (boundaryPending) return
+        pause(); boundaryPending = true
+        if (settings.haptics) performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+        onBoundary(direction)
+    }
+    fun showNotice(message: String) {
+        notice = message; removeCallbacks(clearNotice); postDelayed(clearNotice, 1400); invalidate()
+    }
+    private fun drawNotice(canvas: Canvas) {
+        val text = notice ?: return
+        feedbackPaint.textSize = 13 * resources.displayMetrics.scaledDensity
+        val padding = 14 * resources.displayMetrics.density
+        val w = feedbackPaint.measureText(text) + padding * 2
+        val top = height - 104 * resources.displayMetrics.density
+        feedbackPaint.color = settings.paper.background; feedbackPaint.alpha = 240
+        canvas.drawRoundRect((width - w) / 2, top, (width + w) / 2, top + padding * 2.5f, padding, padding, feedbackPaint)
+        feedbackPaint.color = settings.paper.foreground; feedbackPaint.alpha = 255
+        canvas.drawText(text, (width - w) / 2 + padding, top + padding * 1.55f, feedbackPaint)
+    }
+    private fun rebound() {
+        notice = null; removeCallbacks(clearNotice)
+        val x = edgeDragX; val y = overScroll
+        edgeAnimation?.cancel()
+        edgeAnimation = ValueAnimator.ofFloat(1f, 0f).apply {
+            duration = 160
+            addUpdateListener { val fraction = it.animatedValue as Float; edgeDragX = x * fraction; overScroll = y * fraction; invalidate() }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) { edgeAnimation = null; edgeDragX = 0f; overScroll = 0f; invalidate() }
+            }); start()
+        }
+    }
     fun cancelTurn() { pause(); scrollOffset = 0f }
     private fun bitmap(page: Int): Bitmap = bitmaps.getOrPut(page) {
         Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { document!!.draw(Canvas(it), page, bookTitle, paperTexture, settings) }
@@ -195,7 +255,18 @@ internal class NativeTextView(context: Context) : View(context) {
         if (doc.width != width || doc.height != height) return
         val current = bitmap(pageIndex)
         if (settings.pageMode == ReaderPageMode.SCROLL) {
-            for (index in (pageIndex - 1)..(pageIndex + 1)) if (index in doc.pages.indices) canvas.drawBitmap(bitmap(index), 0f, (index - pageIndex) * height - scrollOffset, null)
+            drawReaderPaper(canvas, width.toFloat(), height.toFloat(), settings, paperTexture)
+            val viewportWidth = width.toFloat(); val viewportHeight = height.toFloat()
+            canvas.withClip(0f, doc.topInset, viewportWidth, viewportHeight - doc.topInset) {
+                val pull = (-overScroll * .22f).coerceIn(-viewportHeight * .08f, viewportHeight * .08f)
+                for (index in (pageIndex - 1)..(pageIndex + 1)) if (index in doc.pages.indices) {
+                    val y = (index - pageIndex) * scrollStride - scrollOffset + pull
+                    withClip(0f, doc.topInset + y, viewportWidth, viewportHeight - doc.topInset + y) {
+                        drawBitmap(bitmap(index), 0f, y, null)
+                    }
+                }
+            }
+            doc.drawFurniture(canvas, pageIndex, bookTitle, settings)
         } else if (turnProgress > 0 && pageIndex + turnDirection in doc.pages.indices) {
             val adjacent = bitmap(pageIndex + turnDirection)
             when (settings.pageMode) {
@@ -213,12 +284,15 @@ internal class NativeTextView(context: Context) : View(context) {
                     canvas.drawRect(edge, 0f, edge + 20, height.toFloat(), shadow)
                 }
             }
-        } else canvas.drawBitmap(current, 0f, 0f, null)
+        } else canvas.drawBitmap(current, edgeDragX, 0f, null)
+        drawNotice(canvas)
     }
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (!isEnabled || !gesturesEnabled || document == null || layoutJob?.isActive == true) return true
+        if (!isEnabled || !gesturesEnabled || document == null || layoutJob?.isActive == true || boundaryPending) return true
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            pause(); downX = event.x; downY = event.y; lastY = event.y
+            if (animation != null) { touchActive = false; return true }
+            stopMotion(); touchActive = true; gestureCancelled = false
+            downX = event.x; downY = event.y; lastY = event.y
             dragging = false; scaling = false; brightnessDrag = false; multiTouch = false; longPress = false
             val insets = ViewCompat.getRootWindowInsets(this)?.getInsets(WindowInsetsCompat.Type.systemGestures())
             systemEdge = readerSystemBackEdge(downX, width, insets?.left ?: 0, insets?.right ?: 0)
@@ -226,72 +300,93 @@ internal class NativeTextView(context: Context) : View(context) {
                 android.provider.Settings.System.getInt(context.contentResolver, android.provider.Settings.System.SCREEN_BRIGHTNESS, 128) / 255f)
             velocity?.recycle(); velocity = VelocityTracker.obtain()
         }
+        if (!touchActive) return true
+        if (event.actionMasked == MotionEvent.ACTION_CANCEL) gestureCancelled = true
         if (systemEdge) {
-            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) { velocity?.recycle(); velocity = null }
+            if (event.actionMasked in setOf(MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL)) pause()
             return true
         }
         velocity?.addMovement(event)
-        if (event.actionMasked == MotionEvent.ACTION_POINTER_DOWN) { multiTouch = true; dragging = false; pause() }
+        if (event.actionMasked == MotionEvent.ACTION_POINTER_DOWN) { multiTouch = true; dragging = false; stopMotion() }
         scale.onTouchEvent(event)
         if (!multiTouch) gestures.onTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_MOVE -> {
                 if (scaling || multiTouch || longPress) return true
                 val dx = event.x - downX; val dy = event.y - downY
-                if (!dragging && abs(dy) > slop && abs(dy) > abs(dx) * 1.3 && downX < width * .14f && settings.brightnessGesture) brightnessDrag = true
-                if (brightnessDrag) { onSettings(settings.copy(brightness = (gestureBrightness - dy / height).coerceIn(.02f, 1f))); return true }
+                if (!dragging && abs(dy) > slop * 2 && abs(dy) > abs(dx) * 1.6 && downX < 24 * resources.displayMetrics.density && settings.brightnessGesture) brightnessDrag = true
+                if (brightnessDrag) {
+                    val brightness = (gestureBrightness - dy / height).coerceIn(.02f, 1f)
+                    onBrightnessPreview(brightness); showNotice("亮度 ${(brightness * 100).toInt()}%")
+                    return true
+                }
                 if (settings.pageMode == ReaderPageMode.SCROLL) {
-                    if (abs(dy) > slop) dragging = true
-                    if (dragging) scrollByPixels(lastY - event.y)
+                    if (!dragging && abs(dy) > slop && abs(dy) > abs(dx) * 1.3f) dragging = true
+                    if (dragging) scrollByPixels(lastY - event.y, fromTouch = true)
                     lastY = event.y
                 } else {
-                    if (!dragging && readerSwipe(dx, dy, slop.toFloat(), false) != 0) {
-                        dragging = true; turnDirection = if (dx < 0) 1 else -1
-                    }
+                    val direction = readerSwipe(dx, dy, slop.toFloat(), false)
+                    if (!dragging && direction != 0) dragging = true
                     if (dragging) {
-                        turnProgress = if (pageIndex + turnDirection in document!!.pages.indices) (-turnDirection * dx / width).coerceIn(0f, .999f) else 0f
+                        if (direction != 0) turnDirection = direction
+                        if (pageIndex + turnDirection in document!!.pages.indices) {
+                            edgeDragX = 0f
+                            turnProgress = (-turnDirection * dx / width).coerceIn(0f, .999f)
+                        } else {
+                            turnProgress = 0f
+                            edgeDragX = (dx * .22f).coerceIn(-width * .08f, width * .08f)
+                            showNotice(if (turnDirection > 0) "松手进入下一章" else "松手进入上一章")
+                        }
                         invalidate()
                     }
                 }
             }
             MotionEvent.ACTION_UP -> {
-                if (dragging && !multiTouch && !longPress && !scaling && !brightnessDrag && settings.pageMode != ReaderPageMode.SCROLL) {
-                    velocity?.computeCurrentVelocity(1000)
-                    val commit = readerCommitSwipe(event.x - downX, velocity?.xVelocity ?: 0f, width, slop.toFloat(),
-                        ViewConfiguration.get(context).scaledMinimumFlingVelocity.toFloat(), turnDirection)
-                    if (pageIndex + turnDirection !in document!!.pages.indices) {
-                        if (commit) onBoundary(turnDirection)
-                        pause()
-                    } else if (settings.pageMode == ReaderPageMode.NONE) {
-                        val target = pageIndex + turnDirection; pause(); if (commit) changePage(target)
-                    } else animateTurn(commit)
+                if (brightnessDrag) {
+                    onSettings(settings.copy(brightness = (gestureBrightness - (event.y - downY) / height).coerceIn(.02f, 1f)))
+                    brightnessDrag = false
+                } else if (dragging && !multiTouch && !longPress && !scaling) {
+                    if (settings.pageMode == ReaderPageMode.SCROLL) {
+                        if (abs(overScroll) > height * .15f) requestBoundary(if (overScroll > 0) 1 else -1)
+                        else if (overScroll != 0f) rebound()
+                    } else {
+                        velocity?.computeCurrentVelocity(1000)
+                        val commit = readerCommitSwipe(event.x - downX, velocity?.xVelocity ?: 0f, width, slop.toFloat(),
+                            ViewConfiguration.get(context).scaledMinimumFlingVelocity.toFloat(), turnDirection)
+                        if (pageIndex + turnDirection !in document!!.pages.indices) {
+                            if (commit) requestBoundary(turnDirection) else rebound()
+                        } else if (settings.pageMode == ReaderPageMode.NONE) {
+                            val target = pageIndex + turnDirection; stopMotion(); if (commit) changePage(target)
+                        } else animateTurn(commit)
+                    }
                 }
-                velocity?.recycle(); velocity = null
+                velocity?.recycle(); velocity = null; touchActive = false
                 performClick()
             }
-            MotionEvent.ACTION_CANCEL -> { pause(); dragging = false; velocity?.recycle(); velocity = null }
+            MotionEvent.ACTION_CANCEL -> { pause(); rebound() }
         }
         return true
     }
-    private fun scrollByPixels(dy: Float) {
+    private fun scrollByPixels(delta: Float, fromTouch: Boolean = false) {
         val doc = document ?: return
-        // Keep the visible line as the anchor even when the viewport has not crossed a page.
+        var dy = delta
+        if (fromTouch && overScroll != 0f) {
+            val combined = overScroll + dy
+            if ((combined > 0) == (overScroll > 0)) { overScroll = combined; invalidate(); return }
+            dy = combined; overScroll = 0f
+        }
         scrollOffset += dy
-        while (scrollOffset >= height && pageIndex < doc.pages.lastIndex) { scrollOffset -= height; changePage(pageIndex + 1) }
-        while (scrollOffset < 0 && pageIndex > 0) { scrollOffset += height; changePage(pageIndex - 1) }
-        val atStart = pageIndex == 0 && scrollOffset < 0
-        val atEnd = pageIndex == doc.pages.lastIndex && scrollOffset > 0
-        if (atStart || atEnd) {
-            overScroll += scrollOffset
-            scrollOffset = 0f
-            if (abs(overScroll) > height * .15f) {
-                val direction = if (overScroll > 0) 1 else -1
-                overScroll = 0f; scroller.abortAnimation(); onBoundary(direction)
-                return
-            }
-        } else overScroll = 0f
+        while (scrollOffset >= scrollStride && pageIndex < doc.pages.lastIndex) { scrollOffset -= scrollStride; changePage(pageIndex + 1) }
+        while (scrollOffset < 0 && pageIndex > 0) { scrollOffset += scrollStride; changePage(pageIndex - 1) }
+        if (pageIndex == 0 && scrollOffset < 0 || pageIndex == doc.pages.lastIndex && scrollOffset > 0) {
+            if (fromTouch) {
+                overScroll += scrollOffset
+                showNotice(if (overScroll > 0) "继续上拉，松手进入下一章" else "继续下拉，松手进入上一章")
+            } else scroller.abortAnimation()
+            scrollOffset = 0f; invalidate(); return
+        }
         val newOffset = doc.offsetAt(pageIndex, scrollOffset)
-        if (newOffset != readingOffset) { readingOffset = newOffset; onPosition(readingOffset, true) }
+        if (newOffset != readingOffset) { readingOffset = newOffset; updateDescription(); onPosition(readingOffset, true) }
         invalidate()
     }
     override fun computeScroll() {
@@ -315,5 +410,5 @@ internal class NativeTextView(context: Context) : View(context) {
         AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> { turn(-1); true }
         else -> super.performAccessibilityAction(action, args)
     }
-    fun dispose() { cancelTurn(); velocity?.recycle(); velocity = null; scope.cancel(); clearBitmaps(); document = null }
+    fun dispose() { removeCallbacks(clearNotice); cancelTurn(); velocity?.recycle(); velocity = null; scope.cancel(); clearBitmaps(); document = null }
 }

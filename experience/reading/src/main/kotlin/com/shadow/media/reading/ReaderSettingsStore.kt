@@ -26,7 +26,12 @@ internal class ReaderSettingsStore(private val preferences: SharedPreferences) {
             fullScreen = getBoolean("fullScreen", true), tapToTurn = getBoolean("tapToTurn", true),
             volumeToTurn = getBoolean("volumeToTurn", false), brightnessGesture = getBoolean("brightnessGesture", true),
             pinchToResize = getBoolean("pinchToResize", true), keepAwake = getBoolean("keepAwake", true),
-            brightness = getFloat("brightness", -1f)
+            brightness = getFloat("brightness", -1f), verticalMargins = getFloat("verticalMargins", 1f),
+            indentSize = getInt("indentSize", 2), showChapterTitle = getBoolean("showChapterTitle", true),
+            titleScale = getFloat("titleScale", 1.2f), titleSpacing = getFloat("titleSpacing", .85f),
+            titleAlignment = enumValue("titleAlignment", ReaderTitleAlignment.START),
+            customFontId = getString("customFontId", "").orEmpty(), customFontName = getString("customFontName", "").orEmpty(),
+            haptics = getBoolean("haptics", true)
         ).normalized()
     }
 
@@ -39,7 +44,11 @@ internal class ReaderSettingsStore(private val preferences: SharedPreferences) {
             .putString("paper", paper.name).putString("pageMode", pageMode.name).putBoolean("fullScreen", fullScreen)
             .putBoolean("tapToTurn", tapToTurn).putBoolean("volumeToTurn", volumeToTurn)
             .putBoolean("brightnessGesture", brightnessGesture).putBoolean("pinchToResize", pinchToResize)
-            .putBoolean("keepAwake", keepAwake).putFloat("brightness", brightness).apply()
+            .putBoolean("keepAwake", keepAwake).putFloat("brightness", brightness)
+            .putFloat("verticalMargins", verticalMargins).putInt("indentSize", indentSize)
+            .putBoolean("showChapterTitle", showChapterTitle).putFloat("titleScale", titleScale).putFloat("titleSpacing", titleSpacing)
+            .putString("titleAlignment", titleAlignment.name).putString("customFontId", customFontId).putString("customFontName", customFontName)
+            .putBoolean("haptics", haptics).apply()
     }
 }
 
@@ -52,7 +61,7 @@ internal fun ReaderSettings.epubPreferences() = with(normalized()) {
     EpubPreferences(
         fontSize = fontSize / 100.0, lineHeight = lineHeight.toDouble(),
         paragraphSpacing = paragraphSpacing.toDouble(), letterSpacing = letterSpacing.toDouble(),
-        pageMargins = margins.toDouble(), paragraphIndent = if (indent) 2.0 else 0.0,
+        pageMargins = margins.toDouble(), paragraphIndent = if (indent) indentSize.toDouble() else 0.0,
         fontFamily = FontFamily(font.css), fontWeight = if (bold) 1.75 else 1.0,
         theme = if (paper == ReaderPaper.NIGHT) Theme.DARK else Theme.LIGHT,
         backgroundColor = Color(paper.background), textColor = Color(paper.foreground),

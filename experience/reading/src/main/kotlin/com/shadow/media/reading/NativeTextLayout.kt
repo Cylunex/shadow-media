@@ -28,17 +28,18 @@ internal class NativeTextLayout(
     val density: Float,
     val scaledDensity: Float,
     val pages: List<NativeTextPage>,
+    val fontTypeface: Typeface? = null,
 ) {
     internal val contentWidth = textWidth(width, settings, density, scaledDensity)
     internal val margin = (width - contentWidth) / 2f
     internal val topInset = bodyTop(settings, density)
-    private val bodyPaint = textPaint(settings, scaledDensity)
+    private val bodyPaint = textPaint(settings, scaledDensity, fontTypeface)
     private val furniture = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = 11 * scaledDensity
         color = settings.paper.foreground
         alpha = 185
     }
-    private val titlePaint = headingPaint(bodyPaint, height, density)
+    private val titlePaint = headingPaint(bodyPaint, height, density, settings)
     fun pageAt(offset: Int): Int {
         var low = 0; var high = pages.lastIndex
         while (low < high) {
@@ -53,15 +54,19 @@ internal class NativeTextLayout(
         bodyPaint.color = appearance.paper.foreground
         titlePaint.color = appearance.paper.foreground
         furniture.color = appearance.paper.foreground; furniture.alpha = 185
+        if (pages[page].title && settings.showChapterTitle) {
+            val title = titleLayout(chapter.ref.title, titlePaint, contentWidth, settings)
+            canvas.save(); canvas.translate(margin, bodyTop(settings, density) + 4f * density); title.draw(canvas); canvas.restore()
+        }
+        for (line in pages[page].lines) for (glyph in line.glyphs) canvas.drawText(glyph.text, margin + glyph.x, line.baseline, bodyPaint)
+        drawFurniture(canvas, page, bookTitle, appearance)
+    }
+    fun drawFurniture(canvas: Canvas, page: Int, bookTitle: String, appearance: ReaderSettings = settings) {
+        furniture.color = appearance.paper.foreground; furniture.alpha = 185
         if (settings.showProgress) {
             val header = TextUtils.ellipsize(if (pages[page].title) bookTitle else chapter.ref.title, furniture, contentWidth.toFloat(), TextUtils.TruncateAt.END)
             canvas.drawText(header.toString(), margin, 24f * density, furniture)
         }
-        if (pages[page].title) {
-            val title = titleLayout(chapter.ref.title, titlePaint, contentWidth)
-            canvas.save(); canvas.translate(margin, bodyTop(settings, density) + 4f * density); title.draw(canvas); canvas.restore()
-        }
-        for (line in pages[page].lines) for (glyph in line.glyphs) canvas.drawText(glyph.text, margin + glyph.x, line.baseline, bodyPaint)
         if (settings.showProgress) {
             val progress = (page + 1f) / pages.size
             canvas.drawText("本章 ${(progress * 100).toInt()}%", margin, height - 16f * density, furniture)
@@ -76,7 +81,7 @@ internal class NativeTextLayout(
     }
 
     companion object {
-        private fun bodyTop(settings: ReaderSettings, density: Float) = (if (settings.showProgress) 48f else 24f) * density
+        private fun bodyTop(settings: ReaderSettings, density: Float) = ((if (settings.showProgress) 32f else 8f) + 16f * settings.verticalMargins) * density
         private fun textWidth(width: Int, settings: ReaderSettings, density: Float, scaledDensity: Float): Int {
             val minEdge = minOf(8f * density, width / 8f)
             val fontSize = 20f * scaledDensity * settings.fontSize / 100f
@@ -86,30 +91,31 @@ internal class NativeTextLayout(
             val preferred = if (settings.comfortableWidth) minOf(640f * density, fontSize * 28f) else available
             return minOf(available, preferred).toInt().coerceIn(1, width)
         }
-        private fun textPaint(settings: ReaderSettings, scaledDensity: Float) = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
+        private fun textPaint(settings: ReaderSettings, scaledDensity: Float, fontTypeface: Typeface?) = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
             textSize = 20f * scaledDensity * settings.fontSize / 100f
             color = settings.paper.foreground
-            typeface = Typeface.create(settings.font.css, if (settings.bold) Typeface.BOLD else Typeface.NORMAL)
+            typeface = fontTypeface ?: Typeface.create(settings.font.css, if (settings.bold) Typeface.BOLD else Typeface.NORMAL)
         }
-        private fun headingPaint(body: TextPaint, height: Int, density: Float) = TextPaint(body).apply {
-            textSize = minOf(body.textSize * 1.2f, (height - 100f * density).coerceAtLeast(40f * density) * .4f)
+        private fun headingPaint(body: TextPaint, height: Int, density: Float, settings: ReaderSettings) = TextPaint(body).apply {
+            textSize = minOf(body.textSize * settings.titleScale, (height - 100f * density).coerceAtLeast(40f * density) * .4f)
             typeface = Typeface.create(body.typeface, Typeface.BOLD)
         }
-        private fun titleLayout(title: String, paint: TextPaint, width: Int) = StaticLayout.Builder.obtain(title, 0, title.length, paint, width)
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).setMaxLines(2).setEllipsize(TextUtils.TruncateAt.END).build()
+        private fun titleLayout(title: String, paint: TextPaint, width: Int, settings: ReaderSettings) = StaticLayout.Builder.obtain(title, 0, title.length, paint, width)
+            .setAlignment(if (settings.titleAlignment == ReaderTitleAlignment.CENTER) Layout.Alignment.ALIGN_CENTER else Layout.Alignment.ALIGN_NORMAL)
+            .setIncludePad(false).setMaxLines(2).setEllipsize(TextUtils.TruncateAt.END).build()
 
-        suspend fun paginate(chapter: NativeTextChapter, width: Int, height: Int, settings: ReaderSettings, density: Float, scaledDensity: Float): NativeTextLayout {
+        suspend fun paginate(chapter: NativeTextChapter, width: Int, height: Int, settings: ReaderSettings, density: Float, scaledDensity: Float, fontTypeface: Typeface? = null): NativeTextLayout {
             require(width > 0 && height > 0)
-            val paint = textPaint(settings, scaledDensity)
+            val paint = textPaint(settings, scaledDensity, fontTypeface)
             val contentWidth = textWidth(width, settings, density, scaledDensity)
-            val titlePaint = headingPaint(paint, height, density)
+            val titlePaint = headingPaint(paint, height, density, settings)
             val top = bodyTop(settings, density)
             val bottom = height - top
             val lineHeight = paint.textSize * settings.lineHeight
             val fm = paint.fontMetrics
             val pages = mutableListOf<NativeTextPage>()
             var lines = mutableListOf<NativeTextLine>()
-            var y = top + 4f * density + titleLayout(chapter.ref.title, titlePaint, contentWidth).height + paint.textSize * 0.85f
+            var y = if (settings.showChapterTitle) top + 4f * density + titleLayout(chapter.ref.title, titlePaint, contentWidth, settings).height + paint.textSize * settings.titleSpacing else top
             var firstPage = true
             var firstParagraph = true
             val breaker = BreakIterator.getCharacterInstance(Locale.CHINA)
@@ -140,7 +146,7 @@ internal class NativeTextLayout(
                                 val boundary = BreakIterator.getCharacterInstance(Locale.CHINA).apply { setText(paragraph) }
                                 if (!boundary.isBoundary(chunkEnd)) chunkEnd = boundary.preceding(chunkEnd)
                             }
-                            val indent = if (chunkStart == leading && settings.indent) "　　" else ""
+                            val indent = if (chunkStart == leading && settings.indent) "　".repeat(settings.indentSize) else ""
                             val display = indent + paragraph.substring(chunkStart, chunkEnd)
                             breaker.setText(display)
                             val words = mutableListOf<String>()
@@ -179,7 +185,7 @@ internal class NativeTextLayout(
                 paragraphStart += paragraph.length + 1
             }
             pages += NativeTextPage(if (pages.isEmpty()) 0 else lines.firstOrNull()?.start ?: chapter.text.length, chapter.text.length, lines, firstPage)
-            return NativeTextLayout(chapter, width, height, settings, density, scaledDensity, pages)
+            return NativeTextLayout(chapter, width, height, settings, density, scaledDensity, pages, fontTypeface)
         }
     }
 }

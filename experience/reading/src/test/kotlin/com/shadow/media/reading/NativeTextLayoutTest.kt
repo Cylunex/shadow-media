@@ -17,6 +17,20 @@ import java.io.File
 @Config(sdk = [28], manifest = Config.NONE)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class NativeTextLayoutTest {
+    @Test fun titleAndSpacingControlsChangeLayoutWithoutDroppingBodyOrMovingStoredAnchors() = runBlocking {
+        val content = chapter("山风穿过竹林，少年提灯前行。\n".repeat(80))
+        val normal = layout(content)
+        val hidden = layout(content, ReaderSettings(showChapterTitle = false, indentSize = 4))
+        assertTrue(hidden.pages.first().lines.first().baseline < normal.pages.first().lines.first().baseline)
+        val title = layout(content, ReaderSettings(titleScale = 1.5f, titleSpacing = 1.5f, titleAlignment = ReaderTitleAlignment.CENTER, verticalMargins = 1.6f))
+        assertTrue(title.pages.first().lines.first().baseline > normal.pages.first().lines.first().baseline)
+        for (value in listOf(normal, hidden, title)) {
+            assertEquals(content.text.replace("\n", ""), value.pages.flatMap { it.lines }.flatMap { it.glyphs }.joinToString("") { it.text }.replace("　", ""))
+            val anchor = normal.pages[2].start
+            assertEquals(anchor, content.restore(content.locator(anchor)))
+            assertTrue(anchor in value.pages[value.pageAt(anchor)].let { it.start..it.end })
+        }
+    }
     private data class Preview(val name: String, val style: ReaderSettings, val width: Int, val height: Int)
     @Test fun wideScreensHaveCenteredMeasureAndFocusModeReclaimsFurnitureSpace() = runBlocking {
         val content = chapter("山间的雾气渐渐散去，石阶旁的竹叶还挂着露珠。\n".repeat(140))

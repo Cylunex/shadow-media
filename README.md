@@ -17,6 +17,7 @@ Shadow Novel 提供原生书城、书单、排行榜、作家、个人书架与�
 新版书架筛选、封面网格与全书目录检索见 [Novel 接口与书库体验](docs/NOVEL_LIBRARY_ADAPTATION_2026_10_22.md)。
 在线搜索、原生预览、书源分组、订阅与文件工具见 [Novel 客户端适配](docs/NOVEL_CLIENT_ADAPTATION_2026_10_23.md)。
 阅读中换源、自动预取和本机全本/范围下载见 [阅读与缓存](docs/NOVEL_READING_CACHE_2026_10_24.md)。
+阅读手势、菜单稳定性与排版设置见 [阅读交互与排版](docs/NATIVE_READING_INTERACTIONS_2026_10_24.md)。
 
 接入方法、支持范围及未完成项见 [全媒介实施说明](docs/MULTIMEDIA_IMPLEMENTATION.md)。
 后续设计与本轮队列恢复、进度隔离改动见 [vNext 补充研究](docs/VNEXT_RESEARCH_2026_09_10.md)。

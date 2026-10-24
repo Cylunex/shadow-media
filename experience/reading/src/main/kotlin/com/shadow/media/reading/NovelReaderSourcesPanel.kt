@@ -3,6 +3,8 @@ package com.shadow.media.reading
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.activity.compose.BackHandler
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -21,12 +23,16 @@ internal class NovelReaderSourceState {
     var result by mutableStateOf<JSONObject?>(null)
     var selectedVersion by mutableStateOf<String?>(null)
     var receipt by mutableStateOf<JSONObject?>(null)
+    var listIndex = 0
+    var listOffset = 0
 }
 
 @Composable
 internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, publication: NovelPublicationEntity,
     title: String, currentTitle: String, enabled: Boolean, state: NovelReaderSourceState, onOpen: (String, String?) -> Unit) {
     val coroutine = rememberCoroutineScope()
+    val list = rememberLazyListState(state.listIndex, state.listOffset)
+    BackHandler(state.selectedVersion != null) { state.selectedVersion = null }
     val c = runCatching { repository.connection(publication.scope) }.getOrNull()
     var versions by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var busy by remember { mutableStateOf(false) }
@@ -68,7 +74,7 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
             repository.sourceSearch.resumeSearch(c, requireNotNull(state.jobId), ::update)
         }
     }
-    DisposableEffect(state) { onDispose { action?.cancel() } }
+    DisposableEffect(state) { onDispose { state.listIndex = list.firstVisibleItemIndex; state.listOffset = list.firstVisibleItemScrollOffset; action?.cancel() } }
     LaunchedEffect(state.selectedVersion, currentTitle) {
         recommendation = null
         val version = state.selectedVersion ?: return@LaunchedEffect
@@ -96,7 +102,7 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
             onOpen = { onOpen(version, it.getString("id")) }, modifier = Modifier.weight(1f), contentScope = publication.scope)
         return
     }
-    LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
+    LazyColumn(Modifier.weight(1f), state = list, verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
         item {
             Text("切换阅读书源", style = MaterialTheme.typography.titleMedium)
             val binding = versions.firstOrNull { it.getString("id") == publication.versionId }?.novelId("binding_id")
