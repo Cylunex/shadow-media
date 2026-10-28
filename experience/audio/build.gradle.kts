@@ -23,4 +23,5 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.core.ktx)
     testImplementation(libs.junit)
+    testImplementation("org.robolectric:robolectric:4.17")
 }

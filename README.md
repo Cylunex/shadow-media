@@ -187,3 +187,4 @@ ISO 是光盘镜像而不是普通视频容器。Emby Server 不支持 ISO 转�
 - [vNext 实现与验收账本](docs/VNEXT_IMPLEMENTATION_STATUS.md)
 - [性能工程与发布检查](docs/PERFORMANCE_AND_RELEASE.md)
 - [来源扩展与音质评估](docs/SOURCE_AND_AUDIO_EVALUATION.md)
+- [音频队列隔离与睡眠定时](docs/AUDIO_QUEUE_RELIABILITY_2026_10_28.md)

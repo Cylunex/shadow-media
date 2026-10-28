@@ -53,7 +53,7 @@ class AudiobookService : MediaLibraryService() {
         player.prepare(); player.seekTo(position); player.playWhenReady = playing
     }
     private var sleepDeadline = 0L
-    private var stopAfterTrack = false
+    private var stopAfterTrack: String? = null
     private var chapterStop: Pair<String, Long>? = null
     private var jumpToLastChapter: String? = null
     private var mode = AudioMode.AUDIOBOOK
@@ -91,12 +91,17 @@ class AudiobookService : MediaLibraryService() {
             setWakeMode(C.WAKE_MODE_LOCAL)
             addListener(object : Player.Listener {
                 override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                    if (timeline.isEmpty) clearSleep()
                     currentMediaItem?.audioMode()?.let { active ->
                         if (mode != active) {
                             mode = active
                             clearSleep()
                             setAudioAttributes(AudioAttributes.Builder().setContentType(if (mode == AudioMode.MUSIC) C.AUDIO_CONTENT_TYPE_MUSIC else C.AUDIO_CONTENT_TYPE_SPEECH).setUsage(C.USAGE_MEDIA).build(), true)
                             setPlaybackSpeed(1f)
+                            // A newly selected queue must not inherit the other mode's controls.
+                            // Explicit queue restoration applies its saved parameters below.
+                            repeatMode = Player.REPEAT_MODE_OFF
+                            shuffleModeEnabled = false
                         }
                         getSharedPreferences("audio_preferences", MODE_PRIVATE).edit().putString("mode", active.name).apply()
                     }
@@ -115,14 +120,19 @@ class AudiobookService : MediaLibraryService() {
                     } else if (reason == Player.DISCONTINUITY_REASON_SEEK) saveCurrent(playbackState == Player.STATE_ENDED)
                 }
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                    if (stopAfterTrack && reason in setOf(Player.MEDIA_ITEM_TRANSITION_REASON_AUTO, Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT)) { pause(); clearSleep() }
                     val entry = mediaItem?.entryId()
+                    if ((stopAfterTrack != null && stopAfterTrack != entry) ||
+                        (chapterStop != null && chapterStop?.first != entry)) {
+                        // Manual next/remove replaces the target; never arm the next track by accident.
+                        // The end-of-item pause normally happens inside ExoPlayer before transition.
+                        if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) pause()
+                        clearSleep()
+                    }
                     if (recoveryEntry != entry) { recoveryController.manualRetry(); recoveryEntry = entry }
                     candidates.activate(entry)
                     AudioDiagnostics.format.value = ""
                     listening.sample(this@apply, transition = true)
                     if (jumpToLastChapter != null && jumpToLastChapter != mediaItem?.entryId()) jumpToLastChapter = null
-                    if (chapterStop != null && chapterStop?.first != mediaItem?.entryId()) { pause(); clearSleep() }
                     if (!applyingQueue) {
                         val speed = if (mediaItem?.audioMode() == AudioMode.MUSIC) 1f else mediaItem?.mediaId?.let { getSharedPreferences("audio_preferences", MODE_PRIVATE).getFloat("speed:$it", 1f) } ?: 1f
                         setPlaybackSpeed(speed.takeIf { it.isFinite() && it in .5f..3f } ?: 1f)
@@ -150,6 +160,7 @@ class AudiobookService : MediaLibraryService() {
                 }
                 override fun onIsPlayingChanged(isPlaying: Boolean) { saveCurrent(playbackState == Player.STATE_ENDED) }
                 override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                    if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) clearSleep()
                     if (playWhenReady) {
                         audible.claim()
                         if (pausedAt > 0 && SystemClock.elapsedRealtime() - pausedAt >= 60_000) {
@@ -206,7 +217,7 @@ class AudiobookService : MediaLibraryService() {
                     if (entry != player.currentMediaItem?.entryId() || player.currentPosition >= end) { player.pause(); clearSleep() }
                 }
                 if (sleepDeadline > 0 && SystemClock.elapsedRealtime() >= sleepDeadline) { player.pause(); clearSleep() }
-                AudioSleep.remaining.value = when { chapterStop != null -> -2; stopAfterTrack -> -1; sleepDeadline > 0 -> (sleepDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0); else -> 0 }
+                publishSleep()
                 if (player.isPlaying && ++tick % 5 == 0) { startProgressSession(); saveCurrent(); persistQueue() }
             }
         }
@@ -248,7 +259,19 @@ class AudiobookService : MediaLibraryService() {
         LibraryResources.audioEvent?.invoke(AudioProgressSnapshot(item.mediaId, position.coerceAtLeast(0), !player.isPlaying,
             player.isCurrentMediaItemSeekable, player.playbackState == Player.STATE_READY || completed, stopped, requireNotNull(item.entryId())))
     }
-    private fun clearSleep() { sleepDeadline = 0; stopAfterTrack = false; chapterStop = null; AudioSleep.remaining.value = 0 }
+    private fun clearSleep() {
+        sleepDeadline = 0; stopAfterTrack = null; chapterStop = null
+        if (::player.isInitialized) player.pauseAtEndOfMediaItems = false
+        AudioSleep.remaining.value = 0
+    }
+    private fun publishSleep() {
+        AudioSleep.remaining.value = when {
+            chapterStop != null -> -2
+            stopAfterTrack != null -> -1
+            sleepDeadline > 0 -> (sleepDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0)
+            else -> 0
+        }
+    }
 
     private suspend fun resolveItem(item: MediaItem, asset: LibraryAssetEntity?, entryId: String = UUID.randomUUID().toString(), revision: String? = null): MediaItem {
         if (asset == null) throw QueueEntryUnavailable("音频已从书库移除")
@@ -319,6 +342,7 @@ class AudiobookService : MediaLibraryService() {
         return snapshot
     }
     private fun applyQueue(restored: RestoredQueue) {
+        clearSleep()
         applyingQueue = true
         try {
             val queue = restored.snapshot.queue
@@ -337,11 +361,14 @@ class AudiobookService : MediaLibraryService() {
         val wasApplying = applyingQueue
         applyingQueue = true
         try {
-            player.repeatMode = restored.snapshot.queue.repeatMode
+            // Older versions could save music controls into a listening queue.
+            // Listening remains sequential; music resumes its own shuffle/repeat settings.
+            val music = restored.snapshot.queue.id == AudioMode.MUSIC.name
+            player.repeatMode = if (music) restored.snapshot.queue.repeatMode else Player.REPEAT_MODE_OFF
             val order = restored.snapshot.entries.sortedBy { it.shuffleOrdinal }.map { it.ordinal }.toIntArray()
             player.setShuffleOrder(DefaultShuffleOrder(order, 0L))
-            player.shuffleModeEnabled = restored.snapshot.queue.shuffleEnabled
-            player.setPlaybackSpeed(restored.snapshot.queue.speed)
+            player.shuffleModeEnabled = music && restored.snapshot.queue.shuffleEnabled
+            player.setPlaybackSpeed(if (music) 1f else restored.snapshot.queue.speed)
         } finally { applyingQueue = wasApplying }
     }
     private fun persistQueue() {
@@ -438,13 +465,24 @@ class AudiobookService : MediaLibraryService() {
             }
             if (customCommand.customAction != SLEEP) return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
             val minutes = args.getInt("minutes")
+            if (minutes !in 0..240 && minutes != -1 && minutes != -2) {
+                return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+            }
+            val entry = player.currentMediaItem?.entryId()
+            if (minutes != 0 && entry == null) return Futures.immediateFuture(SessionResult(SessionError.ERROR_INVALID_STATE))
+            val chapterEnd = if (minutes == -2) player.audioChapters().chapterAt(player.currentPosition)?.endMs else null
+            // Validate before replacing an active timer. An unavailable chapter must not cancel it.
+            if (minutes == -2 && chapterEnd == null) return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
             clearSleep()
             if (minutes == -2) {
-                val end = player.audioChapters().chapterAt(player.currentPosition)?.endMs
-                    ?: return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
-                chapterStop = requireNotNull(player.currentMediaItem?.entryId()) to end
-            } else if (minutes == -1) stopAfterTrack = true
+                chapterStop = requireNotNull(entry) to requireNotNull(chapterEnd)
+            } else if (minutes == -1) {
+                stopAfterTrack = requireNotNull(entry)
+                // Stop at the media boundary, before the next item (or repeat) starts rendering.
+                player.pauseAtEndOfMediaItems = true
+            }
             else if (minutes in 1..240) sleepDeadline = SystemClock.elapsedRealtime() + minutes * 60_000L
+            publishSleep()
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
         }
         override fun onAddMediaItems(session: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: List<MediaItem>): ListenableFuture<List<MediaItem>> {
@@ -475,6 +513,7 @@ class AudiobookService : MediaLibraryService() {
                     runCatching { JSONObject(it.locatorJson).optLong("positionMs", 0) }.getOrDefault(0)
                 } ?: 0 else startPositionMs.coerceAtLeast(0)
                 check(request == queueRequest) { "已切换播放队列" }
+                clearSleep()
                 initialized = true
                 AudioQueueStatus.message.value = null
                 MediaSession.MediaItemsWithStartPosition(resolved, index, position)
