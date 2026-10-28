@@ -102,6 +102,24 @@ class NovelRepository(private val context: Context, private val library: Library
     }
 
     data class Prepared(val asset: LibraryAssetEntity, val locator: String?)
+    /** A logical shelf card can point at an older window; resume the work's newest local locator. */
+    suspend fun resumeCached(publication: NovelPublicationEntity): Prepared? {
+        val position = dao.state(stateId(publication.scope, publication.workId))?.localPosition
+            ?.takeIf(String::isNotBlank)?.let { runCatching { JSONObject(it) }.getOrNull() }
+        val candidates = dao.publications(publication.scope).filter { it.workId == publication.workId }
+        val recent = candidates.map { it to library.dao.progress(it.assetId) }
+            .sortedWith(compareByDescending<Pair<NovelPublicationEntity, ContentProgressEntity?>> { it.first.assetId == position?.optString("asset_id") }
+                .thenByDescending { it.second?.updatedAt ?: 0 })
+        for ((window, progress) in recent) {
+            val asset = library.dao.asset(window.assetId) ?: continue
+            if (!runCatching { library.localFile(asset).isFile }.getOrDefault(false)) continue
+            val locator = if (window.assetId == position?.optString("asset_id"))
+                NovelPublicationMap(JSONObject(window.mappingJson)).locator(position)?.toString() else progress?.locatorJson
+            return Prepared(asset, locator)
+        }
+        return null
+    }
+
     suspend fun cachedChapter(scope: String, workId: String, versionId: String, chapterId: String): Prepared? {
         val existing = dao.publications(scope).firstOrNull { it.workId == workId && it.versionId == versionId &&
             NovelPublicationMap(JSONObject(it.mappingJson)).chapter(chapterId) != null && library.dao.asset(it.assetId)?.let { asset -> runCatching { library.localFile(asset).isFile }.getOrDefault(false) } == true } ?: return null

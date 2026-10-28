@@ -8,7 +8,7 @@ import org.json.JSONArray
 fun readableNovelSource(row: JSONObject): Boolean =
     row.novelStrings("capabilities").containsAll(listOf("detail", "toc", "chapter"))
 
-data class NovelSourceFeatures(val searchModes: Boolean = false, val chapterOpen: Boolean = false, val intakeReuse: Boolean = false)
+data class NovelSourceFeatures(val searchModes: Boolean = false, val chapterOpen: Boolean = false, val intakeReuse: Boolean = false, val autoBind: Boolean = false)
 class NovelVersionSelectionRequired(val workId: String, val versionId: String) : IllegalStateException("版本间位置无法精确恢复，请从目录选择章节")
 
 data class NovelSourceOpening(val workId: String, val versionId: String, val chapterId: String? = null)
@@ -19,7 +19,7 @@ class NovelSourceSearch(private val api: NovelApi) {
         val caps = try { api.json(connection, listOf("integration")).optJSONObject("capabilities") }
         catch (e: NovelApiException) { if (e.status in setOf(404, 405)) null else throw e }
         return NovelSourceFeatures(caps?.optBoolean("source_search_modes") == true,
-            caps?.optBoolean("source_chapter_open") == true, caps?.optBoolean("source_intake_reuse") == true)
+            caps?.optBoolean("source_chapter_open") == true, caps?.optBoolean("source_intake_reuse") == true, caps?.optBoolean("source_search_auto_bind") == true)
     }
     suspend fun search(connection: CatalogConnection, query: String, onUpdate: (JSONObject) -> Unit): JSONObject {
         return search(connection, query, NovelSearchOptions(), onUpdate = onUpdate)
@@ -76,6 +76,12 @@ class NovelSourceSearch(private val api: NovelApi) {
         }
     }
 
+    suspend fun automaticReceipt(connection: CatalogConnection, workId: String, row: JSONObject): JSONObject? {
+        val receipt = row.optJSONObject("auto_bind")?.takeIf { it.optString("status") == "bound" } ?: return null
+        requireNovelWork(api, connection, workId, receipt.getString("work_id"))
+        return JSONObject(receipt.toString())
+    }
+
     suspend fun collectionVersion(connection: CatalogConnection, receipt: JSONObject): String {
         val job = requireNotNull(receipt.novelId("job_id")) { "此来源没有可读目录任务" }
         return requireNotNull(awaitJob(connection, job) {}.optJSONObject("result")?.novelId("version_id")) { "目录尚无可读版本，请重试获取目录" }
@@ -115,7 +121,7 @@ class NovelSourceSearch(private val api: NovelApi) {
 data class NovelSearchOptions(
     val precise: Boolean = false, val groups: List<String> = emptyList(), val providerIds: List<String>? = null,
     val excludeIds: List<String> = emptyList(), val page: Int = 1,
-    val mode: String? = null, val limit: Int = 12,
+    val mode: String? = null, val limit: Int = 12, val workId: String? = null,
 ) {
     fun body(keyword: String): JSONObject {
         require(mode == null || mode in setOf("batch", "auto", "all")) { "搜索模式无效" }
@@ -123,6 +129,7 @@ data class NovelSearchOptions(
         return JSONObject().put("q", keyword).put("precise", precise).put("group_ids", JSONArray(groups))
             .put("exclude_ids", JSONArray(excludeIds)).put("page", page).put("limit", limit).also {
                 mode?.let { mode -> it.put("mode", mode) }
+                workId?.takeIf(String::isNotBlank)?.let { work -> it.put("work_id", work) }
                 providerIds?.let { ids -> it.put("provider_ids", JSONArray(ids)) }
             }
     }

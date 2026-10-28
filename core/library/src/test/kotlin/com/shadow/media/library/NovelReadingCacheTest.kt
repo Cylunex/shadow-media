@@ -117,6 +117,24 @@ class NovelReadingCacheTest {
     }
     private fun repository(service: Service): NovelRepository = NovelRepository(RuntimeEnvironment.getApplication(), api = NovelApi(), connectionLoader = { listOf(service.c) })
 
+    @Test fun shelfResumeUsesNewestWindowAndSourceWithoutDiscardingOtherWindows() = runBlocking {
+        Service().use { service ->
+            val repository = repository(service)
+            val first = repository.cache.window(service.c, "work", "v1", 0, 1)
+            service.cached += 4
+            val latest = repository.cache.window(service.c, "work", "v2", 4, 1)
+            val position = JSONObject().put("asset_id", latest.asset.id).put("version_id", "v2").put("chapter_id", "c4").put("ratio", .6)
+            repository.dao.putState(NovelReadingStateEntity(NovelRepository.stateId(novelScope(service.c), "work"), novelScope(service.c), "work", "device", localPosition = position.toString()))
+            val resumed = repository.resumeCached(first.publication)!!
+            assertEquals(latest.asset.id, resumed.asset.id)
+            assertEquals("chapters/c4.xhtml", JSONObject(resumed.locator!!).getString("href"))
+            val library = LibraryRepository(RuntimeEnvironment.getApplication())
+            val windows = setOf(first.asset.id, latest.asset.id)
+            assertEquals(1, library.dao.searchPage("BOOK", "%缓存测试%", 0, 1000).count { it.id in windows })
+            assertEquals(2, repository.dao.publications(novelScope(service.c)).size)
+        }
+    }
+
     @Test fun enteringAChapterPrefetchesThreeReadableChaptersWithoutTouchingFrozenProgress() = runBlocking {
         Service(volumes = setOf(1)).use { service ->
             val repository = repository(service)

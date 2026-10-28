@@ -13,11 +13,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.shadow.media.library.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collect
 import org.json.JSONArray
 import org.json.JSONObject
 
 /** Kept by the connection screen, so opening a work never discards the current search session. */
 internal class NovelBrowserState(initial: String = "") {
+    var autoReceipts by mutableStateOf<Map<String, JSONObject>>(emptyMap())
+    var autoFailures by mutableStateOf<Map<String, String>>(emptyMap())
+    var autoRetry by mutableIntStateOf(0)
     var keyword by mutableStateOf(initial)
     var submitted by mutableStateOf("")
     var precise by mutableStateOf(false)
@@ -118,8 +122,10 @@ internal class NovelBrowserState(initial: String = "") {
                 state.submitted = state.keyword.trim().take(200)
                 state.rows = emptyList(); state.sources = emptyList(); state.detail = null; state.truncated = false
                 choices(); state.searchChoices = state.choices
+                if (state.features?.autoBind == true) state.autoReceipts = emptyMap()
                 state.searchOptions = NovelSearchOptions(state.precise, state.filter.groups,
-                    mode = state.mode.takeIf { state.features?.searchModes == true })
+                    mode = state.mode.takeIf { state.features?.searchModes == true },
+                    workId = bindingWork?.novelId("id").takeIf { state.features?.autoBind == true })
             }
             val candidates = ids ?: state.choices.map { it.getString("id") }.filter { state.selected.isEmpty() || it in state.selected }
             require(candidates.isNotEmpty()) { "当前范围没有可搜索书源，可调整分组或筛选。" }
@@ -167,6 +173,27 @@ internal class NovelBrowserState(initial: String = "") {
         catch (e: CancellationException) { throw e }
         catch (e: Exception) { notice = novelToolError(e) }
     }
+    LaunchedEffect(connection.id, bindingWork?.novelId("id")) {
+        val work = bindingWork ?: return@LaunchedEffect
+        val attempted = state.autoReceipts.keys.toMutableSet()
+        var previousSearch: String? = null
+        var previousRetry = state.autoRetry
+        snapshotFlow { Triple(state.rows, state.searchJobId, state.autoRetry) }.collect { (rows, searchId, retry) ->
+            if (previousSearch != searchId || previousRetry != retry) {
+                attempted.clear(); attempted.addAll(state.autoReceipts.keys)
+                state.autoFailures = emptyMap(); previousSearch = searchId; previousRetry = retry
+            }
+            if (rows.isNotEmpty()) {
+                try {
+                    val features = state.features ?: repository.sourceSearch.features(connection)
+                    repository.sourceSearch.autoBindMatches(connection, work, rows, features, attempted,
+                        onBound = { key, receipt -> state.autoReceipts = state.autoReceipts + (key to receipt); state.autoFailures = state.autoFailures - key },
+                        onFailure = { key, message -> state.autoReceipts = state.autoReceipts - key; state.autoFailures = state.autoFailures + (key to message) })
+                } catch (e: CancellationException) { throw e }
+                catch (e: Exception) { state.autoFailures = state.autoFailures + ("service" to novelToolError(e)) }
+            }
+        }
+    }
     DisposableEffect(state) { onDispose { state.listIndex = list.firstVisibleItemIndex; state.listOffset = list.firstVisibleItemScrollOffset; task?.cancel(); generation++ } }
     BackHandler(state.detail != null) { state.detail = null }
     Column(Modifier.fillMaxSize()) {
@@ -181,6 +208,11 @@ internal class NovelBrowserState(initial: String = "") {
                     AssistChip(onClick = { choose = true }, label = { Text("范围 · ${visibleChoices.size} 源") })
                     TextButton(onClick = { settings = true }) { Text("搜索设置与历史") }
                     TextButton(onClick = onManage) { Text("管理书源") }
+                }
+                if (bindingWork != null) {
+                    Text("书名和作者一致的结果会自动关联；不会改变当前阅读位置。", style = MaterialTheme.typography.bodySmall)
+                    if (state.autoReceipts.isNotEmpty()) Text("已自动关联 ${state.autoReceipts.size} 个来源", style = MaterialTheme.typography.labelSmall)
+                    if (state.autoFailures.isNotEmpty()) TextButton(onClick = { if (state.features?.autoBind == true) search() else state.autoRetry++ }) { Text("${state.autoFailures.size} 个来源未关联，重试") }
                 }
                 if (!state.explore) {
                     NovelSearchField(state.keyword, { state.keyword = it.take(200) }, true, { search() }, "搜索书名、作者或分类")
@@ -238,7 +270,10 @@ internal class NovelBrowserState(initial: String = "") {
                 }
             } else {
                 if (state.rows.isEmpty() && !busy && state.submitted.isNotBlank() && error == null) item { Text("本批未找到匹配项；仍可继续其他书源或单源下一页。") }
-                items(state.rows, key = ::novelResultKey) { row -> NovelSourceResultCard(row) { state.detail = row } }
+                items(state.rows, key = ::novelResultKey) { row -> Column {
+                    NovelSourceResultCard(row) { state.detail = row }
+                    if (novelSourceIdentity(row) in state.autoReceipts) Text("已自动关联", style = MaterialTheme.typography.labelSmall)
+                } }
                 if (state.pendingIds.isNotEmpty() && !busy && !state.searchRunning) item { TextButton(onClick = { search(state.pendingIds, state.pendingPage, true) }) { Text("重试尚未返回的 ${state.pendingIds.size} 个书源") } }
                 if (state.remaining.isNotEmpty()) item { Button(enabled = !busy, onClick = { search(state.remaining, append = true) }) { Text("继续搜索其他 ${state.remaining.size} 个书源") } }
                 items(state.sources, key = { it.optString("provider_id") }) { source ->
@@ -261,7 +296,7 @@ internal class NovelBrowserState(initial: String = "") {
     state.detail?.let { row -> NovelSourcePreviewSheet(repository, connection, row, bindingWork, onDismiss = { state.detail = null }, onAuthor = {
         state.detail = null; state.keyword = it
         if (state.explore) { searchAfterChoices = true; state.explore = false; state.filter = state.filter.copy(capability = "search", exploreEnabled = "") } else search()
-    }, onWork = onWork, onBound = onBound, features = state.features, onRead = { state.detail = null; onRead(it) }) }
+    }, onWork = onWork, onBound = onBound, features = state.features, automaticReceipt = state.autoReceipts[novelSourceIdentity(row)], onRead = { state.detail = null; onRead(it) }) }
 }
 
 @Composable internal fun NovelSourceResultCard(row: JSONObject, onClick: () -> Unit) {

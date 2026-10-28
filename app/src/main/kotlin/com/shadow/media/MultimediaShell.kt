@@ -132,7 +132,7 @@ import com.shadow.media.reading.ReaderActivity
                     try {
                         val publication = container.novel.dao.publication(item.id)
                         val connected = runCatching { container.novel.connection(item.providerId) }.getOrNull()
-                        val prepared = if (publication != null && connected != null) container.novel.prepare(connected, publication.workId, publication.versionId) else com.shadow.media.library.NovelRepository.Prepared(item, null)
+                        val prepared = if (publication != null && connected != null) container.novel.prepare(connected, publication.workId) else publication?.let { container.novel.resumeCached(it) } ?: com.shadow.media.library.NovelRepository.Prepared(item, null)
                         context.startActivity(Intent(context, ReaderActivity::class.java).putExtra("assetId", prepared.asset.id).putExtra("novelLocator", prepared.locator))
                     } catch (e: CancellationException) { throw e }
                     catch (e: Exception) { message = e.message ?: "Novel 图书打开失败" }
@@ -419,7 +419,7 @@ import com.shadow.media.reading.ReaderActivity
             TextButton(onClick = { selected = null; removing = item }) { Text("从书架移除", color = MaterialTheme.colorScheme.error) }
         }
     } }
-    removing?.let { item -> AlertDialog(onDismissRequest = { removing = null }, title = { Text("移除《${item.title}》？") }, text = { Text("会移除本机副本、书签和进度，不会删除原始文件或服务器内容。") },
+    removing?.let { item -> AlertDialog(onDismissRequest = { removing = null }, title = { Text("移除《${item.title}》？") }, text = { Text(if (item.providerId.startsWith("novel:")) "会移除此作品的本机缓存、书签和进度，不会删除服务器作品或来源。" else "会移除本机副本、书签和进度，不会删除原始文件或服务器内容。") },
         confirmButton = { TextButton(onClick = { removing = null; onRemove(item) }) { Text("移除") } }, dismissButton = { TextButton(onClick = { removing = null }) { Text("取消") } }) }
 }
 

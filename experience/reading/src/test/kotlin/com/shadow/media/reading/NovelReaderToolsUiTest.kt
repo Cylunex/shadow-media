@@ -72,10 +72,10 @@ class NovelReaderToolsUiTest {
     }
 
     @Test fun searchingAndAssociatingFromReaderRetainsTheExistingWork() {
-        val source = """{"provider_id":"s","provider_name":"备用站点","bookUrl":"https://example.com/book","name":"山海来信","author":"行舟","capabilities":["detail","toc","chapter"]}"""
+        val source = """{"provider_id":"s","provider_name":"备用站点","bookUrl":"https://example.com/book","name":"山海来信","author":"行舟","capabilities":["detail","toc","chapter"],"auto_bind":{"status":"bound","work_id":"work","binding_id":"b"}}"""
         handler = { request -> when (request.path) {
-            "/api/v1/works/work" -> json("""{"id":"work","versions":[{"id":"v1","label":"主书源","state":"ready"},{"id":"v2","label":"备用书源","state":"ready"}]}""")
-            "/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true,"source_intake_reuse":true}}""")
+            "/api/v1/works/work" -> json("""{"id":"work","title":"山海来信","author":"行舟","versions":[{"id":"v1","label":"主书源","state":"ready"},{"id":"v2","label":"备用书源","state":"ready"}]}""")
+            "/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true,"source_intake_reuse":true,"source_search_auto_bind":true}}""")
             "/api/v1/search-jobs" -> json("""{"job_id":"search"}""")
             "/api/v1/jobs/search" -> json("""{"state":"succeeded","result":{"items":[$source]}}""")
             "/api/v1/source-results/collect" -> json("""{"work_id":"work","binding_id":"b","job_id":"toc"}""")
@@ -88,8 +88,10 @@ class NovelReaderToolsUiTest {
         } } } }
         waitText("主书源")
         compose.onNodeWithText("搜索可用书源").performScrollTo().performClick()
-        waitText("关联并选择章节")
-        compose.onNodeWithText("关联并选择章节").performScrollTo().performClick()
+        compose.waitUntil(10_000) { state.autoReceipts.size == 1 }
+        assertFalse(requests.any { it.first.endsWith("/collect") || it.first == "/api/v1/jobs/toc" })
+        assertEquals("work", JSONObject(requests.single { it.first == "/api/v1/search-jobs" }.second).getString("work_id"))
+        compose.onNodeWithText("已自动关联 · 选择章节").performScrollTo().performClick()
         waitText("续读此来源")
         val body = JSONObject(requests.single { it.first == "/api/v1/source-results/collect" }.second)
         assertEquals("work", body.getString("work_id")); assertFalse(body.has("create_new"))

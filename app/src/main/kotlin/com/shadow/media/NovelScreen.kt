@@ -468,7 +468,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
         NovelSourceSearchSheet(repository, c, work,
             state = workSourceStates.getOrPut(work.getString("id")) { NovelBrowserState(work.optString("title").take(200)) },
             onRead = { sourceSearch = false; open(it.workId, it.versionId, it.chapterId) },
-            onDismiss = { sourceSearch = false }, onWork = { sourceSearch = false; navigate(NovelRoute("work", it)) }, onBound = {
+            onDismiss = { sourceSearch = false; execute { load() } }, onWork = { sourceSearch = false; navigate(NovelRoute("work", it)) }, onBound = {
             sourceSearch = false
             execute { load(); message = "已关联来源，可查看作品资料与可用版本" }
         })

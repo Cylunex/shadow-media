@@ -191,6 +191,7 @@ class NovelReadingCache(private val context: Context, private val library: Libra
                     val publication = NovelPublicationEntity(id, novelScope(c), work, version, mapping.json.toString(), revision)
                     dao.putPublication(publication)
                     // Transport windows are one book, rather than a new shelf book for every prefetch.
+                    library.dao.seedPersonalState(id)
                     if (existing.any { it.assetId != id && valid(it) }) library.dao.hideCacheWindow(id)
                     changed.update { it + 1 }
                     NovelCachedWindow(asset, publication, mapping)

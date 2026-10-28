@@ -253,10 +253,11 @@ class LibraryRepository(context: Context) {
 
     suspend fun remove(id: String) = withContext(Dispatchers.IO) {
         val tasks = ShadowMediaDatabase.create(context).resourceTaskDao()
-        tasks.task(id)?.let { OfflineRepository(context, this@LibraryRepository).remove(it) }
+        val ids = dao.novelWorkAssets(id).ifEmpty { listOf(id) }
+        for (window in ids) tasks.task(window)?.let { OfflineRepository(context, this@LibraryRepository).remove(it) }
         dao.removeFromShelf(id)
-        // Only application-owned files for this resolved asset; never the source document.
-        folder(id).deleteRecursively()
+        // Only this account/work's application-owned windows; never source documents or other works.
+        ids.forEach { folder(it).deleteRecursively() }
     }
 
     fun folder(id: String): File {
