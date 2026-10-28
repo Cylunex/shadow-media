@@ -71,13 +71,13 @@ class NovelReaderToolsUiTest {
         assertFalse(requests.any { it.first.contains("progress") || it.first.endsWith("/open") })
     }
 
-    @Test fun searchingAndAssociatingFromReaderRetainsTheExistingWork() {
+    @Test fun partialSearchResultsCanOpenTheirDirectoryWhileOtherSourcesAreStillSearching() {
         val source = """{"provider_id":"s","provider_name":"备用站点","bookUrl":"https://example.com/book","name":"山海来信","author":"行舟","capabilities":["detail","toc","chapter"],"auto_bind":{"status":"bound","work_id":"work","binding_id":"b"}}"""
         handler = { request -> when (request.path) {
             "/api/v1/works/work" -> json("""{"id":"work","title":"山海来信","author":"行舟","versions":[{"id":"v1","label":"主书源","state":"ready"},{"id":"v2","label":"备用书源","state":"ready"}]}""")
             "/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true,"source_intake_reuse":true,"source_search_auto_bind":true}}""")
             "/api/v1/search-jobs" -> json("""{"job_id":"search"}""")
-            "/api/v1/jobs/search" -> json("""{"state":"succeeded","result":{"items":[$source]}}""")
+            "/api/v1/jobs/search" -> json("""{"state":"running","result":{"items":[$source]}}""")
             "/api/v1/source-results/collect" -> json("""{"work_id":"work","binding_id":"b","job_id":"toc"}""")
             "/api/v1/jobs/toc" -> json("""{"state":"succeeded","result":{"version_id":"v2"}}""")
             else -> json("""{"version_id":"v2","total":0,"offset":0,"limit":100,"next_offset":null,"items":[]}""")
@@ -96,7 +96,65 @@ class NovelReaderToolsUiTest {
         val body = JSONObject(requests.single { it.first == "/api/v1/source-results/collect" }.second)
         assertEquals("work", body.getString("work_id")); assertFalse(body.has("create_new"))
         assertEquals("v2", state.selectedVersion)
+        assertEquals("running", state.jobState)
         assertFalse(requests.any { it.first.contains("progress") || it.first == "/api/v1/works" })
+    }
+
+    @Test fun stoppingSearchRetainsResultsAndFilteringDoesNotLaunchAnotherSearch() {
+        val source = """{"provider_id":"s","provider_name":"备用站点","bookUrl":"https://example.com/book","name":"山海来信","author":"另一作者","capabilities":["detail","toc","chapter"]}"""
+        val result = """"result":{"items":[$source]}"""
+        handler = { request -> when (request.path) {
+            "/api/v1/works/work" -> json("""{"id":"work","title":"山海来信","author":"行舟","versions":[]}""")
+            "/api/v1/integration" -> json("""{"capabilities":{"source_search_auto_bind":true}}""")
+            "/api/v1/search-jobs" -> json("""{"job_id":"search"}""")
+            "/api/v1/jobs/search" -> json("""{"state":"running",$result}""")
+            "/api/v1/jobs/search/cancel" -> json("""{"state":"cancelled",$result}""")
+            else -> json("{}")
+        } }
+        val repo = repository(); val state = NovelReaderSourceState()
+        compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize().padding(16.dp)) {
+            NovelReaderSourcesPanel(repo, publication(), "山海来信", "当前章", true, state) { _, _ -> fail("Filtering must not open a book") }
+        } } } }
+        waitText("搜索可用书源")
+        compose.onNodeWithText("搜索可用书源").performScrollTo().performClick()
+        waitText("关联并选择章节")
+        compose.onNodeWithText("停止搜索").performScrollTo().performClick()
+        waitText("搜索已停止，已返回结果保留")
+        compose.onNodeWithText("只看同名同作者").performScrollTo().performClick()
+        waitText("暂无同名同作者结果")
+        compose.onNodeWithText("关联并选择章节").assertDoesNotExist()
+        compose.onNodeWithText("只看同名同作者").performScrollTo().performClick()
+        waitText("关联并选择章节")
+        assertEquals(1, requests.count { it.first == "/api/v1/search-jobs" })
+        assertEquals(1, requests.count { it.first.endsWith("/cancel") })
+        assertFalse(requests.any { it.first.endsWith("/collect") })
+        assertEquals("cancelled", state.jobState)
+    }
+
+    @Test fun interruptedSearchResumesTheSameJobAndRetainsPartialResults() {
+        var polls = 0
+        handler = { request -> when (request.path) {
+            "/api/v1/works/work" -> json("""{"id":"work","title":"山海来信","author":"行舟","versions":[]}""")
+            "/api/v1/search-jobs" -> json("""{"job_id":"search"}""")
+            "/api/v1/jobs/search" -> when (++polls) {
+                1 -> json("""{"state":"running","result":{"items":[{"name":"已返回作品"}]}}""")
+                2 -> json("""{"detail":{"message":"暂时断网"}}""").setResponseCode(503)
+                else -> json("""{"state":"succeeded","result":{"items":[{"name":"已返回作品"},{"name":"后续作品"}]}}""")
+            }
+            else -> json("{}")
+        } }
+        val repo = repository(); val state = NovelReaderSourceState()
+        compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize().padding(16.dp)) {
+            NovelReaderSourcesPanel(repo, publication(), "山海来信", "当前章", true, state) { _, _ -> }
+        } } } }
+        waitText("搜索可用书源")
+        compose.onNodeWithText("搜索可用书源").performScrollTo().performClick()
+        waitText("继续获取结果")
+        assertEquals(1, state.result!!.novelObjects("items").size)
+        compose.onNodeWithText("继续获取结果").performScrollTo().performClick()
+        compose.waitUntil(10_000) { state.jobState == "succeeded" }
+        assertEquals(2, state.result!!.novelObjects("items").size)
+        assertEquals(1, requests.count { it.first == "/api/v1/search-jobs" })
     }
 
     @Test fun aPartialDownloadHasRetryAndNeverClaimsOfflineFullBook() {

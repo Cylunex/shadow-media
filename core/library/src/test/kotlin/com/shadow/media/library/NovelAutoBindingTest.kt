@@ -8,6 +8,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NovelAutoBindingTest {
+    @Test fun matchingSourcesLeadWithoutDroppingAlternativesOrReorderingEqualMatches() {
+        val unrelated = row(author = "另一作者", id = "other")
+        val first = row(id = "first"); val second = row(id = "second")
+        val unknown = row(author = "", id = "unknown")
+        val rows = listOf(unrelated, first, unknown, second)
+        assertEquals(listOf(first, second, unrelated, unknown), novelWorkSourceResults(work(), rows))
+        assertEquals(listOf(first, second), novelWorkSourceResults(work(), rows, true))
+        assertEquals(rows, novelWorkSourceResults(null, rows))
+        assertTrue(novelWorkSourceResults(null, rows, true).isEmpty())
+    }
     private fun work(author: String = "行舟") = JSONObject().put("id", "work").put("title", "山海来信").put("author", author)
     private fun row(name: String = "山海来信", author: String = "行舟", id: String = "source") = JSONObject()
         .put("name", name).put("author", author).put("provider_id", id).put("bookUrl", "https://example.com/$id")

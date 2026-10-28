@@ -68,11 +68,12 @@ class NovelClientFlowTest {
     }
     private fun workSearchAutomaticallyAssociates(serverAuto: Boolean) {
         val result = JSONObject(row)
+        val other = JSONObject(row).put("author", "另一作者").put("bookUrl", "https://example.com/book/other").put("name", "同名外的候选")
         if (serverAuto) result.put("auto_bind", JSONObject().put("status", "bound").put("work_id", "work").put("binding_id", "b"))
         handler = { request -> when (request.path) {
-            "/novel/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true,"source_intake_reuse":true,"source_search_auto_bind":$serverAuto}}""")
-            "/novel/api/v1/jobs/search" -> json("""{"state":"succeeded","result":{"items":[$result]}}""")
-            "/novel/api/v1/source-results/collect" -> json("""{"work_id":"work","binding_id":"b","job_id":"toc"}""")
+            "/novel/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true,"source_intake_reuse":true,"source_search_auto_bind":$serverAuto,"source_version_prepare":$serverAuto}}""")
+            "/novel/api/v1/jobs/search" -> json("""{"state":"succeeded","result":{"items":[$other,$result]}}""")
+            "/novel/api/v1/source-results/collect" -> if (serverAuto) json("""{"work_id":"work","binding_id":"b","version_id":"v2","job_id":null}""") else json("""{"work_id":"work","binding_id":"b","job_id":"toc"}""")
             "/novel/api/v1/jobs/toc" -> json("""{"state":"succeeded","result":{"version_id":"v2"}}""")
             "/novel/api/v1/source-previews" -> json("""{"work_id":"work"}""")
             else -> browserResponse(request)
@@ -90,12 +91,16 @@ class NovelClientFlowTest {
         val body = JSONObject(requests.single { it.first.endsWith("/search-jobs") }.second)
         assertEquals(serverAuto, body.has("work_id"))
         if (serverAuto) assertEquals("work", body.getString("work_id"))
+        compose.onNodeWithText("只看同名同作者").performScrollTo().performClick()
+        compose.onNodeWithText("同名外的候选").assertDoesNotExist()
         compose.onNode(hasText("山海来信") and !hasSetTextAction()).performScrollTo().performClick()
         waitText("已自动关联")
         scrollTo("使用此来源继续阅读")
         compose.onNodeWithText("使用此来源继续阅读").performClick()
         compose.waitUntil(15_000) { opened == "v2" }
         assertEquals(1, requests.count { it.first.endsWith("/collect") })
+        assertEquals(serverAuto, JSONObject(requests.single { it.first.endsWith("/collect") }.second).optBoolean("reuse_version"))
+        if (serverAuto) assertFalse(requests.any { it.first.endsWith("/jobs/toc") })
         assertFalse(requests.any { it.first.contains("/progress") || it.first.contains("/chapters/") })
     }
     @Test fun existingServicesAutomaticallyAssociateExactWorkResults() = workSearchAutomaticallyAssociates(false)

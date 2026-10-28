@@ -8,7 +8,7 @@ import org.json.JSONArray
 fun readableNovelSource(row: JSONObject): Boolean =
     row.novelStrings("capabilities").containsAll(listOf("detail", "toc", "chapter"))
 
-data class NovelSourceFeatures(val searchModes: Boolean = false, val chapterOpen: Boolean = false, val intakeReuse: Boolean = false, val autoBind: Boolean = false)
+data class NovelSourceFeatures(val searchModes: Boolean = false, val chapterOpen: Boolean = false, val intakeReuse: Boolean = false, val autoBind: Boolean = false, val versionPrepare: Boolean = false)
 class NovelVersionSelectionRequired(val workId: String, val versionId: String) : IllegalStateException("版本间位置无法精确恢复，请从目录选择章节")
 
 data class NovelSourceOpening(val workId: String, val versionId: String, val chapterId: String? = null)
@@ -19,7 +19,8 @@ class NovelSourceSearch(private val api: NovelApi) {
         val caps = try { api.json(connection, listOf("integration")).optJSONObject("capabilities") }
         catch (e: NovelApiException) { if (e.status in setOf(404, 405)) null else throw e }
         return NovelSourceFeatures(caps?.optBoolean("source_search_modes") == true,
-            caps?.optBoolean("source_chapter_open") == true, caps?.optBoolean("source_intake_reuse") == true, caps?.optBoolean("source_search_auto_bind") == true)
+            caps?.optBoolean("source_chapter_open") == true, caps?.optBoolean("source_intake_reuse") == true, caps?.optBoolean("source_search_auto_bind") == true,
+            caps?.optBoolean("source_version_prepare") == true)
     }
     suspend fun search(connection: CatalogConnection, query: String, onUpdate: (JSONObject) -> Unit): JSONObject {
         return search(connection, query, NovelSearchOptions(), onUpdate = onUpdate)
@@ -35,7 +36,7 @@ class NovelSourceSearch(private val api: NovelApi) {
     }
 
     // A search across thousands of sources may outlive a screen visit. Cancellation still stops HTTP polling.
-    suspend fun resumeSearch(connection: CatalogConnection, id: String, onUpdate: (JSONObject) -> Unit): JSONObject = pollJob(connection, id, onUpdate)
+    suspend fun resumeSearch(connection: CatalogConnection, id: String, onUpdate: (JSONObject) -> Unit): JSONObject = pollJob(connection, id, onUpdate, allowCancelled = true)
 
     suspend fun bind(connection: CatalogConnection, workId: String, row: JSONObject): JSONObject {
         require(workId.isNotBlank() && readableNovelSource(row)) { "此来源暂无可读内容" }
@@ -69,6 +70,7 @@ class NovelSourceSearch(private val api: NovelApi) {
         row.optJSONObject("popularity")?.let { body.put("popularity", it) }
         workId?.let { body.put("work_id", it) }
         if (createNew) body.put("create_new", true)
+        if (features.versionPrepare) body.put("reuse_version", true)
         // Collection is idempotent. Keep the receipt even if a subsequent TOC job fails.
         return api.json(connection, listOf("source-results", "collect"), method = "POST", body = body).also {
             require(it.novelId("work_id") != null) { "收录结果与作品身份不一致" }
@@ -83,6 +85,7 @@ class NovelSourceSearch(private val api: NovelApi) {
     }
 
     suspend fun collectionVersion(connection: CatalogConnection, receipt: JSONObject): String {
+        if (receipt.novelId("job_id") == null) receipt.novelId("version_id")?.let { return it }
         val job = requireNotNull(receipt.novelId("job_id")) { "此来源没有可读目录任务" }
         return requireNotNull(awaitJob(connection, job) {}.optJSONObject("result")?.novelId("version_id")) { "目录尚无可读版本，请重试获取目录" }
     }
@@ -100,7 +103,7 @@ class NovelSourceSearch(private val api: NovelApi) {
 
     suspend fun awaitJob(connection: CatalogConnection, id: String, onUpdate: (JSONObject) -> Unit): JSONObject = withTimeout(60_000) { pollJob(connection, id, onUpdate) }
 
-    private suspend fun pollJob(connection: CatalogConnection, id: String, onUpdate: (JSONObject) -> Unit): JSONObject {
+    private suspend fun pollJob(connection: CatalogConnection, id: String, onUpdate: (JSONObject) -> Unit, allowCancelled: Boolean = false): JSONObject {
         // Read live state directly: a cached running job must never be treated as current progress.
         var job = api.json(connection, listOf("jobs", id))
         onUpdate(job)
@@ -111,7 +114,7 @@ class NovelSourceSearch(private val api: NovelApi) {
         }
         when (job.optString("state")) {
             "failed" -> error(job.optString("error").ifBlank { "书源操作失败，请重试" })
-            "cancelled" -> error("书源操作已取消，可重试")
+            "cancelled" -> if (!allowCancelled) error("书源操作已取消，可重试")
         }
         return job
     }

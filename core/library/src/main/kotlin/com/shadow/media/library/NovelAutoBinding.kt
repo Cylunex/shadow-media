@@ -19,6 +19,13 @@ fun sameNovelIdentity(work: JSONObject, source: JSONObject): Boolean {
 
 fun novelSourceIdentity(row: JSONObject): String = com.shadow.media.model.scopedContentId(row.optString("provider_id"), row.optString("bookUrl"))
 
+/** Stable ordering keeps streamed results usable; filtering never changes association rules. */
+fun novelWorkSourceResults(work: JSONObject?, rows: List<JSONObject>, matchingOnly: Boolean = false): List<JSONObject> {
+    if (work == null) return if (matchingOnly) emptyList() else rows
+    return rows.filter { !matchingOnly || sameNovelIdentity(work, it) }
+        .sortedByDescending { sameNovelIdentity(work, it) }
+}
+
 /** Compatible with existing Novel services. Association does not await/download chapter bodies or move progress. */
 suspend fun NovelSourceSearch.autoBindMatches(
     connection: CatalogConnection, work: JSONObject, rows: List<JSONObject>, features: NovelSourceFeatures,

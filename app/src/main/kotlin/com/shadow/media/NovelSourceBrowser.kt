@@ -22,6 +22,7 @@ internal class NovelBrowserState(initial: String = "") {
     var autoReceipts by mutableStateOf<Map<String, JSONObject>>(emptyMap())
     var autoFailures by mutableStateOf<Map<String, String>>(emptyMap())
     var autoRetry by mutableIntStateOf(0)
+    var matchingOnly by mutableStateOf(false)
     var keyword by mutableStateOf(initial)
     var submitted by mutableStateOf("")
     var precise by mutableStateOf(false)
@@ -209,8 +210,9 @@ internal class NovelBrowserState(initial: String = "") {
                     TextButton(onClick = { settings = true }) { Text("搜索设置与历史") }
                     TextButton(onClick = onManage) { Text("管理书源") }
                 }
-                if (bindingWork != null) {
+                if (bindingWork != null && !state.explore) {
                     Text("书名和作者一致的结果会自动关联；不会改变当前阅读位置。", style = MaterialTheme.typography.bodySmall)
+                    FilterChip(state.matchingOnly, { state.matchingOnly = !state.matchingOnly }, label = { Text("只看同名同作者") })
                     if (state.autoReceipts.isNotEmpty()) Text("已自动关联 ${state.autoReceipts.size} 个来源", style = MaterialTheme.typography.labelSmall)
                     if (state.autoFailures.isNotEmpty()) TextButton(onClick = { if (state.features?.autoBind == true) search() else state.autoRetry++ }) { Text("${state.autoFailures.size} 个来源未关联，重试") }
                 }
@@ -270,9 +272,13 @@ internal class NovelBrowserState(initial: String = "") {
                 }
             } else {
                 if (state.rows.isEmpty() && !busy && state.submitted.isNotBlank() && error == null) item { Text("本批未找到匹配项；仍可继续其他书源或单源下一页。") }
-                items(state.rows, key = ::novelResultKey) { row -> Column {
+                if (bindingWork != null && state.matchingOnly && state.rows.isNotEmpty() && novelWorkSourceResults(bindingWork, state.rows, true).isEmpty()) item {
+                    Text("暂无同名同作者结果，可关闭筛选查看全部；未知作者不会自动关联。", style = MaterialTheme.typography.bodySmall)
+                }
+                items(novelWorkSourceResults(bindingWork, state.rows, state.matchingOnly), key = ::novelResultKey) { row -> Column {
                     NovelSourceResultCard(row) { state.detail = row }
                     if (novelSourceIdentity(row) in state.autoReceipts) Text("已自动关联", style = MaterialTheme.typography.labelSmall)
+                    state.autoFailures[novelSourceIdentity(row)]?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 } }
                 if (state.pendingIds.isNotEmpty() && !busy && !state.searchRunning) item { TextButton(onClick = { search(state.pendingIds, state.pendingPage, true) }) { Text("重试尚未返回的 ${state.pendingIds.size} 个书源") } }
                 if (state.remaining.isNotEmpty()) item { Button(enabled = !busy, onClick = { search(state.remaining, append = true) }) { Text("继续搜索其他 ${state.remaining.size} 个书源") } }

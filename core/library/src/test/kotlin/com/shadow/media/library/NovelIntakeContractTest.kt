@@ -107,7 +107,8 @@ class NovelIntakeContractTest {
     @Test fun resumePollsOriginalJobAndRetainsCancelledPartialResultWithoutNewSearch() = server { s, api, c ->
         s.enqueue(MockResponse().setBody("""{"state":"cancelled","result":{"items":[{"name":"已返回"}],"remaining":27,"truncated":true}}"""))
         var last: JSONObject? = null
-        try { api.resumeSearch(c, "original") { last = it }; fail("cancelled") } catch (_: IllegalStateException) {}
+        val stopped = api.resumeSearch(c, "original") { last = it }
+        assertEquals("cancelled", stopped.getString("state"))
         assertEquals("已返回", last!!.getJSONObject("result").novelObjects("items").single().getString("name"))
         assertEquals("/novel/api/v1/jobs/original", s.takeRequest().path); assertEquals(1, s.requestCount)
     }

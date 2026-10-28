@@ -79,15 +79,15 @@ internal data class NovelIntakeAction(val read: Boolean = false, val chapterUrl:
         pending = action
         task.run {
             try {
-                if (receipt == null || retryDirectory || (action.read && receipt?.novelId("job_id") == null)) {
-                    receipt = repository.sourceSearch.collect(connection, detail, target, createNew, requireNotNull(supported))
+                if (receipt == null || retryDirectory || (action.read && receipt?.novelId("job_id") == null && receipt?.novelId("version_id") == null)) {
+                    receipt = repository.sourceSearch.collect(connection, detail, target, createNew, requireNotNull(supported).let { if (retryDirectory) it.copy(versionPrepare = false) else it })
                     chosenWork = receipt!!.getString("work_id")
                     version = null
                 }
                 candidates = emptyList()
                 val collected = requireNotNull(receipt)
                 task.message = "资料已收录" + if (collected.novelId("job_id") != null) "，正在获取目录；失败仍保留资料" else ""
-                if (collected.novelId("job_id") != null && version == null) version = repository.sourceSearch.collectionVersion(connection, collected)
+                if ((collected.novelId("job_id") != null || collected.novelId("version_id") != null) && version == null) version = repository.sourceSearch.collectionVersion(connection, collected)
                 if (action.read) {
                     val fixedVersion = requireNotNull(version) { "此来源暂无可读版本" }
                     val opening = if (action.chapterUrl != null) {

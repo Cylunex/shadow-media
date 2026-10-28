@@ -9,6 +9,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NovelSourceSearchTest {
+    @Test fun stoppedSearchKeepsResultsButCancelledDirectoryCannotBeOpened() = runBlocking {
+        val server = MockWebServer(); server.start()
+        try {
+            val body = """{"state":"cancelled","result":{"items":[{"name":"已返回作品"}]}}"""
+            repeat(2) { server.enqueue(MockResponse().setBody(body)) }
+            val client = NovelSourceSearch(NovelApi())
+            val result = client.resumeSearch(connection(server), "search") {}
+            assertEquals("已返回作品", result.getJSONObject("result").novelObjects("items").single().getString("name"))
+            try { client.awaitJob(connection(server), "directory") {}; fail("Cancelled directory must not succeed") }
+            catch (_: IllegalStateException) {}
+            assertEquals(2, server.requestCount)
+        } finally { server.shutdown() }
+    }
     private fun connection(server: MockWebServer) = CatalogConnection(name = "test", kind = CatalogKind.OPDS,
         url = server.url("/novel/").toString(), token = "REPLACE_TOKEN", allowHttp = true)
     private fun readableRow() = JSONObject("""{"provider_id":"source-a","bookUrl":"https://example.com/book/1","capabilities":["search","detail","toc","chapter"]}""")
