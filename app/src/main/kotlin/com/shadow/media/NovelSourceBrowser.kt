@@ -288,7 +288,9 @@ internal class NovelBrowserState(initial: String = "") {
                         val pid = source.optString("provider_id")
                         val next = novelSourceNextPage(source, state.searchChoices.any { it.optString("id") == pid && it.optBoolean("search_paginated") })
                         FlowRow { if (next != null) TextButton(enabled = !busy, onClick = { search(listOf(pid), next, true) }) { Text("此源第 $next 页") }
-                            if (!source.optBoolean("ok")) TextButton(enabled = !busy, onClick = { search(listOf(pid), source.optInt("page", 1), true) }) { Text("重试此源") }
+                            if (novelSourceNeedsRetry(source)) TextButton(enabled = !busy, onClick = { search(listOf(pid), source.optInt("page", 1), true) }) {
+                                Text(if (source.optBoolean("ok")) "补全此源关联" else "重试此源")
+                            }
                         }
                     }
                 }

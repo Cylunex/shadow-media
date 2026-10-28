@@ -102,7 +102,7 @@ class NovelReaderToolsUiTest {
 
     @Test fun stoppingSearchRetainsResultsAndFilteringDoesNotLaunchAnotherSearch() {
         val source = """{"provider_id":"s","provider_name":"备用站点","bookUrl":"https://example.com/book","name":"山海来信","author":"另一作者","capabilities":["detail","toc","chapter"]}"""
-        val result = """"result":{"items":[$source]}"""
+        val result = """"result":{"items":[$source],"sources":[{"provider_id":"s","ok":true,"auto_bind_complete":false}]}"""
         handler = { request -> when (request.path) {
             "/api/v1/works/work" -> json("""{"id":"work","title":"山海来信","author":"行舟","versions":[]}""")
             "/api/v1/integration" -> json("""{"capabilities":{"source_search_auto_bind":true}}""")
@@ -129,6 +129,13 @@ class NovelReaderToolsUiTest {
         assertEquals(1, requests.count { it.first.endsWith("/cancel") })
         assertFalse(requests.any { it.first.endsWith("/collect") })
         assertEquals("cancelled", state.jobState)
+        compose.onNodeWithText("书名或作者").performScrollTo().performTextReplacement("不同关键词")
+        compose.onNodeWithText("重试未完成的 1 个来源").performScrollTo().performClick()
+        compose.waitUntil(10_000) { requests.count { it.first == "/api/v1/search-jobs" } == 2 }
+        val retry = JSONObject(requests.last { it.first == "/api/v1/search-jobs" }.second)
+        assertEquals("山海来信", retry.getString("q"))
+        assertEquals(listOf("s"), retry.novelStrings("provider_ids"))
+        assertEquals(1, state.result!!.novelObjects("items").size)
     }
 
     @Test fun interruptedSearchResumesTheSameJobAndRetainsPartialResults() {

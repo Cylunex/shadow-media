@@ -4,6 +4,7 @@ import java.text.Normalizer
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
+import org.json.JSONArray
 
 /** Match identities, never fuzzy titles, aliases, missing authors or the user's search keyword. */
 fun sameNovelIdentity(work: JSONObject, source: JSONObject): Boolean {
@@ -24,6 +25,19 @@ fun novelWorkSourceResults(work: JSONObject?, rows: List<JSONObject>, matchingOn
     if (work == null) return if (matchingOnly) emptyList() else rows
     return rows.filter { !matchingOnly || sameNovelIdentity(work, it) }
         .sortedByDescending { sameNovelIdentity(work, it) }
+}
+
+fun novelSourceNeedsRetry(source: JSONObject): Boolean = !source.optBoolean("ok") ||
+    !source.optBoolean("auto_bind_complete", true) || (source.optJSONObject("auto_bind")?.optInt("failed") ?: 0) > 0
+
+/** Retrying a subset replaces its receipts without dropping successful results from other sources. */
+fun mergeNovelSourceRetry(base: JSONObject?, incoming: JSONObject): JSONObject {
+    if (base == null) return incoming
+    return JSONObject(incoming.toString()).put("items", JSONArray(
+        (base.novelObjects("items") + incoming.novelObjects("items")).associateBy(::novelSourceIdentity).values.toList()
+    )).put("sources", JSONArray(
+        (base.novelObjects("sources") + incoming.novelObjects("sources")).associateBy { it.optString("provider_id") }.values.toList()
+    ))
 }
 
 /** Compatible with existing Novel services. Association does not await/download chapter bodies or move progress. */

@@ -8,6 +8,22 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NovelAutoBindingTest {
+    @Test fun retryIncludesIncompleteAssociationsAndMergesReceiptsWithoutLosingOtherSources() {
+        val incomplete = JSONObject("""{"provider_id":"a","ok":true,"auto_bind_complete":false}""")
+        assertTrue(novelSourceNeedsRetry(incomplete))
+        assertTrue(novelSourceNeedsRetry(JSONObject("""{"ok":true,"auto_bind":{"failed":1}}""")))
+        assertFalse(novelSourceNeedsRetry(JSONObject("""{"ok":true,"auto_bind":{"conflict":1,"skipped":2}}""")))
+        assertFalse(novelSourceNeedsRetry(JSONObject("""{"ok":true}""")))
+        val base = JSONObject().put("items", JSONArray(listOf(row(id = "a"), row(id = "b"))))
+            .put("sources", JSONArray(listOf(incomplete, JSONObject().put("provider_id", "b").put("ok", true))))
+        val retry = JSONObject().put("items", JSONArray(listOf(row(id = "a").put("auto_bind", JSONObject().put("status", "bound")))))
+            .put("sources", JSONArray(listOf(JSONObject().put("provider_id", "a").put("ok", true).put("auto_bind_complete", true))))
+        val merged = mergeNovelSourceRetry(base, retry)
+        assertEquals(2, merged.novelObjects("items").size)
+        assertEquals("bound", merged.novelObjects("items").first().getJSONObject("auto_bind").getString("status"))
+        assertFalse(merged.novelObjects("sources").any(::novelSourceNeedsRetry))
+        assertTrue(base.novelObjects("sources").any(::novelSourceNeedsRetry))
+    }
     @Test fun matchingSourcesLeadWithoutDroppingAlternativesOrReorderingEqualMatches() {
         val unrelated = row(author = "另一作者", id = "other")
         val first = row(id = "first"); val second = row(id = "second")

@@ -23,10 +23,12 @@ internal class NovelReaderSourceState {
     var autoRetry by mutableIntStateOf(0)
     var matchingOnly by mutableStateOf(false)
     var query by mutableStateOf("")
+    var submitted by mutableStateOf("")
     var jobId by mutableStateOf<String?>(null)
     var jobState by mutableStateOf("")
     val searchRunning get() = jobId != null && jobState !in setOf("succeeded", "failed", "cancelled")
     var result by mutableStateOf<JSONObject?>(null)
+    var searchBase: JSONObject? = null
     var selectedVersion by mutableStateOf<String?>(null)
     var receipt by mutableStateOf<JSONObject?>(null)
     var listIndex = 0
@@ -77,7 +79,10 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
             finally { busy = false }
         }
     }
-    fun update(job: JSONObject) { state.jobState = job.optString("state"); state.result = job.optJSONObject("result") ?: state.result }
+    fun update(job: JSONObject) {
+        state.jobState = job.optString("state")
+        job.optJSONObject("result")?.let { state.result = mergeNovelSourceRetry(state.searchBase, it) }
+    }
     fun runSearch(stop: Boolean = false, block: suspend ((JSONObject) -> Unit) -> Unit) {
         searchAction?.cancel()
         val generation = ++searchGeneration
@@ -92,14 +97,17 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
     fun resumeSearch() = runSearch { receive ->
         repository.sourceSearch.resumeSearch(requireNotNull(c), requireNotNull(state.jobId), receive)
     }
-    fun searchSources() = runSearch { receive ->
+    fun searchSources(providerIds: List<String>? = null) = runSearch { receive ->
         val connection = requireNotNull(c)
         if (state.searchRunning) repository.sourceSearch.cancel(connection, requireNotNull(state.jobId))
         val features = repository.sourceSearch.features(connection)
-        state.result = null; state.jobId = null; state.jobState = ""
-        if (features.autoBind) state.autoReceipts = emptyMap()
-        repository.sourceSearch.search(connection, state.query,
-            NovelSearchOptions(mode = if (features.searchModes) "auto" else null, workId = publication.workId.takeIf { features.autoBind }),
+        if (providerIds == null) state.submitted = state.query.trim()
+        state.searchBase = state.result.takeIf { providerIds != null }
+        state.result = state.searchBase; state.jobId = null; state.jobState = ""
+        if (features.autoBind && providerIds == null) state.autoReceipts = emptyMap()
+        repository.sourceSearch.search(connection, state.submitted,
+            NovelSearchOptions(mode = if (features.searchModes) { if (providerIds == null) "auto" else "all" } else null,
+                providerIds = providerIds, workId = publication.workId.takeIf { features.autoBind }),
             onJob = { state.jobId = it; state.jobState = "queued" }, onUpdate = receive)
     }
     fun stopSearch() = runSearch(stop = true) { receive ->
@@ -198,7 +206,7 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
             }) { Text("${state.autoFailures.size} 个来源未关联，重试") }
             OutlinedTextField(state.query, { state.query = it.take(200) }, singleLine = true, label = { Text("书名或作者") }, modifier = Modifier.fillMaxWidth(), enabled = !busy && !searching)
             Row {
-                TextButton(enabled = online && enabled && !busy && !searching && state.query.isNotBlank(), onClick = ::searchSources) { Text("搜索可用书源") }
+                TextButton(enabled = online && enabled && !busy && !searching && state.query.isNotBlank(), onClick = { searchSources() }) { Text("搜索可用书源") }
                 if (searching && state.searchRunning) TextButton(enabled = !stopping, onClick = ::stopSearch) { Text(if (stopping) "正在停止" else "停止搜索") }
             }
             searchError?.let {
@@ -210,6 +218,11 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
             state.result?.let { result ->
                 Text("找到 ${result.novelObjects("items").count(::readableNovelSource)} 个可读来源" +
                     if (result.optBoolean("truncated")) " · 当前为部分结果，可缩小关键词继续查找" else "", style = MaterialTheme.typography.labelSmall)
+                val retrySources = result.novelObjects("sources").filter(::novelSourceNeedsRetry)
+                    .mapNotNull { it.novelId("provider_id") }.distinct()
+                if (retrySources.isNotEmpty()) TextButton(enabled = online && !busy && !searching, onClick = { searchSources(retrySources) }) {
+                    Text("重试未完成的 ${retrySources.size} 个来源")
+                }
             }
             if (state.matchingOnly && state.result != null && novelWorkSourceResults(work, state.result!!.novelObjects("items").filter(::readableNovelSource), true).isEmpty()) {
                 Text("暂无同名同作者结果，可关闭筛选查看全部。", style = MaterialTheme.typography.bodySmall)
