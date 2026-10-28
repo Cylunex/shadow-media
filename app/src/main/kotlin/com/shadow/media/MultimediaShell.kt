@@ -25,6 +25,8 @@ import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import com.shadow.media.library.CatalogKind
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,9 +61,6 @@ import com.shadow.media.library.LibraryRepository
 import com.shadow.media.reading.ComicActivity
 import com.shadow.media.reading.ReaderActivity
 
-private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to Icons.Rounded.LiveTv, "阅读" to Icons.AutoMirrored.Rounded.MenuBook,
-    "音频" to Icons.Rounded.Headphones, "来源" to Icons.Rounded.Storage)
-
 @Composable fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     LaunchedEffect(state.screen) { if (state.screen != Screen.EXTERNAL_PLAYER) container.videoQueue.deactivate() }
@@ -69,8 +68,19 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     val scope = rememberCoroutineScope()
     val pendingSync by container.library.dao.pendingCount().collectAsStateWithLifecycle(0)
     val progressError by com.shadow.media.library.ProgressWriter.error.collectAsStateWithLifecycle()
-    var tab by rememberSaveable { mutableIntStateOf(0) }
-    var musicTab by rememberSaveable { mutableStateOf(false) }
+    val navigationPreferences = remember { context.getSharedPreferences("media_navigation", 0) }
+    var moduleKey by rememberSaveable { mutableStateOf(navigationPreferences.getString("module", MediaModule.VIDEO.name)) }
+    val module = MediaModule.restore(moduleKey)
+    var destinationKey by rememberSaveable(module.name) { mutableStateOf(navigationPreferences.getString("tab:${module.name}", null)) }
+    val destination = module.destination(destinationKey)
+    LaunchedEffect(module, destination, state.screen) {
+        if (state.screen in setOf(Screen.HOME, Screen.SOURCES) &&
+            (module == MediaModule.LIVE || destination == MediaDestination.VIDEO_SOURCES)) viewModel.refreshExternalSources()
+    }
+    val pageStates = rememberSaveableStateHolder()
+    var toolsExpanded by remember { mutableStateOf(false) }
+    var generalSettings by rememberSaveable { mutableStateOf(false) }
+    var localShelf by rememberSaveable { mutableStateOf(false) }
     var audioExpanded by rememberSaveable { mutableStateOf(false) }
     var controller by remember { mutableStateOf<MediaController?>(null) }
     val audioState = rememberAudioUi(controller, visible = false)
@@ -92,7 +102,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     var workAsset by remember { mutableStateOf<LibraryAssetEntity?>(null) }
     var offlineScreen by rememberSaveable { mutableStateOf(false) }
     var catalogScreen by rememberSaveable { mutableStateOf(false) }
-    var novelScreen by rememberSaveable { mutableStateOf(false) }
+    var allCatalogs by rememberSaveable { mutableStateOf(false) }
     val playerScreen = state.screen in setOf(Screen.PLAYER, Screen.EXTERNAL_PLAYER)
     val television = LocalConfiguration.current.uiMode and Configuration.UI_MODE_TYPE_MASK == Configuration.UI_MODE_TYPE_TELEVISION
     DisposableEffect(Unit) {
@@ -184,41 +194,59 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             }
         }
     }
-    fun select(index: Int) { localVideoScreen = false; tab = index; audioExpanded = false; catalogScreen = false; novelScreen = false; offlineScreen = false; continueScreen = false; viewModel.showHome() }
+    fun resetUtility() {
+        localVideoScreen = false; catalogScreen = false; offlineScreen = false; continueScreen = false
+        generalSettings = false; localShelf = false; audioExpanded = false; toolsExpanded = false; allCatalogs = false
+    }
+    fun selectModule(value: MediaModule) {
+        if (value == module) return
+        resetUtility(); moduleKey = value.name
+        navigationPreferences.edit().putString("module", value.name).apply()
+        viewModel.showHome()
+    }
+    fun selectDestination(value: MediaDestination) {
+        resetUtility(); destinationKey = value.name
+        navigationPreferences.edit().putString("tab:${module.name}", value.name).apply()
+        viewModel.showHome()
+    }
+    fun returnToModule() { resetUtility(); viewModel.showHome() }
     if (playerScreen) { LegacyMediaRoot(viewModel, container); return }
     BackHandler(enabled = audioExpanded) { audioExpanded = false }
-    Scaffold(bottomBar = {
-        if (!television && !audioExpanded) Column {
-            if (audioState.id != null) AudioMiniBar(controller, onOpen = { audioExpanded = true }, onToggle = { controller?.let { toggleAudio(it) } })
-            NavigationBar(containerColor = MaterialTheme.colorScheme.background) {
-                destinations.forEachIndexed { index, (title, icon) -> NavigationBarItem(selected = tab == index, onClick = { select(index) }, icon = { Icon(icon, title) }, label = { Text(title) }) }
+    BackHandler(enabled = localShelf || generalSettings) { returnToModule() }
+    Scaffold(
+        topBar = {
+            if (!audioExpanded) MediaModuleHeader(module, ::selectModule, { toolsExpanded = true }, {
+                resetUtility(); generalSettings = true; viewModel.showHome()
+            })
+        },
+        bottomBar = {
+            if (!audioExpanded) Column {
+                if (audioState.id != null) AudioMiniBar(controller, onOpen = { audioExpanded = true }, onToggle = { controller?.let { toggleAudio(it) } })
+                if (!television) MediaModuleNavigation(module, destination, ::selectDestination)
             }
-        }
-    }) { padding ->
-        Row(Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding())) {
-            if (television && !audioExpanded) NavigationRail(Modifier.fillMaxHeight().statusBarsPadding(), containerColor = MaterialTheme.colorScheme.background) {
-                Text("SHADOW", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.labelLarge)
-                destinations.forEachIndexed { index, (title, icon) -> NavigationRailItem(selected = tab == index, onClick = { select(index) }, icon = { Icon(icon, title) }, label = { Text(title) }) }
-                if (audioState.id != null) NavigationRailItem(selected = false, onClick = { audioExpanded = true }, icon = { Icon(Icons.Rounded.GraphicEq, "正在播放") })
+        },
+    ) { padding ->
+        Row(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
+            if (television && !audioExpanded && module.hasBottomNavigation) NavigationRail(containerColor = MaterialTheme.colorScheme.background) {
+                module.destinations.forEach { item -> NavigationRailItem(selected = destination == item,
+                    onClick = { selectDestination(item) }, icon = { Icon(item.icon, null) }, label = { Text(item.title) }) }
             }
             Column(Modifier.weight(1f)) {
                 CastPlaybackBar(container)
-                if (tab == 3 && !audioExpanded && !catalogScreen && state.screen == Screen.HOME) {
-                    Row(Modifier.statusBarsPadding().padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        FilterChip(!musicTab, onClick = { musicTab = false }, label = { Text("听书") })
-                        FilterChip(musicTab, onClick = { musicTab = true }, label = { Text("音乐") })
-                    }
-                }
+                pageStates.SaveableStateProvider(module.name) {
                 when {
-                    novelScreen -> NovelScreen(container.novel, onBack = { novelScreen = false })
                     audioExpanded -> AudioNowPlaying(controller, container.library, onBack = { audioExpanded = false })
-                    localVideoScreen && !continueScreen -> LocalVideosScreen(container, viewModel, onBack = { localVideoScreen = false }, onContinue = { continueScreen = true })
-                    continueScreen -> ContinueScreen(container, onBack = { continueScreen = false }, onOpen = ::open, onLegacy = viewModel::continueLegacy)
-                    offlineScreen -> OfflineScreen(container, onBack = { offlineScreen = false }, onOpen = { asset ->
+                    localVideoScreen && !continueScreen -> LocalVideosScreen(container, viewModel, onBack = ::returnToModule, onContinue = { continueScreen = true })
+                    continueScreen -> ContinueScreen(container, onBack = ::returnToModule, onOpen = ::open, onLegacy = viewModel::continueLegacy)
+                    offlineScreen -> OfflineScreen(container, onBack = ::returnToModule, onOpen = { asset ->
                         if (asset.kind in setOf("MOVIE", "EPISODE")) viewModel.playOfflineAsset(asset) else open(asset)
                     })
-                    tab == 3 && musicTab && state.screen == Screen.HOME && !catalogScreen -> MusicScreen(container, controller, onPlaying = { audioExpanded = true })
-                    catalogScreen -> CatalogSourcesScreen(container.catalogs, onConnectionsChanged = viewModel::refreshProviderConnections, onBack = { catalogScreen = false }, onOpen = ::open, onQueue = { tracks ->
+                    state.screen != Screen.HOME -> LegacyMediaRoot(viewModel, container)
+                    catalogScreen || (!generalSettings && destination in setOf(MediaDestination.COMIC_LIBRARY, MediaDestination.AUDIO_LIBRARY)) -> CatalogSourcesScreen(container.catalogs,
+                        allowedKinds = if (allCatalogs) CatalogKind.entries.toSet() else module.catalogKinds(),
+                        contentModule = if (allCatalogs) null else module,
+                        title = if (allCatalogs) "全部内容来源" else if (catalogScreen) "${module.title}来源" else destination.title,
+                        onConnectionsChanged = viewModel::refreshProviderConnections, onBack = { if (catalogScreen) catalogScreen = false else selectDestination(module.destinations.first()) }, onOpen = ::open, onQueue = { tracks ->
                         val control = controller
                         if (control != null && tracks.isNotEmpty()) scope.launch {
                             try {
@@ -230,7 +258,15 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                             catch (_: Exception) { message = "听书队列加载失败，请检查来源或重新添加" }
                         } else if (control == null) message = "音频服务正在连接，请稍后重试"
                     })
-                    (tab == 2 || tab == 3) && state.screen == Screen.HOME -> PublicationShelf(container.library, audio = tab == 3, onNovel = { novelScreen = true }, onImport = { importer.launch(arrayOf("*/*")) }, onOpen = ::open,
+                    generalSettings -> SourcesHub(state, viewModel, pendingSync, onImport = { importer.launch(arrayOf("*/*")) },
+                        onCatalogs = { generalSettings = false; catalogScreen = true; allCatalogs = true }, onNovel = { selectModule(MediaModule.NOVEL); generalSettings = false },
+                        onOffline = { offlineScreen = true }, onContinue = { continueScreen = true }, onVideos = { localVideoScreen = true })
+                    module == MediaModule.NOVEL && !localShelf -> NovelScreen(container.novel, onBack = ::returnToModule,
+                        rootSection = destination, onLocalShelf = { localShelf = true })
+                    module == MediaModule.MUSIC -> MusicScreen(container, controller, onPlaying = { audioExpanded = true },
+                        rootSection = if (destination == MediaDestination.PLAYLISTS) "歌单" else "音乐库")
+                    module in setOf(MediaModule.COMIC, MediaModule.AUDIOBOOK) || localShelf -> PublicationShelf(container.library,
+                        module = module, onNovel = { localShelf = false }, onImport = { importer.launch(arrayOf("*/*")) }, onOpen = ::open,
                         onDirectory = { directoryImporter.launch(null) }, onAssociate = { workAsset = it },
                         onOffline = { item -> scope.launch {
                             try { container.offline.enqueue(item); message = "已加入离线任务" }
@@ -245,11 +281,30 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
                             }
                             container.library.remove(item.id)
                         } })
-                    tab == 4 && state.screen == Screen.HOME -> SourcesHub(state, viewModel, pendingSync, onImport = { importer.launch(arrayOf("*/*")) }, onCatalogs = { catalogScreen = true }, onNovel = { novelScreen = true }, onOffline = { offlineScreen = true }, onContinue = { continueScreen = true }, onVideos = { localVideoScreen = true })
-                    tab == 1 && state.screen == Screen.HOME -> LiveLanding(state, container, viewModel)
+                    module == MediaModule.LIVE -> LiveLanding(state, container, viewModel)
+                    destination == MediaDestination.LIBRARIES -> VideoLibraryLanding(state, viewModel, onLocal = { localVideoScreen = true })
+                    destination == MediaDestination.VIDEO_SOURCES -> LegacyMediaRoot(viewModel, container, rootScreen = Screen.SOURCES)
                     else -> LegacyMediaRoot(viewModel, container)
                 }
+                }
             }
+        }
+    }
+    if (toolsExpanded) ModalBottomSheet(onDismissRequest = { toolsExpanded = false }) {
+        Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("${module.title}工具", style = MaterialTheme.typography.titleLarge)
+            TextButton(onClick = { resetUtility(); offlineScreen = true }) { Text("下载与离线 · 所有模块") }
+            TextButton(onClick = { resetUtility(); continueScreen = true }) { Text("继续播放与阅读 · 所有模块") }
+            when (module) {
+                MediaModule.NOVEL -> TextButton(onClick = { resetUtility(); viewModel.showHome(); localShelf = true }) { Text("本机书架与导入") }
+                MediaModule.COMIC -> TextButton(onClick = { toolsExpanded = false; directoryImporter.launch(null) }) { Text("导入漫画图片目录") }
+                MediaModule.VIDEO -> TextButton(onClick = { resetUtility(); viewModel.showServers() }) { Text("影视服务连接") }
+                MediaModule.LIVE -> TextButton(onClick = { resetUtility(); viewModel.showSources() }) { Text("管理直播订阅") }
+                else -> Unit
+            }
+            if (module.catalogKinds().isNotEmpty()) TextButton(onClick = { resetUtility(); viewModel.showHome(); catalogScreen = true }) { Text("${module.title}来源连接") }
+            TextButton(onClick = { resetUtility(); viewModel.showSettings() }) { Text("功能与播放设置") }
+            TextButton(onClick = { resetUtility(); generalSettings = true; viewModel.showHome() }) { Text("通用设置与全部连接") }
         }
     }
     importing?.let { label -> AlertDialog(onDismissRequest = {}, title = { Text(label) }, text = { LinearProgressIndicator(Modifier.fillMaxWidth()) }, confirmButton = { TextButton(onClick = { importJob?.cancel() }) { Text("取消") } }) }
@@ -278,35 +333,36 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
 }
 
 @Composable private fun PublicationShelf(
-    library: LibraryRepository, audio: Boolean, onNovel: () -> Unit,
+    library: LibraryRepository, module: MediaModule, onNovel: () -> Unit,
     onImport: () -> Unit, onDirectory: () -> Unit, onAssociate: (LibraryAssetEntity) -> Unit, onOffline: (LibraryAssetEntity) -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onFavorite: (LibraryAssetEntity) -> Unit, onRemove: (LibraryAssetEntity) -> Unit,
 ) {
-    var filter by rememberSaveable(audio) { mutableStateOf("全部") }
-    var query by rememberSaveable(audio) { mutableStateOf("") }
-    var sort by rememberSaveable(audio) { mutableStateOf(false) }
+    val audio = module == MediaModule.AUDIOBOOK
+    var filter by rememberSaveable(module) { mutableStateOf("全部") }
+    var query by rememberSaveable(module) { mutableStateOf("") }
+    var sort by rememberSaveable(module) { mutableStateOf(false) }
     var selected by remember { mutableStateOf<LibraryAssetEntity?>(null) }
     var removing by remember { mutableStateOf<LibraryAssetEntity?>(null) }
-    val kinds = remember(audio, filter) { if (audio) listOf("AUDIOBOOK") else when (filter) { "小说" -> listOf("BOOK"); "漫画" -> listOf("COMIC"); else -> listOf("BOOK", "COMIC") } }
+    val kinds = remember(module) { module.assetKinds.toList() }
     val flow = remember(library, kinds, query, filter, sort) { Pager(PagingConfig(60, enablePlaceholders = false)) {
         library.dao.shelf(kinds, "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%", filter == "收藏", filter == "未完成", sort)
     }.flow }
     val books = flow.collectAsLazyPagingItems()
     val recentRow by remember(kinds) { library.dao.continuing(kinds) }.collectAsStateWithLifecycle(null)
     val recent = recentRow?.asset
-    LazyVerticalGrid(columns = GridCells.Adaptive(if (audio) 144.dp else 116.dp), Modifier.fillMaxSize().statusBarsPadding(),
-        contentPadding = PaddingValues(20.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+    LazyVerticalGrid(columns = GridCells.Adaptive(100.dp), Modifier.fillMaxSize().statusBarsPadding(),
+        contentPadding = PaddingValues(20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) { Text(if (audio) "听书" else "阅读", style = MaterialTheme.typography.headlineLarge); Text(if (audio) "让故事陪你走远一点" else "把时间留给下一章", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    Column(Modifier.weight(1f)) { Text(if (module == MediaModule.NOVEL) "本机书架" else "我的书架", style = MaterialTheme.typography.headlineLarge); Text(if (audio) "让故事陪你走远一点" else "把时间留给下一章", color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     IconButton(onClick = onImport) { Icon(Icons.Rounded.Add, "导入文件") }
-                    if (!audio) IconButton(onClick = onDirectory) { Icon(Icons.Rounded.FolderOpen, "导入漫画图片目录") }
+                    if (module == MediaModule.COMIC) IconButton(onClick = onDirectory) { Icon(Icons.Rounded.FolderOpen, "导入漫画图片目录") }
                 }
-                if (!audio) FilledTonalButton(onClick = onNovel, modifier = Modifier.fillMaxWidth()) { Text("Shadow Novel · 书城与书单") }
+                if (module == MediaModule.NOVEL) TextButton(onClick = onNovel) { Text("返回小说服务书架") }
                 Spacer(Modifier.height(20.dp))
                 OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("搜索标题、作者") }, leadingIcon = { Icon(Icons.Rounded.Search, null) }, singleLine = true, shape = RoundedCornerShape(18.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    (if (audio) listOf("全部", "未完成", "收藏") else listOf("全部", "小说", "漫画", "收藏")).forEach { label -> FilterChip(filter == label, { filter = label }, { Text(label) }) }
+                    listOf("全部", "未完成", "收藏").forEach { label -> FilterChip(filter == label, { filter = label }, { Text(label) }) }
                 }
             }
         }
@@ -331,7 +387,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             Column(Modifier.fillMaxWidth().padding(vertical = 38.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Icon(if (audio) Icons.Rounded.Headphones else Icons.AutoMirrored.Rounded.MenuBook, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
                 Text(if (query.isNotBlank()) "没有匹配的作品" else if (audio) "从第一本有声书开始" else "这里放得下你的整个书架", style = MaterialTheme.typography.titleMedium)
-                Text(if (audio) "导入 M4B、MP3、M4A、FLAC 等音频" else "导入 EPUB、TXT、PDF、CBZ 或 ZIP", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(if (audio) "导入 M4B、MP3、M4A、FLAC 等音频" else if (module == MediaModule.COMIC) "导入 CBZ、ZIP 或图片目录" else "导入 EPUB、TXT 或 PDF", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Button(onClick = onImport) { Text("导入文件") }
             }
         }
@@ -341,12 +397,12 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             Column {
             Box(Modifier.clickable { onOpen(item) }) {
                 PublicationCover(item, Modifier.fillMaxWidth().aspectRatio(if (audio) 1f else .69f))
-                if (item.favorite) Icon(Icons.Rounded.Favorite, "已收藏", Modifier.align(Alignment.TopEnd).padding(8.dp).size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                if (item.favorite) Icon(Icons.Rounded.Favorite, "已收藏", Modifier.align(Alignment.TopStart).padding(8.dp).size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                IconButton(onClick = { selected = item }, modifier = Modifier.align(Alignment.TopEnd)) {
+                    Icon(Icons.Rounded.MoreHoriz, "作品选项", Modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = .92f), RoundedCornerShape(8.dp)).padding(3.dp))
+                }
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(item.title, Modifier.weight(1f).clickable { onOpen(item) }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
-                IconButton(onClick = { selected = item }) { Icon(Icons.Rounded.MoreHoriz, "作品选项") }
-            }
+            Text(item.title, Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 4.dp).clickable { onOpen(item) }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
             Text(item.author.ifBlank { item.format.uppercase() }, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, style = MaterialTheme.typography.labelSmall)
             AssetAvailabilityLabel(item.providerId, item.itemId, when { row.completed == true -> "已完成"; row.progression != null -> "${(row.progression!!.coerceIn(0.0, 1.0) * 100).toInt()}%"; row.updatedAt != null -> "位置已保存"; else -> null })
             row.progression?.let { LinearProgressIndicator(progress = { it.toFloat() }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp), trackColor = MaterialTheme.colorScheme.surfaceVariant) }
@@ -368,12 +424,12 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
 }
 
 @Composable private fun PublicationCover(item: LibraryAssetEntity, modifier: Modifier) {
-    Box(modifier.clip(RoundedCornerShape(10.dp)).background(Brush.linearGradient(listOf(Color(0xFF3B4657), Color(0xFF1E252F))))) {
+    Box(modifier.clip(RoundedCornerShape(14.dp)).background(Brush.linearGradient(listOf(MaterialTheme.colorScheme.surfaceContainerHigh, MaterialTheme.colorScheme.surfaceContainer)))) {
         if (item.coverPath.isNotBlank()) AsyncImage(File(item.coverPath), item.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         else Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
-            Icon(if (item.kind in setOf("AUDIOBOOK", "MUSIC", "PODCAST")) Icons.Rounded.Headphones else Icons.AutoMirrored.Rounded.MenuBook, null, tint = Color(0xFFB5C7E0))
-            Text(item.title, color = Color.White, maxLines = 4, fontWeight = FontWeight.SemiBold)
-            Text(item.format.uppercase(), style = MaterialTheme.typography.labelSmall, color = Color(0xFFB5C7E0))
+            Icon(if (item.kind in setOf("AUDIOBOOK", "MUSIC", "PODCAST")) Icons.Rounded.Headphones else Icons.AutoMirrored.Rounded.MenuBook, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(item.title, color = MaterialTheme.colorScheme.onSurface, maxLines = 4, fontWeight = FontWeight.SemiBold)
+            Text(item.format.uppercase(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -385,7 +441,7 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { FilledTonalButton(onClick = onContinue, modifier = Modifier.fillMaxWidth()) { Text("继续播放与阅读") } }
         item { OutlinedButton(onClick = onOffline, modifier = Modifier.fillMaxWidth()) { Text("离线任务与存储") } }
-        item { Text("来源", style = MaterialTheme.typography.headlineLarge); Text("你的内容，按自己的方式连接", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        item { Text("通用设置", style = MaterialTheme.typography.headlineLarge); Text("你的内容，按自己的方式连接", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item { SourceTile("Emby 媒体服务", "${state.savedSessions.size} 个已保存账号", Icons.Rounded.Dns, viewModel::showServers) }
         item { SourceTile("网络存储", "OpenList / WebDAV / SMB · ${state.networkStorages.size} 个连接", Icons.Rounded.FolderOpen, viewModel::showNetworkStorages) }
         item { SourceTile("影视与直播订阅", "${state.externalSources.size} 个订阅 · 导入、更新与诊断", Icons.Rounded.LiveTv, viewModel::showSources) }
@@ -411,6 +467,25 @@ private val destinations = listOf("影视" to Icons.Rounded.Movie, "直播" to I
             Column(Modifier.weight(1f)) { Text(title, style = MaterialTheme.typography.titleMedium); Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) }
             Icon(Icons.Rounded.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+    }
+}
+
+internal fun MediaModule.catalogKinds(): Set<CatalogKind> = when (this) {
+    MediaModule.NOVEL -> setOf(CatalogKind.OPDS)
+    MediaModule.COMIC -> setOf(CatalogKind.KOMGA, CatalogKind.OPDS)
+    MediaModule.AUDIOBOOK -> setOf(CatalogKind.AUDIOBOOKSHELF)
+    MediaModule.MUSIC -> setOf(CatalogKind.JELLYFIN, CatalogKind.OPENSUBSONIC)
+    else -> emptySet()
+}
+
+@Composable private fun VideoLibraryLanding(state: MainUiState, viewModel: MainViewModel, onLocal: () -> Unit) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text("媒体库", style = MaterialTheme.typography.headlineMedium) }
+        item { Text("浏览自己的电影与剧集", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        item { SourceTile("私人影视库", if (state.session == null) "连接影视服务" else "电影、剧集与合集", Icons.Rounded.VideoLibrary,
+            if (state.session == null) viewModel::showServers else viewModel::showLibraries) }
+        item { SourceTile("网络媒体库", "浏览已连接的网络存储", Icons.Rounded.FolderOpen, viewModel::showNetworkStorages) }
+        item { SourceTile("本机视频", "文件、文件夹与播放链接", Icons.Rounded.PhoneAndroid, onLocal) }
     }
 }
 

@@ -34,12 +34,20 @@ private data class NovelRoute(val kind: String, val id: String = "", val name: S
 private data class NovelDestination(val route: NovelRoute, val query: NovelQuery, val search: String, val data: JSONObject?, val navigation: JSONObject, val offset: Int)
 private data class NovelEdit(val title: String, val fields: List<Pair<String, String>>, val save: suspend (Map<String, String>) -> Unit)
 
-@Composable internal fun NovelScreen(repository: NovelRepository, onBack: () -> Unit) {
+private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (section) {
+    MediaDestination.SHELF -> NovelRoute("works", "shelf")
+    MediaDestination.DISCOVERY -> NovelRoute("discovery")
+    MediaDestination.BOOK_SOURCES -> NovelRoute("sources")
+    else -> NovelRoute("home")
+}
+
+@Composable internal fun NovelScreen(repository: NovelRepository, onBack: () -> Unit,
+    rootSection: MediaDestination? = null, onLocalShelf: (() -> Unit)? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var connections by remember { mutableStateOf<List<CatalogConnection>>(emptyList()) }
     var connection by remember { mutableStateOf<CatalogConnection?>(null) }
-    var route by remember { mutableStateOf(NovelRoute("home")) }
+    var route by remember { mutableStateOf(novelRootRoute(rootSection)) }
     var stack by remember { mutableStateOf<List<NovelDestination>>(emptyList()) }
     var query by remember { mutableStateOf(NovelQuery()) }
     var search by remember { mutableStateOf("") }
@@ -53,6 +61,7 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     var connectionEditor by remember { mutableStateOf(false) }
     var editingConnection by remember { mutableStateOf<CatalogConnection?>(null) }
     var filter by remember { mutableStateOf(false) }
+    var pageTools by remember { mutableStateOf(false) }
     var sourceSearch by remember(connection?.id, route) { mutableStateOf(false) }
     val workSourceStates = remember(connection?.id) { mutableMapOf<String, NovelBrowserState>() }
     var editor by remember { mutableStateOf<NovelEdit?>(null) }
@@ -63,12 +72,27 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     var disconnectedDownloads by remember { mutableStateOf<List<com.shadow.media.database.LibraryAssetEntity>>(emptyList()) }
     val pageStates = rememberSaveableStateHolder()
     val browserState = remember(connection?.id) { NovelBrowserState() }
+    val rootStacks = remember(connection?.id) { mutableMapOf<MediaDestination, List<NovelDestination>>() }
+    val rootStates = remember(connection?.id) { mutableMapOf<MediaDestination, NovelDestination>() }
+    var previousRoot by remember { mutableStateOf(rootSection) }
+    LaunchedEffect(rootSection) {
+        if (rootSection != null && previousRoot != rootSection) {
+            job?.cancelAndJoin(); busy = false
+            previousRoot?.let { rootStates[it] = NovelDestination(route, query, search, data, navigation, offset); rootStacks[it] = stack }
+            val restored = rootStates[rootSection]
+            route = restored?.route ?: novelRootRoute(rootSection)
+            query = restored?.query ?: NovelQuery(); search = restored?.search.orEmpty()
+            // Another tab may have changed shelf membership; restore navigation, then fetch fresh content.
+            data = null; navigation = restored?.navigation ?: JSONObject(); offset = 0
+            stack = rootStacks[rootSection].orEmpty(); error = null; message = null; previousRoot = rootSection
+        }
+    }
     val login = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         try {
-            connections = repository.store.load()
+            connections = repository.availableConnections()
             if (result.resultCode == android.app.Activity.RESULT_OK) {
                 connection = connections.singleOrNull { it.id == result.data?.getStringExtra("connectionId") }
-                route = NovelRoute("home"); stack = emptyList(); data = null; error = null; connectionEditor = false
+                route = novelRootRoute(rootSection); stack = emptyList(); data = null; error = null; connectionEditor = false
                 NovelRepository.schedule(context)
             }
         } catch (e: Exception) { error = e.message }
@@ -108,7 +132,7 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                 home.await().put("_continue", history.await().novelObjects("items").firstOrNull())
                     .put("_booklists", lists.await().optJSONArray("items") ?: JSONArray())
             }
-            "rankings", "contents", "sources", "tools" -> JSONObject()
+            "rankings", "contents", "sources", "tools", "discovery" -> JSONObject()
             "works" -> repository.get(c, listOf("works"), query.copy(view = route.id).parameters() + pagination)
             "authors" -> repository.get(c, listOf("authors"), listOf("q" to search) + pagination)
             "author" -> repository.get(c, listOf("authors", "detail"), listOf("name" to route.name, "q" to search, "sort" to query.sort, "serial_status" to query.serialStatus) + pagination)
@@ -172,8 +196,18 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
         repository.mutate(requireNotNull(connection), path, method, body)
         load(); message = "已保存"
     }
-    LaunchedEffect(Unit) { try { connections = repository.store.load() } catch (e: Exception) { error = e.message } }
-    LaunchedEffect(connection?.id, route, query, deletedLists) {
+    LaunchedEffect(Unit) { try {
+        connections = repository.availableConnections()
+        if (rootSection != null) {
+            val last = context.getSharedPreferences("novel_library_ui", 0).getString("module_connection", null)
+            connection = connections.firstOrNull { it.id == last } ?: connections.singleOrNull()
+        }
+    } catch (e: Exception) { error = e.message } }
+    LaunchedEffect(connection?.id) {
+        if (rootSection != null && connection != null) context.getSharedPreferences("novel_library_ui", 0)
+            .edit().putString("module_connection", connection!!.id).apply()
+    }
+    LaunchedEffect(connection?.id, route, query, deletedLists, data == null) {
         if (connection != null && data == null) { while (busy) delay(40); execute { load() } }
     }
     DisposableEffect(Unit) { onDispose { job?.cancel() } }
@@ -187,14 +221,31 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     val editable = data?.has("_cached_at") != true && !LibraryResources.offlineOnly
     CompositionLocalProvider(LocalNovelArtwork provides c?.let { NovelArtwork(repository, it) }) {
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        TopAppBar(title = { Text(if (c == null) "Shadow Novel" else when (route.kind) {
+        TopAppBar(title = { Text(if (c == null) { if (rootSection == null) "Shadow Novel" else "连接小说服务" } else when (route.kind) {
             "work" -> data?.optString("title") ?: "作品"; "author" -> route.name; "list" -> data?.optString("title") ?: "书单"; "contents" -> "版本目录"
-            "sources" -> "在线找书"; "tools" -> "书库工具"; "home" -> "书城"; "lists" -> "我的书单"; "rankings" -> "排行榜"; "offline" -> "离线阅读"
+            "sources" -> "在线找书"; "tools" -> "书库工具"; "home" -> "书城"; "lists" -> "我的书单"; "rankings" -> "排行榜"; "offline" -> "离线阅读"; "discovery" -> "发现"
             "works" -> if (route.id == "shelf") "我的书架" else if (route.id == "history") "阅读历史" else "发现好书"; else -> c.name
-        }, maxLines = 1) }, navigationIcon = { IconButton(onClick = ::back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") } }, actions = {
+        }, maxLines = 1, style = if (rootSection != null) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge) },
+            expandedHeight = if (rootSection != null) 48.dp else 64.dp,
+            colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background), navigationIcon = {
+            if (rootSection == null || stack.isNotEmpty()) IconButton(onClick = ::back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") }
+        }, actions = {
             if (c == null) IconButton(onClick = { editingConnection = null; connectionEditor = true }) { Icon(Icons.Rounded.Add, "添加 Novel") }
-            else if (route.kind !in setOf("rankings", "contents", "sources", "tools")) IconButton(enabled = !busy, onClick = { execute { load() } }) { Icon(Icons.Rounded.Refresh, "刷新") }
-            if (c != null && route.kind != "tools") IconButton(enabled = !busy, onClick = { navigate(NovelRoute("tools")) }) { Icon(Icons.Rounded.Settings, "书库工具") }
+            else if (route.kind !in setOf("rankings", "contents", "sources", "tools", "discovery")) IconButton(enabled = !busy, onClick = { execute { load() } }) { Icon(Icons.Rounded.Refresh, "刷新") }
+            Box {
+                IconButton(onClick = { pageTools = true }) { Icon(Icons.Rounded.MoreHoriz, "书库选项") }
+                DropdownMenu(pageTools, { pageTools = false }) {
+                    if (rootSection != null && c != null) DropdownMenuItem(text = { Text("切换小说服务") }, onClick = {
+                        pageTools = false; job?.cancel(); busy = false; connection = null; data = null; stack = emptyList()
+                    })
+                    if (rootSection != null && c != null) {
+                        DropdownMenuItem(enabled = !busy, text = { Text("阅读历史") }, onClick = { pageTools = false; navigate(NovelRoute("works", "history"), NovelQuery()) })
+                        DropdownMenuItem(enabled = !busy, text = { Text("离线阅读") }, onClick = { pageTools = false; navigate(NovelRoute("offline")) })
+                    }
+                    if (onLocalShelf != null) DropdownMenuItem(text = { Text("本机书架与导入") }, onClick = { pageTools = false; onLocalShelf() })
+                    if (c != null && route.kind != "tools") DropdownMenuItem(enabled = !busy, text = { Text("书库工具") }, onClick = { pageTools = false; navigate(NovelRoute("tools")) })
+                }
+            }
         })
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         error?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.error) }
@@ -204,27 +255,27 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
             item { Text("连接自己的小说服务，在这里找书、管理书单与排行榜，接着上次的位置继续读。") }
             items(connections, key = { it.id }) { item -> Card {
                 Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(enabled = !busy, onClick = { execute { repository.discover(item); connection = item; route = when (context.getSharedPreferences("novel_library_ui", android.content.Context.MODE_PRIVATE).getString("default:${item.id}", "home")) {
+                    TextButton(enabled = !busy, onClick = { execute { repository.discover(item); connection = item; route = if (rootSection != null) novelRootRoute(rootSection) else when (context.getSharedPreferences("novel_library_ui", android.content.Context.MODE_PRIVATE).getString("default:${item.id}", "home")) {
                         "shelf" -> NovelRoute("works", "shelf"); "sources" -> NovelRoute("sources"); "offline" -> NovelRoute("offline"); else -> NovelRoute("home")
                     }; data = null; stack = emptyList(); NovelRepository.schedule(context) } }, modifier = Modifier.weight(1f)) { Text(item.name) }
                     TextButton(enabled = !busy, onClick = { connection = item; route = NovelRoute("offline"); data = null; stack = emptyList() }) { Text("离线") }
                     if (item.oidcIssuer.isNotBlank()) TextButton(enabled = !busy, onClick = {
                         if (item.oidcAuthState.isBlank()) signIn(item.name, item.url, item)
-                        else execute { repository.oidc.logout(item); connections = repository.store.load(); message = "已退出统一账号；离线内容保留" }
+                        else execute { repository.oidc.logout(item); connections = repository.availableConnections(); message = "已退出统一账号；离线内容保留" }
                     }) { Text(if (item.oidcAuthState.isBlank()) "登录" else "退出") }
                     IconButton(onClick = { editingConnection = item; connectionEditor = true }) { Icon(Icons.Rounded.Edit, "编辑连接") }
-                    IconButton(onClick = { try { repository.store.remove(item.id); connections = repository.store.load(); message = "连接已移除；下载与待同步进度保留在本机阅读书架" } catch (e: Exception) { error = e.message } }) { Icon(Icons.Rounded.LinkOff, "移除连接") }
+                    IconButton(onClick = { try { repository.store.remove(item.id); connections = repository.availableConnections(); message = "连接已移除；下载与待同步进度保留在本机阅读书架" } catch (e: Exception) { error = e.message } }) { Icon(Icons.Rounded.LinkOff, "移除连接") }
                 }
             } }
         } else {
             val roots = listOf("书城" to NovelRoute("home"), "书架" to NovelRoute("works", "shelf"), "书单" to NovelRoute("lists"), "排行" to NovelRoute("rankings"))
             val root = stack.firstOrNull()?.route ?: route
             val tab = when { root.kind == "rankings" -> 3; root.kind in setOf("lists", "list") -> 2; root.kind == "offline" || root.kind == "works" && root.id in setOf("shelf", "history") -> 1; else -> 0 }
-            PrimaryScrollableTabRow(selectedTabIndex = tab, edgePadding = 20.dp) {
+            if (rootSection == null) PrimaryScrollableTabRow(selectedTabIndex = tab, edgePadding = 20.dp) {
                 roots.forEachIndexed { i, (title, target) -> Tab(selected = i == tab, enabled = !busy,
                     onClick = { stack = emptyList(); search = ""; query = NovelQuery(); if (route == target) execute { load() } else { route = target; data = null } }, text = { Text(title) }) }
             }
-            if (route.kind in setOf("works", "authors", "lists", "offline")) LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (rootSection == null && route.kind in setOf("works", "authors", "lists", "offline")) LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(if (route.kind == "works") listOf("历史", "离线") else listOf("分类找书", "搜索", "作家", "历史", "离线")) { label -> AssistChip(enabled = !busy, onClick = {
                     when (label) {
                         "分类找书" -> { navigate(NovelRoute("works", "city"), NovelQuery()); filter = true }
@@ -241,7 +292,18 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
                 TextButton(enabled = !busy, onClick = { execute { load() } }) { Text("搜索") }
             }
             pageStates.SaveableStateProvider("${c.id}:${route}") {
-            if (route.kind == "sources") NovelSourceBrowser(repository, c, browserState, onWork = { navigate(NovelRoute("work", it)) }, onManage = { navigate(NovelRoute("tools")) },
+            if (route.kind == "discovery") LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item { Text("从榜单、书单和作家中找到下一本。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                items(listOf("排行榜" to NovelRoute("rankings"), "主题书单" to NovelRoute("lists"), "作家" to NovelRoute("authors"), "分类找书" to NovelRoute("works", "city"))) { (label, target) ->
+                    OutlinedCard(onClick = { navigate(target, NovelQuery()) }, modifier = Modifier.fillMaxWidth()) {
+                        Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(label, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                            Icon(Icons.Rounded.ChevronRight, null)
+                        }
+                    }
+                }
+            }
+            else if (route.kind == "sources") NovelSourceBrowser(repository, c, browserState, onWork = { navigate(NovelRoute("work", it)) }, onManage = { navigate(NovelRoute("tools")) },
                 onRead = { open(it.workId, it.versionId, it.chapterId) })
             else if (route.kind == "tools") NovelToolsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = {
                 rememberSearch(it); navigate(NovelRoute("works", "search"), NovelQuery(q = it), it)
@@ -399,7 +461,7 @@ private data class NovelEdit(val title: String, val fields: List<Pair<String, St
     }
     if (connectionEditor) NovelConnectionEditor(editingConnection, busy, error, onDismiss = { connectionEditor = false }, onLogin = { name, url -> signIn(name, url, editingConnection) }, onSave = { edited -> execute {
         repository.discover(edited)
-        repository.store.replace(editingConnection, edited); connections = repository.store.load(); connectionEditor = false; message = "Novel 连接已验证"
+        repository.store.replace(editingConnection, edited); connections = repository.availableConnections(); connectionEditor = false; message = "Novel 连接已验证"
     } })
     if (filter) NovelFilterSheet(query.copy(view = if (route.kind == "works") route.id else query.view), navigation, onDismiss = { filter = false }, onApply = { updateQuery(it); filter = false })
     if (sourceSearch && c != null && route.kind == "work") data?.let { work ->

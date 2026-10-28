@@ -19,7 +19,8 @@ import kotlinx.coroutines.*
 import com.shadow.media.database.LibraryAssetEntity
 import com.shadow.media.library.*
 
-@Composable internal fun CatalogSourcesScreen(repository: NativeCatalogRepository, onBack: () -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onQueue: (List<LibraryAssetEntity>) -> Unit, onConnectionsChanged: () -> Unit = {}) {
+@Composable internal fun CatalogSourcesScreen(repository: NativeCatalogRepository, onBack: () -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onQueue: (List<LibraryAssetEntity>) -> Unit, onConnectionsChanged: () -> Unit = {},
+    allowedKinds: Set<CatalogKind> = CatalogKind.entries.toSet(), contentModule: MediaModule? = null, title: String = "图书与音乐服务") {
     val scope = rememberCoroutineScope()
     var connections by remember { mutableStateOf<List<CatalogConnection>>(emptyList()) }
     var connection by remember { mutableStateOf<CatalogConnection?>(null) }
@@ -39,7 +40,7 @@ import com.shadow.media.library.*
         previous?.cancel()
         job = scope.launch { previous?.join(); block() }
     }
-    fun refresh() { try { connections = repository.store.load() } catch (e: Exception) { error = e.message } }
+    fun refresh() { try { connections = repository.store.load().filter { it.kind in allowedKinds } } catch (e: Exception) { error = e.message } }
     LaunchedEffect(Unit) { refresh() }
     DisposableEffect(Unit) { onDispose { job?.cancel() } }
     fun load(c: CatalogConnection, node: String? = null, next: String? = null) {
@@ -68,7 +69,7 @@ import com.shadow.media.library.*
     }
     BackHandler(onBack = ::back)
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        TopAppBar(title = { Text(connection?.name ?: "图书与音乐服务", maxLines = 1) }, navigationIcon = { IconButton(onClick = ::back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") } }, actions = {
+        TopAppBar(title = { Text(connection?.name ?: title, maxLines = 1) }, navigationIcon = { IconButton(onClick = ::back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") } }, actions = {
             if (connection != null) IconButton(enabled = !loading, onClick = { connection?.let { load(it, currentNode) } }) { Icon(Icons.Rounded.Refresh, "刷新目录") }
             if (connection == null) IconButton(onClick = { editing = null; editorVisible = true }) { Icon(Icons.Rounded.Add, "添加来源") }
         })
@@ -77,7 +78,7 @@ import com.shadow.media.library.*
         error?.let { Text(it, Modifier.padding(20.dp), color = MaterialTheme.colorScheme.error) }
         LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (connection == null) {
-                item { Text("连接自己的 OPDS、Komga、Audiobookshelf、Jellyfin 或 OpenSubsonic。凭据使用 Android Keystore 加密保存在本机。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                item { Text("连接自己的内容服务，浏览目录并加入书架或音乐库。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 items(connections, key = { it.id }) { c ->
                     Card { Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(if ((c.kind == CatalogKind.AUDIOBOOKSHELF || c.kind.isNativeMusic())) Icons.Rounded.Headphones else Icons.AutoMirrored.Rounded.MenuBook, null, tint = MaterialTheme.colorScheme.primary)
@@ -99,7 +100,7 @@ import com.shadow.media.library.*
                         finally { loading = false }
                     } }) { Text("加入本书音轨并顺序播放") }
                 }
-                items(page?.entries.orEmpty().filter { it.title.contains(query, true) || it.author.contains(query, true) }, key = { it.locator + ":" + it.format }) { entry ->
+                items(page?.entries.orEmpty().filter { it.matchesModule(contentModule) }.filter { it.title.contains(query, true) || it.author.contains(query, true) }, key = { it.locator + ":" + it.format }) { entry ->
                     Card(enabled = !loading, onClick = {
                         if (entry.navigation != null) {
                             val c = connection ?: return@Card
@@ -115,12 +116,12 @@ import com.shadow.media.library.*
                         }
                     }
                 }
-                if (page?.entries?.isEmpty() == true && !loading) item { Text("目录为空，或没有支持的开放获取格式。") }
+                if (page != null && page!!.entries.none { it.matchesModule(contentModule) } && !loading) item { Text("当前目录没有符合此模块的内容。可返回上级或继续加载下一页。") }
                 page?.next?.let { next -> item { OutlinedButton(enabled = !loading, onClick = { connection?.let { load(it, currentNode, next) } }, modifier = Modifier.fillMaxWidth()) { Text("加载下一页") } } }
             }
         }
     }
-    if (editorVisible) CatalogEditor(editing, onDismiss = { editorVisible = false }, onSave = { c ->
+    if (editorVisible) CatalogEditor(editing, allowedKinds, onDismiss = { editorVisible = false }, onSave = { c ->
         try { repository.store.replace(editing, c); editorVisible = false; refresh(); onConnectionsChanged() } catch (e: Exception) { error = e.message }
     })
     remove?.let { c -> AlertDialog(onDismissRequest = { remove = null }, title = { Text("删除 ${c.name} 的连接？") }, text = { Text("移除本机凭据，保留已经下载的书籍和本地进度，不删除服务器内容。未同步进度将保留在本机。") }, confirmButton = { TextButton(onClick = { try { repository.store.remove(c.id); refresh(); onConnectionsChanged() } catch (e: Exception) { error = e.message }; remove = null }) { Text("删除连接") } }, dismissButton = { TextButton(onClick = { remove = null }) { Text("取消") } }) }
@@ -130,8 +131,8 @@ import com.shadow.media.library.*
     }) { Text("加入并打开") } }, dismissButton = { TextButton(onClick = { opening = null }) { Text("取消") } }) }
 }
 
-@Composable private fun CatalogEditor(existing: CatalogConnection?, onDismiss: () -> Unit, onSave: (CatalogConnection) -> Unit) {
-    var kind by remember { mutableStateOf(existing?.kind ?: CatalogKind.OPDS) }
+@Composable private fun CatalogEditor(existing: CatalogConnection?, allowedKinds: Set<CatalogKind>, onDismiss: () -> Unit, onSave: (CatalogConnection) -> Unit) {
+    var kind by remember { mutableStateOf(existing?.kind ?: allowedKinds.first()) }
     var name by remember { mutableStateOf(existing?.name.orEmpty()) }
     var url by remember { mutableStateOf(existing?.url.orEmpty()) }
     var username by remember { mutableStateOf(existing?.username.orEmpty()) }
@@ -142,7 +143,7 @@ import com.shadow.media.library.*
     ModalBottomSheet(onDismissRequest = onDismiss) {
         LazyColumn(Modifier.imePadding(), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item { Text("${if (existing == null) "添加" else "编辑"}媒体来源", style = MaterialTheme.typography.titleLarge) }
-            item { FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { CatalogKind.entries.forEach { value -> FilterChip(kind == value, { if (existing == null) kind = value }, { Text(if (value == CatalogKind.AUDIOBOOKSHELF) "ABS" else value.name) }) } } }
+            if (allowedKinds.size > 1) item { FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { allowedKinds.forEach { value -> FilterChip(kind == value, { if (existing == null) kind = value }, { Text(if (value == CatalogKind.AUDIOBOOKSHELF) "ABS" else value.name) }) } } }
             item { OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("名称") }) }
             item { OutlinedTextField(url, { url = it }, Modifier.fillMaxWidth(), label = { Text(if (kind == CatalogKind.OPDS) "OPDS 目录地址" else "服务根地址") }, placeholder = { Text("https://example.com/") }) }
             if (kind != CatalogKind.AUDIOBOOKSHELF) {
@@ -163,4 +164,15 @@ import com.shadow.media.library.*
             }, Modifier.fillMaxWidth()) { Text("保存连接") } }
         }
     }
+}
+
+/** Keep directory traversal available while excluding unrelated leaves in mixed OPDS feeds. */
+internal fun CatalogEntry.matchesModule(module: MediaModule?): Boolean {
+    if (module == null || navigation != null) return true
+    val kind = when {
+        format == "komga" -> "COMIC"
+        format == "audio" -> if (module == MediaModule.MUSIC) "MUSIC" else "AUDIOBOOK"
+        else -> com.shadow.media.model.contentKindForFile("file.$format").name
+    }
+    return kind in module.assetKinds
 }

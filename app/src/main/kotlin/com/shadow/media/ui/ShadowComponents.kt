@@ -57,47 +57,21 @@ fun ScreenHeader(
     onAction: () -> Unit,
     actionIsAdd: Boolean = false,
 ) {
-    Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 22.dp)) {
-        Text(
-            "SHADOW / MEDIA",
-            modifier = Modifier.align(Alignment.TopEnd),
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
-            style = MaterialTheme.typography.headlineLarge,
-            fontWeight = FontWeight.Black,
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(18.dp),
-        ) {
-            Column(Modifier.weight(1f)) {
-            Text(
-                "PRIVATE CINEMA / CONNECTED",
-                color = MaterialTheme.colorScheme.primary,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(title.withoutEmoji(), style = MaterialTheme.typography.headlineLarge)
-            Spacer(Modifier.height(7.dp))
-            Text(
-                subtitle.withoutEmoji(),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(13.dp))
-            Box(
-                Modifier.fillMaxWidth(0.24f).height(2.dp).background(MaterialTheme.colorScheme.primary)
-            )
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title.withoutEmoji(), style = MaterialTheme.typography.headlineMedium)
+            if (subtitle.isNotBlank()) {
+                Spacer(Modifier.height(5.dp))
+                Text(subtitle.withoutEmoji(), color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
-            FilledTonalIconButton(onClick = onAction, modifier = Modifier.size(54.dp)) {
-                Icon(
-                    if (actionIsAdd) Icons.Rounded.Add else Icons.Rounded.Storage,
-                    contentDescription = actionLabel,
-                )
-            }
+        }
+        IconButton(onClick = onAction) {
+            Icon(if (actionIsAdd) Icons.Rounded.Add else Icons.Rounded.Storage, contentDescription = actionLabel)
         }
     }
 }

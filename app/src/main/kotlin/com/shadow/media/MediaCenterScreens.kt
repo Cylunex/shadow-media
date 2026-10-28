@@ -468,19 +468,11 @@ internal fun MediaHomeScreen(state: MainUiState, viewModel: MainViewModel) {
     ) {
         item {
             ScreenHeader(
-                title = "影视",
+                title = "今天看什么",
                 subtitle = state.session?.let { "${it.userName} · 私人片库" } ?: "你的故事，从这里开始",
                 actionLabel = "服务器",
                 onAction = viewModel::showServers,
             )
-        }
-        item {
-            LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                item { FilterChip(false, viewModel::showDiscover, { Text("全局搜索") }, leadingIcon = { Icon(Icons.Rounded.Search, null) }) }
-                item { FilterChip(false, viewModel::showLibraries, { Text("媒体库") }, leadingIcon = { Icon(Icons.Rounded.VideoLibrary, null) }) }
-                item { FilterChip(false, viewModel::showNetworkStorages, { Text("网络存储") }, leadingIcon = { Icon(Icons.Rounded.Storage, null) }) }
-                item { FilterChip(false, viewModel::showSources, { Text("影视仓") }, leadingIcon = { Icon(Icons.Rounded.Subscriptions, null) }) }
-            }
         }
         state.homeSections.firstOrNull { it.items.isNotEmpty() }?.let { section ->
             item {
@@ -490,7 +482,7 @@ internal fun MediaHomeScreen(state: MainUiState, viewModel: MainViewModel) {
                         EmbyArtwork(state.session, featured.id, featured.name, Modifier.fillMaxSize(), imageTag = featured.imageTag)
                         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = .12f), Color.Black.copy(alpha = .9f)))))
                         Column(Modifier.align(Alignment.BottomStart).padding(22.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(section.title, style = MaterialTheme.typography.labelLarge, color = Color(0xFFB7D5FF))
+                            Text(section.title, style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = .8f))
                             Text(featured.name, style = MaterialTheme.typography.headlineMedium, maxLines = 2, overflow = TextOverflow.Ellipsis, color = Color.White)
                             Text(featured.overview.orEmpty().ifBlank { "打开你的私人影院" }, maxLines = 2, overflow = TextOverflow.Ellipsis, color = Color.White.copy(alpha = .8f))
                             FilledTonalButton(onClick = { viewModel.playHomeSection(section, featured) }) { Icon(Icons.Rounded.PlayArrow, null); Text(if (featured.playbackPositionTicks > 0) "继续观看" else "开始观看") }

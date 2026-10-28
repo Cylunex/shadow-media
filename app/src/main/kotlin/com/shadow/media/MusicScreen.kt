@@ -2,6 +2,7 @@
 package com.shadow.media
 
 import android.content.Intent
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -36,7 +37,7 @@ import com.shadow.media.audio.*
 import com.shadow.media.database.*
 import com.shadow.media.model.AudioMode
 
-@Composable fun MusicScreen(container: AppContainer, controller: MediaController?, onPlaying: () -> Unit) {
+@Composable fun MusicScreen(container: AppContainer, controller: MediaController?, onPlaying: () -> Unit, rootSection: String? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val model: MusicViewModel = viewModel(factory = remember(container) { object : ViewModelProvider.Factory {
@@ -53,6 +54,19 @@ import com.shadow.media.model.AudioMode
     val snapshots by model.snapshotState.collectAsStateWithLifecycle()
     val sources by model.sources.collectAsStateWithLifecycle()
     var section by rememberSaveable { mutableStateOf("歌曲") }
+    var librarySection by rememberSaveable { mutableStateOf("歌曲") }
+    LaunchedEffect(rootSection) {
+        if (rootSection == "歌单") {
+            if (section != "歌单" && model.filter.value.playlist.isBlank()) librarySection = section
+            section = "歌单"
+        } else if (rootSection != null) {
+            section = librarySection
+            model.filter.value = MusicFilter(recent = section == "最近", favorite = section == "收藏")
+        }
+    }
+    fun backToPlaylists() { section = "歌单"; model.filter.value = MusicFilter() }
+    BackHandler(enabled = rootSection == "歌单" && section != "歌单", onBack = ::backToPlaylists)
+    var musicTools by remember { mutableStateOf(false) }
     var playlistName by remember { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<MusicRow?>(null) }
     var addPlaylist by remember { mutableStateOf(false) }
@@ -70,18 +84,25 @@ import com.shadow.media.model.AudioMode
         AudiobookController.play(control, ids, selected, AudioMode.MUSIC); onPlaying()
     }
     Column(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }) {
-        Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("最近", "专辑", "艺人", "歌曲", "目录", "歌单", "收藏").forEach { title ->
-                FilterChip(section == title, onClick = { section = title; model.filter.value = MusicFilter(recent = title == "最近", favorite = title == "收藏") }, label = { Text(title) })
+        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(rootSection ?: "音乐", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+            if (section == "歌单") IconButton(onClick = { playlistName = "" }) { Icon(Icons.Rounded.Add, "新建歌单") }
+            Box {
+                IconButton(onClick = { musicTools = true }) { Icon(Icons.Rounded.MoreHoriz, "音乐库选项") }
+                DropdownMenu(musicTools, { musicTools = false }) {
+                    DropdownMenuItem(enabled = !busy, text = { Text("导入歌曲") }, onClick = { musicTools = false; files.launch(arrayOf("audio/*")) })
+                    DropdownMenuItem(enabled = !busy, text = { Text("音乐目录") }, onClick = { musicTools = false; directory.launch(null) })
+                    DropdownMenuItem(enabled = !busy, text = { Text("连接的音乐库") }, onClick = { musicTools = false; model.loadSources() })
+                    DropdownMenuItem(enabled = controller != null, text = { Text("恢复音乐队列") }, onClick = { musicTools = false; controller?.let { AudiobookController.restoreMode(it, AudioMode.MUSIC) } })
+                }
             }
         }
-        Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-            TextButton(enabled = !busy, onClick = { files.launch(arrayOf("audio/*")) }) { Text("导入歌曲") }
-            TextButton(enabled = !busy, onClick = { directory.launch(null) }) { Text("音乐目录") }
-            TextButton(enabled = !busy, onClick = model::loadSources) { Text("连接的音乐库") }
-            if (section == "歌单") TextButton(onClick = { playlistName = "" }) { Text("新建歌单") }
-            TextButton(onClick = { controller?.let { AudiobookController.restoreMode(it, AudioMode.MUSIC) } }) { Text("恢复音乐队列") }
+        if (rootSection != "歌单") Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("歌曲", "专辑", "艺人", "目录", "最近", "收藏").let { if (rootSection == null) it + "歌单" else it }.forEach { title ->
+                FilterChip(section == title, onClick = { section = title; librarySection = title; model.filter.value = MusicFilter(recent = title == "最近", favorite = title == "收藏") }, label = { Text(title) })
+            }
         }
+        if (rootSection == "歌单" && section != "歌单") TextButton(onClick = ::backToPlaylists, modifier = Modifier.padding(horizontal = 16.dp)) { Text("返回全部歌单") }
         if (busy) Row(verticalAlignment = Alignment.CenterVertically) { LinearProgressIndicator(Modifier.weight(1f)); TextButton(onClick = model::cancel) { Text("取消") } }
         if (snapshots.any { !it.completed }) Text("部分目录可能过期，正在显示本机快照", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodySmall)
         message?.let { Text(it, Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodySmall) }

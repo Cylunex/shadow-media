@@ -23,6 +23,7 @@ class NovelRepository(private val context: Context, private val library: Library
     val tools = NovelLibraryTools(this.api)
     suspend fun live(c: CatalogConnection, path: List<String>, query: List<Pair<String, String>> = emptyList()) = this.api.json(c, path, query)
     private val connections = connectionLoader ?: store::load
+    fun availableConnections(): List<CatalogConnection> = connections()
     private val covers = object : android.util.LruCache<String, ByteArray>(8 * 1024 * 1024) {
         override fun sizeOf(key: String, value: ByteArray) = value.size
     }

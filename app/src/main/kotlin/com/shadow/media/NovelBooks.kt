@@ -59,7 +59,7 @@ internal val LocalNovelArtwork = staticCompositionLocalOf<NovelArtwork?> { null 
         1 -> scheme.secondaryContainer to scheme.onSecondaryContainer
         else -> scheme.tertiaryContainer to scheme.onTertiaryContainer
     }
-    Box(modifier.aspectRatio(0.7f).clip(RoundedCornerShape(8.dp)).background(Brush.verticalGradient(
+    Box(modifier.aspectRatio(0.7f).clip(RoundedCornerShape(14.dp)).background(Brush.verticalGradient(
         listOf(paper, paper.copy(alpha = .78f)))), contentAlignment = Alignment.Center) {
         if (bitmap != null) Image(bitmap!!, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         else {

@@ -413,6 +413,8 @@ class MainViewModel(
 
     fun showLibraries() = navigate { copy(screen = Screen.LIBRARIES, errorMessage = null) }
 
+    fun refreshExternalSources() = update { copy(externalSources = externalSourceStore.loadAll()) }
+
     fun showSources() = navigate {
         copy(
             screen = Screen.SOURCES,

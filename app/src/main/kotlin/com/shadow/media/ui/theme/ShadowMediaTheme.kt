@@ -16,56 +16,56 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import androidx.compose.foundation.isSystemInDarkTheme
 
-private val ShadowDarkColors = darkColorScheme(
-    primary = Color(0xFF76A9F5),
-    onPrimary = Color(0xFF08234B),
-    primaryContainer = Color(0xFF203A60),
-    onPrimaryContainer = Color(0xFFDAE8FF),
-    secondary = Color(0xFFC1C8C2),
-    onSecondary = Color(0xFF1B211C),
-    secondaryContainer = Color(0xFF252B26),
-    onSecondaryContainer = Color(0xFFDEE5DE),
-    tertiary = Color(0xFFCBB38A),
-    onTertiary = Color(0xFF292116),
-    error = Color(0xFFFFB4AB),
-    onError = Color(0xFF300909),
-    errorContainer = Color(0xFF5B1D1D),
-    onErrorContainer = Color(0xFFFFDAD6),
-    background = Color(0xFF101114),
-    onBackground = Color(0xFFF0F2F5),
-    surface = Color(0xFF191B20),
-    onSurface = Color(0xFFF0F2F5),
-    surfaceVariant = Color(0xFF24272E),
-    onSurfaceVariant = Color(0xFFB7BDC9),
-    outline = Color(0xFF454B57),
+internal val ShadowDarkColors = darkColorScheme(
+    primary = Color(0xFFF4F4F4), onPrimary = Color(0xFF111111),
+    primaryContainer = Color(0xFF282828), onPrimaryContainer = Color(0xFFF1F1F1),
+    secondary = Color(0xFFC4C4C4), onSecondary = Color(0xFF181818),
+    secondaryContainer = Color(0xFF222222), onSecondaryContainer = Color(0xFFE8E8E8),
+    tertiary = Color(0xFFB8B8B8), onTertiary = Color(0xFF171717),
+    tertiaryContainer = Color(0xFF303030), onTertiaryContainer = Color(0xFFEAEAEA),
+    background = Color(0xFF101010), onBackground = Color(0xFFF4F4F4),
+    surface = Color(0xFF171717), onSurface = Color(0xFFF4F4F4),
+    surfaceVariant = Color(0xFF252525), onSurfaceVariant = Color(0xFFA8A8A8),
+    surfaceDim = Color(0xFF101010), surfaceBright = Color(0xFF333333),
+    surfaceContainerLowest = Color(0xFF0C0C0C), surfaceContainerLow = Color(0xFF161616),
+    surfaceContainer = Color(0xFF1B1B1B), surfaceContainerHigh = Color(0xFF242424), surfaceContainerHighest = Color(0xFF2D2D2D),
+    outline = Color(0xFF666666), outlineVariant = Color(0xFF333333),
+    inverseSurface = Color(0xFFE8E8E8), inverseOnSurface = Color(0xFF202020), inversePrimary = Color(0xFF242424),
+    surfaceTint = Color.Transparent,
+    error = Color(0xFFFFB4AB), onError = Color(0xFF300909),
+    errorContainer = Color(0xFF5B1D1D), onErrorContainer = Color(0xFFFFDAD6),
 )
 
-private val ShadowLightColors = lightColorScheme(
-    primary = Color(0xFF285EAD),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFD8E6FF),
-    onPrimaryContainer = Color(0xFF102D52),
-    secondary = Color(0xFF59615A),
-    onSecondary = Color.White,
-    tertiary = Color(0xFF3E7F49),
-    background = Color(0xFFF6F8F5),
-    onBackground = Color(0xFF171C22),
-    surface = Color(0xFFFFFFFF),
-    onSurface = Color(0xFF171C22),
-    surfaceVariant = Color(0xFFE7ECE7),
-    onSurfaceVariant = Color(0xFF454C46),
+internal val ShadowLightColors = lightColorScheme(
+    primary = Color(0xFF171717), onPrimary = Color.White,
+    primaryContainer = Color(0xFFE8E8E8), onPrimaryContainer = Color(0xFF171717),
+    secondary = Color(0xFF515151), onSecondary = Color.White,
+    secondaryContainer = Color(0xFFF0F0F0), onSecondaryContainer = Color(0xFF252525),
+    tertiary = Color(0xFF555555), onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFE2E2E2), onTertiaryContainer = Color(0xFF252525),
+    background = Color(0xFFFAFAFA), onBackground = Color(0xFF171717),
+    surface = Color.White, onSurface = Color(0xFF171717),
+    surfaceVariant = Color(0xFFF0F0F0), onSurfaceVariant = Color(0xFF646464),
+    surfaceDim = Color(0xFFE3E3E3), surfaceBright = Color.White,
+    surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFF7F7F7),
+    surfaceContainer = Color(0xFFF2F2F2), surfaceContainerHigh = Color(0xFFECECEC), surfaceContainerHighest = Color(0xFFE5E5E5),
+    outline = Color(0xFF777777), outlineVariant = Color(0xFFDDDDDD),
+    inverseSurface = Color(0xFF242424), inverseOnSurface = Color(0xFFF4F4F4), inversePrimary = Color(0xFFEAEAEA),
+    surfaceTint = Color.Transparent,
 )
 
 private val ShadowTypography = Typography(
-    displayLarge = TextStyle(fontSize = 58.sp, lineHeight = 58.sp, fontWeight = FontWeight.Black, letterSpacing = (-2).sp),
-    displayMedium = TextStyle(fontSize = 44.sp, lineHeight = 46.sp, fontWeight = FontWeight.Black, letterSpacing = (-1.4).sp),
-    headlineLarge = TextStyle(fontSize = 36.sp, lineHeight = 39.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.8).sp),
-    headlineMedium = TextStyle(fontSize = 30.sp, lineHeight = 34.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.5).sp),
-    titleLarge = TextStyle(fontSize = 23.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold),
+    displayLarge = TextStyle(fontSize = 42.sp, lineHeight = 48.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.8).sp),
+    displayMedium = TextStyle(fontSize = 36.sp, lineHeight = 42.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.6).sp),
+    headlineLarge = TextStyle(fontSize = 28.sp, lineHeight = 34.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.8).sp),
+    headlineMedium = TextStyle(fontSize = 25.sp, lineHeight = 31.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.5).sp),
+    titleLarge = TextStyle(fontSize = 21.sp, lineHeight = 27.sp, fontWeight = FontWeight.SemiBold),
     titleMedium = TextStyle(fontSize = 17.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold),
-    labelLarge = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp),
+    labelLarge = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.sp),
 )
 
 @Composable
@@ -79,15 +79,26 @@ fun ShadowMediaTheme(content: @Composable () -> Unit) {
         onDispose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
     }
     val dark = when (mode) { "浅色" -> false; "跟随系统" -> isSystemInDarkTheme(); else -> true }
+    val view = LocalView.current
+    if (!view.isInEditMode) SideEffect {
+        val activity = generateSequence(context) { (it as? android.content.ContextWrapper)?.baseContext }
+            .filterIsInstance<android.app.Activity>().firstOrNull()
+        activity?.window?.let { window ->
+            WindowCompat.getInsetsController(window, view).apply {
+                isAppearanceLightStatusBars = !dark
+                isAppearanceLightNavigationBars = !dark
+            }
+        }
+    }
     MaterialTheme(
         colorScheme = if (dark) ShadowDarkColors else ShadowLightColors,
         typography = ShadowTypography,
         shapes = Shapes(
             extraSmall = RoundedCornerShape(8.dp),
             small = RoundedCornerShape(12.dp),
-            medium = RoundedCornerShape(20.dp),
-            large = RoundedCornerShape(28.dp),
-            extraLarge = RoundedCornerShape(36.dp),
+            medium = RoundedCornerShape(16.dp),
+            large = RoundedCornerShape(20.dp),
+            extraLarge = RoundedCornerShape(24.dp),
         ),
     ) {
         CompositionLocalProvider(

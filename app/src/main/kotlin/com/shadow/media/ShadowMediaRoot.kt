@@ -147,7 +147,7 @@ import com.shadow.media.ui.ServerCard
 import com.shadow.media.ui.rememberEmbyImageLoader
 
 @Composable
-fun LegacyMediaRoot(viewModel: MainViewModel, container: AppContainer) {
+fun LegacyMediaRoot(viewModel: MainViewModel, container: AppContainer, rootScreen: Screen? = null) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val rootContext = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(state.screen) {
@@ -161,7 +161,7 @@ fun LegacyMediaRoot(viewModel: MainViewModel, container: AppContainer) {
     CompositionLocalProvider(LocalEmbyImageLoader provides imageLoader, LocalVideoControlState provides videoControls) {
         ShadowBackdrop(Modifier.fillMaxSize()) {
             AnimatedContent(
-                targetState = state.screen,
+                targetState = if (state.screen == Screen.HOME) rootScreen ?: Screen.HOME else state.screen,
                 transitionSpec = { fadeIn(tween(360)) togetherWith fadeOut(tween(180)) },
                 label = "shadow-screen",
             ) { screen ->
