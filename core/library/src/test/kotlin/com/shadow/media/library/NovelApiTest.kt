@@ -9,6 +9,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NovelApiTest {
+    @Test fun recentlyReadSortPreservesShelfScopeAndFilters() {
+        val c = CatalogConnection(name = "test", kind = CatalogKind.OPDS, url = "https://example.com/novel")
+        val query = NovelQuery(view = "shelf", sort = "last_read", q = "星河", group = "睡前", hasUpdates = true)
+        val url = NovelApi().url(c, listOf("works"), query.parameters() + listOf("offset" to "48", "limit" to "48"))
+        assertEquals("shelf", url.queryParameter("view"))
+        assertEquals("last_read", url.queryParameter("sort"))
+        assertEquals("星河", url.queryParameter("q"))
+        assertEquals("睡前", url.queryParameter("group"))
+        assertEquals("true", url.queryParameter("has_updates"))
+        assertEquals("48", url.queryParameter("offset"))
+    }
     @Test fun subpathAndRepeatedFiltersAreEncodedWithoutLosingPrefix() {
         val c = CatalogConnection(name = "test", kind = CatalogKind.OPDS, url = "https://example.com/novel")
         val query = NovelQuery(q = "书 & 作者", genres = listOf("冒险", "科幻"), excluded = listOf("悲剧"), allGenres = true)

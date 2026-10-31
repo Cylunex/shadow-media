@@ -71,23 +71,36 @@ class NovelLibraryViewsTest {
         var query by mutableStateOf(NovelQuery(view = "shelf", q = "山海"))
         var search by mutableStateOf("山海")
         var read: String? = null
+        var detail: String? = null
         val data = JSONObject().put("total", 2).put("items", JSONArray().put(book("1", "山海来信")).put(book("2", "长夜与星河")))
         val navigation = JSONObject().put("counts", JSONObject().put("updates", 1))
         compose.activity.getSharedPreferences("appearance", 0).edit().putString("theme", "深色").commit()
         compose.setContent { ShadowMediaTheme { Surface { NovelWorksPage("shelf", query, search, navigation, data, false,
-            onSearch = { search = it }, onSubmit = {}, onQuery = { query = it }, onFilter = {}, onMore = {}, onWork = {}, onRead = { read = it }) } } }
+            onSearch = { search = it }, onSubmit = {}, onQuery = { query = it }, onFilter = {}, onMore = {}, onWork = { detail = it }, onRead = { read = it }) } } }
         compose.onNodeWithContentDescription("清除找书关键词").performClick()
         compose.runOnIdle { assertEquals("", query.q); assertEquals("", search) }
         compose.onNodeWithText("有更新 1").performClick()
         compose.runOnIdle { assertTrue(query.hasUpdates) }
         compose.onNodeWithContentDescription("移除有更新", useUnmergedTree = true).performClick()
         compose.runOnIdle { assertFalse(query.hasUpdates) }
-        compose.onAllNodesWithText("继续阅读").onFirst().performClick()
+        compose.onNodeWithText("山海来信").performClick()
         assertEquals("1", read)
+        assertNull(detail)
+        compose.onAllNodesWithText("详情").onFirst().performClick()
+        assertEquals("1", detail)
         screenshot("novel-shelf-dark")
         compose.onNodeWithContentDescription("切换列表视图").performClick()
         compose.onNodeWithContentDescription("切换网格视图").assertIsDisplayed()
+        compose.runOnIdle { read = null; detail = null }
+        compose.onNodeWithText("山海来信").performClick()
+        assertEquals("1", read)
+        assertNull(detail)
+        compose.onAllNodesWithText("详情").onFirst().performClick()
+        assertEquals("1", detail)
         compose.onNodeWithText("最近收录").performClick()
+        compose.onNodeWithText("最近阅读").performClick()
+        compose.runOnIdle { assertEquals("last_read", query.sort) }
+        compose.onNodeWithText("最近阅读").performClick()
         compose.onNodeWithText("书名").performClick()
         compose.runOnIdle { assertEquals("title", query.sort) }
     }
@@ -98,8 +111,36 @@ class NovelLibraryViewsTest {
         compose.setContent { ShadowMediaTheme { Surface { NovelWorksPage("shelf", NovelQuery(), "", JSONObject(), data, false,
             onSearch = {}, onSubmit = {}, onQuery = {}, onFilter = {}, onMore = {}, onWork = {}, onRead = {}) } } }
         compose.onNodeWithContentDescription("全部筛选").assertIsDisplayed()
-        compose.onNodeWithText("继续阅读").assertIsDisplayed()
+        compose.onNodeWithText("详情").assertIsDisplayed()
         screenshot("novel-shelf-compact")
+    }
+
+    @Test fun metadataOnlyShelfBookStillOpensDetails() {
+        var read: String? = null
+        var detail: String? = null
+        val work = book("1", "仅资料作品").put("availability", JSONArray().put("metadata_only"))
+        val data = JSONObject().put("total", 1).put("items", JSONArray().put(work))
+        compose.setContent { ShadowMediaTheme { Surface { NovelWorksPage("shelf", NovelQuery(view = "shelf"), "", JSONObject(), data, false,
+            onSearch = {}, onSubmit = {}, onQuery = {}, onFilter = {}, onMore = {}, onWork = { detail = it }, onRead = { read = it }) } } }
+        compose.onNodeWithText("仅资料作品").performClick()
+        assertEquals("1", detail)
+        assertNull(read)
+    }
+
+    @Test fun searchBookStillOpensDetailsAndHistoryBookOpensReader() {
+        var view by mutableStateOf("search")
+        var read: String? = null
+        var detail: String? = null
+        val data = JSONObject().put("total", 1).put("items", JSONArray().put(book("1", "山海来信")))
+        compose.setContent { ShadowMediaTheme { Surface { NovelWorksPage(view, NovelQuery(view = view), "", JSONObject(), data, false,
+            onSearch = {}, onSubmit = {}, onQuery = {}, onFilter = {}, onMore = {}, onWork = { detail = it }, onRead = { read = it }) } } }
+        compose.onNodeWithText("山海来信").performClick()
+        assertEquals("1", detail)
+        assertNull(read)
+        compose.runOnIdle { view = "history"; detail = null }
+        compose.onNodeWithText("山海来信").performClick()
+        assertEquals("1", read)
+        assertNull(detail)
     }
 
     @Test fun removingOneFilterPreservesOtherDimensionsAndMetadataOnlyCannotRead() {

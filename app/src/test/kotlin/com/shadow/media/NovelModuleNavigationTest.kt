@@ -110,4 +110,22 @@ class NovelModuleNavigationTest {
         compose.onNodeWithText("本机书架与导入").assertIsDisplayed()
         compose.onNodeWithText("阅读历史").assertIsDisplayed()
     }
+    @Test fun recentlyReadSelectionReachesServerAndRefreshesWhenReturningToShelf() {
+        launch("浅色")
+        compose.onNodeWithText("最近收录").performClick()
+        compose.onNodeWithText("最近阅读").performClick()
+        fun readingRequests() = requests.count { it.contains("/works?") && it.contains("view=shelf") && it.contains("sort=last_read") }
+        compose.waitUntil(15_000) { readingRequests() > 0 }
+        compose.waitUntil(15_000) {
+            compose.onAllNodes(hasContentDescription("刷新") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
+        }
+        val before = readingRequests()
+        compose.runOnIdle {
+            val lifecycle = compose.activity.lifecycle as androidx.lifecycle.LifecycleRegistry
+            lifecycle.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_PAUSE)
+            lifecycle.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_RESUME)
+        }
+        compose.waitUntil(15_000) { readingRequests() > before }
+        compose.onNodeWithText("最近阅读").assertIsDisplayed()
+    }
 }

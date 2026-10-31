@@ -213,7 +213,10 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
     DisposableEffect(Unit) { onDispose { job?.cancel() } }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle, connection, route) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME && connection != null) { NovelRepository.schedule(context); if (!busy && route.kind in setOf("work", "home", "offline")) execute { load() } } }
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME && connection != null) {
+            NovelRepository.schedule(context)
+            if (!busy && (route.kind in setOf("work", "home", "offline") || route.kind == "works" && route.id in setOf("shelf", "history"))) execute { load() }
+        } }
         lifecycle.addObserver(observer); onDispose { lifecycle.removeObserver(observer) }
     }
     BackHandler(onBack = ::back)
@@ -548,7 +551,7 @@ private fun splitTags(text: String) = text.split(',', '，').map(String::trim).f
     fun toggle(list: List<String>, id: String) = if (id in list) list - id else list + id
     ModalBottomSheet(onDismissRequest = onDismiss) { LazyColumn(Modifier.imePadding(), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { Text("筛选与排序", style = MaterialTheme.typography.titleLarge) }
-        item { NovelChoices("排序", value.sort, listOf("recent" to "最近", "title" to "书名", "popularity" to "热度")) { value = value.copy(sort = it) } }
+        item { NovelChoices("排序", value.sort, novelSortOptions(query.view)) { value = value.copy(sort = it) } }
         item { Text("分类（可多选）"); FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { facets.novelObjects("categories").forEach { category -> val id = category.getString("id"); FilterChip(id in value.categories, onClick = { value = value.copy(categories = toggle(value.categories, id)) }, label = { Text("${category.optString("name")} ${category.optInt("count")}") }) } } }
         item { Text("题材：点击包含，再次点击移除；长列表支持下滑")
             Row { Switch(value.allGenres, { value = value.copy(allGenres = it) }); Text("匹配全部所选题材", Modifier.padding(12.dp)) }

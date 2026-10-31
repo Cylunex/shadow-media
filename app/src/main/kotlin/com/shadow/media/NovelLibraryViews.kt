@@ -96,6 +96,13 @@ internal fun novelFilterLabels(query: NovelQuery, navigation: JSONObject): List<
     if (query.minPopularity.isNotBlank()) add("热度 ≥ ${query.minPopularity}" to query.copy(minPopularity = ""))
 }
 
+internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildList {
+    if (view == "shelf") add("last_read" to "最近阅读")
+    add("recent" to if (view == "history") "最近阅读" else "最近收录")
+    add("title" to "书名")
+    add("popularity" to "热度")
+}
+
 @Composable internal fun NovelWorksPage(
     view: String, query: NovelQuery, search: String, navigation: JSONObject, data: JSONObject?, busy: Boolean,
     onSearch: (String) -> Unit, onSubmit: () -> Unit, onQuery: (NovelQuery) -> Unit, onFilter: () -> Unit,
@@ -129,9 +136,9 @@ internal fun novelFilterLabels(query: NovelQuery, navigation: JSONObject): List<
                 Text(if (data == null) { if (busy) "正在找书…" else "尚未载入" } else "$total 本书", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 var sorting by remember { mutableStateOf(false) }
                 Box {
-                    TextButton(enabled = !busy, onClick = { sorting = true }) { Text(when (query.sort) { "title" -> "书名"; "popularity" -> "热度"; else -> if (view == "history") "最近阅读" else "最近收录" }); Icon(Icons.Rounded.ExpandMore, null, Modifier.size(18.dp)) }
+                    TextButton(enabled = !busy, onClick = { sorting = true }) { Text(when (query.sort) { "last_read" -> "最近阅读"; "title" -> "书名"; "popularity" -> "热度"; else -> if (view == "history") "最近阅读" else "最近收录" }); Icon(Icons.Rounded.ExpandMore, null, Modifier.size(18.dp)) }
                     DropdownMenu(sorting, onDismissRequest = { sorting = false }) {
-                        listOf("recent" to if (view == "history") "最近阅读" else "最近收录", "title" to "书名", "popularity" to "热度").forEach { (key, text) ->
+                        novelSortOptions(view).forEach { (key, text) ->
                             DropdownMenuItem(text = { Text(text) }, onClick = { sorting = false; onQuery(query.copy(sort = key)) })
                         }
                     }
@@ -148,10 +155,12 @@ internal fun novelFilterLabels(query: NovelQuery, navigation: JSONObject): List<
             }
         }
         items(items, key = { it.getString("id") }) { work ->
+            val read = if (view in setOf("shelf", "history") && novelCanRead(work)) ({ onRead(work.getString("id")) }) else null
+            val detail = { onWork(work.getString("id")) }
             if (!grid) Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                NovelWorkCard(work, !busy) { onWork(work.getString("id")) }
-                if (view in setOf("shelf", "history") && novelCanRead(work)) TextButton(enabled = !busy, onClick = { onRead(work.getString("id")) }) { Text(if (work.optJSONObject("progress") == null) "开始阅读" else "继续阅读") }
-            } else NovelShelfTile(work, !busy, { onWork(work.getString("id")) }, if (view in setOf("shelf", "history") && novelCanRead(work)) ({ onRead(work.getString("id")) }) else null)
+                NovelWorkCard(work, !busy, read ?: detail)
+                if (read != null) TextButton(enabled = !busy, onClick = detail) { Text("详情") }
+            } else NovelShelfTile(work, !busy, detail, read)
         }
         if (items.size < total) item(span = { GridItemSpan(maxLineSpan) }) { OutlinedButton(enabled = !busy, onClick = onMore, modifier = Modifier.fillMaxWidth()) { Text(if (busy) "正在加载…" else "加载更多 · 已显示 ${items.size} 本") } }
     }
@@ -161,7 +170,7 @@ internal fun novelCanRead(work: JSONObject) = work.novelStrings("availability").
 
 @Composable internal fun NovelShelfTile(work: JSONObject, enabled: Boolean, onDetail: () -> Unit, onRead: (() -> Unit)?) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Card(enabled = enabled, onClick = onDetail, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Card(enabled = enabled, onClick = onRead ?: onDetail, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
             Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 Box {
                     NovelBookCover(work, Modifier.fillMaxWidth())
@@ -174,6 +183,6 @@ internal fun novelCanRead(work: JSONObject) = work.novelStrings("availability").
                 Text(if (!novelCanRead(work)) "仅资料" else serialLabel(work.optString("serial_status")).ifBlank { "可阅读" }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             }
         }
-        if (onRead != null) TextButton(enabled = enabled, onClick = onRead, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 4.dp)) { Text(if (work.optJSONObject("progress") != null) "继续阅读" else "开始阅读") }
+        if (onRead != null) TextButton(enabled = enabled, onClick = onDetail, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 4.dp)) { Text("详情") }
     }
 }
