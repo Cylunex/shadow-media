@@ -8,10 +8,13 @@ internal enum class ReaderPageMode(val label: String) {
 
 internal enum class ReaderPaper(val label: String, val background: Int, val foreground: Int) {
     PARCHMENT("羊皮纸", 0xFFF6EBD2.toInt(), 0xFF302418.toInt()),
+    DEEP_PARCHMENT("深羊皮纸", 0xFFE4CCA0.toInt(), 0xFF241A10.toInt()),
     IVORY("米白", 0xFFF6F1E5.toInt(), 0xFF34322C.toInt()),
     GREEN("护眼绿", 0xFFD8E5D3.toInt(), 0xFF2E3B30.toInt()),
     WHITE("纯白", 0xFFFAFAF8.toInt(), 0xFF282828.toInt()),
-    NIGHT("夜间", 0xFF171A1D.toInt(), 0xFFB7B9B6.toInt())
+    NIGHT("夜间", 0xFF171A1D.toInt(), 0xFFB7B9B6.toInt());
+
+    val textured get() = this == PARCHMENT || this == DEEP_PARCHMENT
 }
 
 internal enum class ReaderFont(val label: String, val css: String) {

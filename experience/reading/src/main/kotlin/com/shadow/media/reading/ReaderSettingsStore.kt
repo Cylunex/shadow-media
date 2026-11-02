@@ -74,13 +74,15 @@ internal fun readerPaperScript(value: ReaderSettings, textureData: String): Stri
     val style = value.normalized()
     val paper = style.paper
     val veil = "rgba(${android.graphics.Color.red(paper.background)},${android.graphics.Color.green(paper.background)},${android.graphics.Color.blue(paper.background)},${1f - style.paperTexture})"
-    val texture = if (paper == ReaderPaper.PARCHMENT && style.paperTexture > 0f && textureData.isNotEmpty())
+    val texture = if (paper.textured && style.paperTexture > 0f && textureData.isNotEmpty())
         "linear-gradient($veil,$veil),url(\"$textureData\")" else "none"
+    val blend = if (paper == ReaderPaper.DEEP_PARCHMENT) "normal,multiply" else "normal"
+    val background = "#%06X".format(paper.background and 0xFFFFFF)
     return """
         (() => {
           let style = document.getElementById('shadow-reader-paper');
           if (!style) { style = document.createElement('style'); style.id = 'shadow-reader-paper'; document.head.appendChild(style); }
-          style.textContent = ${org.json.JSONObject.quote("html { background-image: $texture !important; background-size: cover !important; background-position: center !important; background-repeat: no-repeat !important; background-attachment: fixed !important; } body { background-color: transparent !important; }")};
+          style.textContent = ${org.json.JSONObject.quote("html { background-color: $background !important; background-blend-mode: $blend !important; background-image: $texture !important; background-size: cover !important; background-position: center !important; background-repeat: no-repeat !important; background-attachment: fixed !important; } body { background-color: transparent !important; }")};
         })();
     """.trimIndent()
 }

@@ -34,12 +34,15 @@ internal object ReaderPaperTexture {
 
 internal fun drawReaderPaper(canvas: Canvas, width: Float, height: Float, value: ReaderSettings, texture: Bitmap?) {
     canvas.drawColor(value.paper.background)
-    if (value.paper != ReaderPaper.PARCHMENT || value.paperTexture <= 0f || texture == null) return
+    if (!value.paper.textured || value.paperTexture <= 0f || texture == null) return
     // Center-crop instead of stretching the fibres, matching background-size: cover in EPUB.
     val scale = maxOf(width / texture.width, height / texture.height)
     val x = (width - texture.width * scale) / 2f
     val y = (height - texture.height * scale) / 2f
-    val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply { alpha = (value.paperTexture.coerceIn(0f, 1f) * 255).roundToInt() }
+    val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply {
+        alpha = (value.paperTexture.coerceIn(0f, 1f) * 255).roundToInt()
+        if (value.paper == ReaderPaper.DEEP_PARCHMENT) colorFilter = android.graphics.LightingColorFilter(value.paper.background, 0)
+    }
     canvas.drawBitmap(texture, null, RectF(x, y, x + texture.width * scale, y + texture.height * scale), paint)
 }
 

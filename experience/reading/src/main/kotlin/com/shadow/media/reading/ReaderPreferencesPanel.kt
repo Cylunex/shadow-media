@@ -77,7 +77,7 @@ internal fun ColumnScope.ReaderPreferencesPanel(value: ReaderSettings, update: (
                     ReaderPaper.entries.forEach { paper -> FilterChip(selected = value.paper == paper, onClick = { update(value.selectPaper(paper)) }, label = { Text(paper.label) },
                         leadingIcon = { ReaderPaperBackground(value.copy(paper = paper), Modifier.size(18.dp).clip(CircleShape)) }) }
                 }
-                if (value.paper == ReaderPaper.PARCHMENT) ReaderSlider("纸张纹理", "${(value.paperTexture * 100).roundToInt()}%", value.paperTexture, 0f..1f) { update(value.copy(paperTexture = it)) }
+                if (value.paper.textured) ReaderSlider("纸张纹理", "${(value.paperTexture * 100).roundToInt()}%", value.paperTexture, 0f..1f) { update(value.copy(paperTexture = it)) }
                 ReaderSlider("左右留白", "%.1f".format(value.margins), value.margins, .4f..2f) { update(value.copy(margins = it)) }
                 if (nativeText) {
                     ReaderSlider("上下留白", "%.1f".format(value.verticalMargins), value.verticalMargins, .5f..2.5f) { update(value.copy(verticalMargins = it)) }
@@ -107,7 +107,7 @@ internal fun ColumnScope.ReaderPreferencesPanel(value: ReaderSettings, update: (
                     ReaderPageMode.NONE -> "直接切换页面。"
                     ReaderPageMode.SCROLL -> "上下滚动；章末继续上拉并松手进入下一章，惯性滚动停在章末。"
                 }, style = MaterialTheme.typography.bodySmall)
-                ReaderSwitch("全屏阅读", value.fullScreen) { update(value.copy(fullScreen = it)) }
+                ReaderSwitch("隐藏底部系统导航（保留时间与电量）", value.fullScreen) { update(value.copy(fullScreen = it)) }
                 ReaderSwitch("阅读时保持亮屏", value.keepAwake) { update(value.copy(keepAwake = it)) }
                 HorizontalDivider()
                 ReaderSlider("阅读亮度", if (value.brightness < 0) "跟随系统" else "${(value.brightness * 100).roundToInt()}%",

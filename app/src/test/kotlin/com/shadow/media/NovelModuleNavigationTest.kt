@@ -28,6 +28,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 class NovelModuleNavigationTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
     private val server = MockWebServer()
+    private var shelfDelayMillis = 0L
     private val requests = CopyOnWriteArrayList<String>()
     private val books = """[{"id":"1","title":"山海来信","author":"行舟"},{"id":"2","title":"长夜与星河","author":"林间"},{"id":"3","title":"远山灯火","author":"西川"},{"id":"4","title":"群山之间","author":"行舟"},{"id":"5","title":"听风经过","author":"青禾"},{"id":"6","title":"春日手记","author":"北岛"}]"""
     @Before fun start() {
@@ -44,7 +45,9 @@ class NovelModuleNavigationTest {
                     request.requestUrl!!.encodedPath.endsWith("/works") -> """{"total":6,"items":$books}"""
                     else -> "{}"
                 }
-                return MockResponse().setBody(body)
+                return MockResponse().setBody(body).also {
+                    if (request.requestUrl!!.encodedPath.endsWith("/works")) it.setBodyDelay(shelfDelayMillis, java.util.concurrent.TimeUnit.MILLISECONDS)
+                }
             }
         }
         server.start()
@@ -69,10 +72,9 @@ class NovelModuleNavigationTest {
         compose.activity.getSharedPreferences("appearance", 0).edit().putString("theme", theme).commit()
         var destination by mutableStateOf(MediaDestination.SHELF)
         compose.setContent { ShadowMediaTheme {
-            Scaffold(topBar = { MediaModuleHeader(MediaModule.NOVEL, {}, {}, {}) },
-                bottomBar = { MediaModuleNavigation(MediaModule.NOVEL, destination, { destination = it }) }) { padding ->
+            Scaffold(bottomBar = { MediaModuleNavigation(MediaModule.NOVEL, destination, { destination = it }) }) { padding ->
                 Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
-                    NovelScreen(repository, {}, rootSection = destination, onLocalShelf = {})
+                    NovelScreen(repository, {}, rootSection = destination, onLocalShelf = {}, onModule = {}, onGeneralSettings = {})
                 }
             }
         } }
@@ -100,6 +102,18 @@ class NovelModuleNavigationTest {
         waitText("长夜与星河")
         compose.waitUntil(15_000) { requests.count { it.contains("/works?") && it.contains("view=shelf") } >= 2 }
         assertTrue(requests.any { it.contains("/city/home") })
+    }
+    @Test fun returningToShelfKeepsBooksInteractiveWhileRefreshingInTheBackground() {
+        launch("浅色")
+        compose.onAllNodesWithText("小说").assertCountEquals(0)
+        compose.onNodeWithContentDescription("切换模块").assertIsDisplayed()
+        compose.onNodeWithTag("destination-DISCOVERY").performClick()
+        waitText("主题书单")
+        val before = requests.count { it.contains("/works?") && it.contains("view=shelf") }
+        shelfDelayMillis = 1500
+        compose.onNodeWithTag("destination-SHELF").performClick()
+        compose.waitUntil(5_000) { requests.count { it.contains("/works?") && it.contains("view=shelf") } > before }
+        compose.onNodeWithText("山海来信").assertIsDisplayed().assertIsEnabled()
     }
     @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun compactScreenKeepsShelfAndToolsReachable() {
         launch("浅色")

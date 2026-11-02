@@ -43,6 +43,27 @@ class ReaderPaperTextureTest {
         assertEquals(ReaderPaper.NIGHT.background, bitmap.getPixel(100, 100))
         bitmap.recycle()
     }
+    @Test fun deepParchmentHasDarkerWarmGrainWithReadableText() {
+        val texture = ReaderPaperTexture.bitmap(RuntimeEnvironment.getApplication())
+        val light = Bitmap.createBitmap(432, 900, Bitmap.Config.ARGB_8888)
+        val deep = Bitmap.createBitmap(432, 900, Bitmap.Config.ARGB_8888)
+        drawReaderPaper(Canvas(light), 432f, 900f, ReaderSettings(), texture)
+        drawReaderPaper(Canvas(deep), 432f, 900f, ReaderSettings(paper = ReaderPaper.DEEP_PARCHMENT), texture)
+        assertFalse(light.sameAs(deep))
+        for (strength in listOf(.65f, 1f)) {
+            drawReaderPaper(Canvas(deep), 432f, 900f, ReaderSettings(paper = ReaderPaper.DEEP_PARCHMENT, paperTexture = strength), texture)
+            for (y in 0 until 900 step 8) for (x in 0 until 432 step 8) {
+                val color = deep.getPixel(x, y)
+                assertTrue(ColorUtils.calculateLuminance(color) < ColorUtils.calculateLuminance(light.getPixel(x, y)))
+                assertTrue("Deep parchment must keep readable contrast", ColorUtils.calculateContrast(ReaderPaper.DEEP_PARCHMENT.foreground, color) >= 4.5)
+            }
+        }
+        val script = readerPaperScript(ReaderSettings(paper = ReaderPaper.DEEP_PARCHMENT), ReaderPaperTexture.dataUri(RuntimeEnvironment.getApplication()))
+        assertTrue(script.contains("normal,multiply"))
+        assertTrue((org.json.JSONTokener(script.substringAfter("style.textContent = ")).nextValue() as String).contains("data:image/"))
+        light.recycle(); deep.recycle()
+    }
+
     @Test fun epubUsesTheBundledImageAndRemovesItWhenThePaperChanges() {
         val data = ReaderPaperTexture.dataUri(RuntimeEnvironment.getApplication())
         assertTrue(data.startsWith("data:image/webp;base64,"))

@@ -4,6 +4,8 @@ package com.shadow.media.reading
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.os.Bundle
+import android.os.Build
+import android.graphics.drawable.ColorDrawable
 import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -115,11 +117,13 @@ class NativeTextReaderActivity : ComponentActivity() {
     }
     private fun prefetchFollowing(pub: NovelPublicationEntity?, ordinal: Int) {
         prefetch?.cancel(); cacheStatus = null
-        if (pub == null || LibraryResources.offlineOnly) return
         prefetch = lifecycleScope.launch {
+            warmAdjacent(pub, ordinal)
+            if (pub == null || LibraryResources.offlineOnly) return@launch
             repeat(3) { attempt ->
                 try {
                     novel.cache.prefetch(novel.connection(pub.scope), pub, ordinal)
+                    warmAdjacent(pub, ordinal)
                     cacheStatus = "后续章节已提前缓存"; return@launch
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) {
@@ -128,6 +132,29 @@ class NativeTextReaderActivity : ComponentActivity() {
                 }
             }
         }
+    }
+    private suspend fun warmAdjacent(pub: NovelPublicationEntity?, ordinal: Int) {
+        try {
+            val item = asset ?: return
+            if (pub == null) {
+                val local = source.local(item)
+                for (index in listOf(ordinal + 1, ordinal - 1)) local.getOrNull(index)?.let { view?.prepareChapter(it) }
+            } else {
+                val mapping = NovelPublicationMap(JSONObject(pub.mappingJson))
+                for (direction in listOf(1, -1)) {
+                    val row = mapping.chapters.firstOrNull { it.optInt("ordinal") == ordinal + direction }
+                        ?: novel.cache.adjacent(pub.scope, pub.workId, pub.versionId, ordinal, direction)?.chapter
+                        ?: continue
+                    val id = row.getString("id")
+                    val prepared = if (mapping.chapter(id) != null) NovelRepository.Prepared(item, null)
+                        else novel.cachedChapter(pub.scope, pub.workId, pub.versionId, id) ?: continue
+                    val window = novel.dao.publication(prepared.asset.id) ?: continue
+                    val content = source.chapter(prepared.asset, window, "chapters/$id.xhtml")
+                    view?.prepareChapter(content)
+                }
+            }
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { /* Optional warmup never interrupts foreground reading. */ }
     }
     private fun positionChanged(value: Int, user: Boolean) {
         offset = value
@@ -199,12 +226,25 @@ class NativeTextReaderActivity : ComponentActivity() {
             view?.boundaryResolved(if (direction > 0) "已到本书末尾" else "已到本书开头")
         } else loadChapter(next, direction < 0)
     }
+    private fun skipChapter(direction: Int) = navigate {
+        val origin = location()
+        val next = adjacent(requireNotNull(chapter).ref.ordinal, direction)
+        if (next == null) {
+            busy = false; view?.isEnabled = true
+            message = if (direction > 0) "已到本书末尾" else "已到本书开头"
+        } else {
+            loadChapter(next)
+            jumpHistory = jumpHistory.remember(origin, location())
+            closePanel()
+        }
+    }
     private suspend fun adjacent(ordinal: Int, direction: Int): NativeChapterRef? {
         val pub = publication ?: return source.local(requireNotNull(asset)).getOrNull(ordinal + direction)?.ref
         val mapping = NovelPublicationMap(JSONObject(pub.mappingJson))
         if (direction < 0 && ordinal == 0 || direction > 0 && ordinal >= mapping.json.getInt("total") - 1) return null
+        mapping.chapters.map(::ref).firstOrNull { it.readable && it.ordinal == ordinal + direction }?.let { return it }
         val cached = novel.cachedContents(pub).map(::ref)
-        cached.firstOrNull { it.ordinal == ordinal + direction }?.let { return it }
+        cached.firstOrNull { it.readable && it.ordinal == ordinal + direction }?.let { return it }
         novel.cache.adjacent(pub.scope, pub.workId, pub.versionId, ordinal, direction)?.let { return it.chapter?.let(::ref) }
         var start = if (direction > 0) ordinal + 1 else (ordinal - 100).coerceAtLeast(0)
         while (true) {
@@ -221,12 +261,26 @@ class NativeTextReaderActivity : ComponentActivity() {
         WindowInsetsControllerCompat(window, window.decorView).apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             isAppearanceLightStatusBars = style.paper != ReaderPaper.NIGHT; isAppearanceLightNavigationBars = style.paper != ReaderPaper.NIGHT
-            if (style.fullScreen) hide(WindowInsetsCompat.Type.systemBars()) else show(WindowInsetsCompat.Type.systemBars())
+            // Keep the clock and battery visible without changing the viewport when opening menus.
+            show(WindowInsetsCompat.Type.statusBars())
+            if (style.fullScreen) hide(WindowInsetsCompat.Type.navigationBars()) else show(WindowInsetsCompat.Type.navigationBars())
+        }
+        window.setBackgroundDrawable(ColorDrawable(style.paper.background))
+        @Suppress("DEPRECATION")
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
+        @Suppress("DEPRECATION")
+        window.navigationBarColor = style.paper.background
+        if (Build.VERSION.SDK_INT >= 29) {
+            window.isStatusBarContrastEnforced = false
+            window.isNavigationBarContrastEnforced = false
         }
         if (style.keepAwake) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.attributes = window.attributes.apply { screenBrightness = style.brightness }
     }
-    private fun toggleMenu() { menu = !menu; applyWindow() }
+    private fun toggleMenu() {
+        if (style.haptics) view?.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+        menu = !menu; applyWindow()
+    }
     private fun mark(location: JSONObject, note: String) { lifecycleScope.launch { asset?.let { library.bookmark(it.id, location.toString(), note); message = "已保存书签" } } }
     private fun resolve(remote: Boolean) = navigate {
         val pub = requireNotNull(publication)
@@ -282,7 +336,8 @@ class NativeTextReaderActivity : ComponentActivity() {
                 bookmarkAssets = if (pub == null) listOfNotNull(asset?.id) else novel.dao.publications(pub.scope)
                     .filter { it.workId == pub.workId && it.versionId == pub.versionId }.map { it.assetId }
             }
-            BoxWithConstraints(Modifier.fillMaxSize().background(Color(style.paper.background)).displayCutoutPadding()) {
+            BoxWithConstraints(Modifier.fillMaxSize().background(Color(style.paper.background))
+                .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))) {
                 val compactControls = maxHeight < 480.dp
                 AndroidView(factory = { context -> NativeTextView(context).also { reader ->
                     view = reader
@@ -296,8 +351,11 @@ class NativeTextReaderActivity : ComponentActivity() {
                         if (saveAfterLayout) { saveAfterLayout = false; positionChanged(reader.readingOffset, true) }
                     }
                     pendingShow?.let { (content, title, restored) -> reader.show(content, title, restored, style); pendingShow = null }
-                } }, update = { it.gesturesEnabled = !busy && !menu && panel == null && excerpt == null }, modifier = Modifier.fillMaxSize())
-                if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+                } }, update = { it.gesturesEnabled = !busy && !menu && panel == null && excerpt == null }, modifier = Modifier.fillMaxSize().statusBarsPadding()
+                    .then(if (style.fullScreen) Modifier else Modifier.navigationBarsPadding()))
+                var showLoading by remember { mutableStateOf(false) }
+                LaunchedEffect(busy) { showLoading = false; if (busy) { delay(220); showLoading = true } }
+                if (showLoading) LinearProgressIndicator(Modifier.fillMaxWidth().statusBarsPadding().align(Alignment.TopCenter))
                 fatal?.let { text -> Column(Modifier.align(Alignment.Center).padding(28.dp)) { Text(text); TextButton(onClick = { finish() }) { Text("返回书架") } } }
                 if (menu) {
                     Box(Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { menu = false; applyWindow() })
@@ -330,7 +388,7 @@ class NativeTextReaderActivity : ComponentActivity() {
                                 stopAloud()
                                 view?.seek(((chapter?.text?.length ?: 0) * ratio).toInt())
                                 jumpHistory = jumpHistory.remember(origin, location())
-                            }, onPrevious = { stopAloud(); view?.turn(-1) }, onNext = { stopAloud(); view?.turn(1) },
+                            }, onPrevious = { skipChapter(-1) }, onNext = { skipChapter(1) },
                             onSpeak = ::speak, onPanel = { if (it == "书源") sourceState.selectedVersion = null; panel = it; applyWindow() }, compact = compactControls, sources = publication != null)
                     }
                 if (panel == null) SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp))

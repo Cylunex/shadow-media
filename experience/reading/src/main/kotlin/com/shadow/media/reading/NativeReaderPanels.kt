@@ -92,7 +92,11 @@ internal fun ColumnScope.NativeContentsBody(
     val target = number.toIntOrNull()?.takeIf { it in 1..total }
     fun locate(ordinal: Int) { filter = ""; focus.clearFocus(); onRequest(ordinal); scrollRequest++ }
     fun jump() { target?.let { locate(it - 1); showJump = false } }
-    LaunchedEffect(entries, requested, filter, scrollRequest) {
+    var positionedFor by remember { mutableStateOf<Triple<Int, String, Int>?>(null) }
+    LaunchedEffect(requested, filter, scrollRequest, loading) {
+        val targetPosition = Triple(requested, filter, scrollRequest)
+        if (loading || positionedFor == targetPosition) return@LaunchedEffect
+        positionedFor = targetPosition
         listState.scrollToItem(visible.indexOfFirst { it.ordinal == requested }.coerceAtLeast(0))
     }
     if (!showJump) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

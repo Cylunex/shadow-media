@@ -155,6 +155,7 @@ class NativeTextLayoutTest {
             }
             for ((name, style, w, h) in listOf(
                 Preview("reader-parchment-focus", ReaderSettings(showProgress = false), 432, 900),
+                Preview("reader-deep-parchment", ReaderSettings(paper = ReaderPaper.DEEP_PARCHMENT), 432, 900),
                 Preview("reader-night", ReaderSettings(paper = ReaderPaper.NIGHT), 432, 900),
                 Preview("reader-wide", ReaderSettings(), 1100, 620),
                 Preview("reader-large-narrow", ReaderTypographyPreset.LARGE.apply(ReaderSettings()), 320, 700)

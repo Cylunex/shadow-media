@@ -215,7 +215,8 @@ import com.shadow.media.reading.ReaderActivity
     BackHandler(enabled = localShelf || generalSettings) { returnToModule() }
     Scaffold(
         topBar = {
-            if (!audioExpanded) MediaModuleHeader(module, ::selectModule, { toolsExpanded = true }, {
+            if (!audioExpanded && !(module == MediaModule.NOVEL && !localShelf && !generalSettings &&
+                    !catalogScreen && !offlineScreen && !continueScreen && !localVideoScreen && state.screen == Screen.HOME)) MediaModuleHeader(module, ::selectModule, { toolsExpanded = true }, {
                 resetUtility(); generalSettings = true; viewModel.showHome()
             })
         },
@@ -262,7 +263,8 @@ import com.shadow.media.reading.ReaderActivity
                         onCatalogs = { generalSettings = false; catalogScreen = true; allCatalogs = true }, onNovel = { selectModule(MediaModule.NOVEL); generalSettings = false },
                         onOffline = { offlineScreen = true }, onContinue = { continueScreen = true }, onVideos = { localVideoScreen = true })
                     module == MediaModule.NOVEL && !localShelf -> NovelScreen(container.novel, onBack = ::returnToModule,
-                        rootSection = destination, onLocalShelf = { localShelf = true })
+                        rootSection = destination, onLocalShelf = { localShelf = true }, onModule = ::selectModule,
+                        onModuleTools = { toolsExpanded = true }, onGeneralSettings = { resetUtility(); generalSettings = true; viewModel.showHome() })
                     module == MediaModule.MUSIC -> MusicScreen(container, controller, onPlaying = { audioExpanded = true },
                         rootSection = if (destination == MediaDestination.PLAYLISTS) "歌单" else "音乐库")
                     module in setOf(MediaModule.COMIC, MediaModule.AUDIOBOOK) || localShelf -> PublicationShelf(container.library,

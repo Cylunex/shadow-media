@@ -51,6 +51,8 @@ internal fun safeTextOffset(text: String, offset: Int): Int {
 
 /** TXT is decoded directly; Novel's immutable EPUB window is only a transport/cache container. */
 internal class NativeTextSource(private val library: LibraryRepository, private val novel: NovelRepository) {
+    // Immutable transport windows can be reused without repeatedly opening ZIP/XML on chapter jumps.
+    private val parsed = android.util.LruCache<String, NativeTextChapter>(4)
     private var localAsset: String? = null
     private var localChapters = emptyList<NativeTextChapter>()
     suspend fun local(asset: LibraryAssetEntity): List<NativeTextChapter> = withContext(Dispatchers.IO) {
@@ -92,13 +94,15 @@ internal class NativeTextSource(private val library: LibraryRepository, private 
         }
         val mapping = NovelPublicationMap(JSONObject(publication.mappingJson))
         val ref = href?.let(mapping::chapterForHref) ?: mapping.chapters.first()
+        val cacheKey = "${asset.id}:${asset.revision}:${ref.getString("id")}"
+        parsed.get(cacheKey)?.let { return@withContext it }
         val xml = SafeArchives.xml(SafeArchives.read(library.localFile(asset), ref.getString("href")))
         val paragraphs = xml.getElementsByTagNameNS("*", "p")
         val body = (0 until paragraphs.length).joinToString("\n") { paragraphs.item(it).textContent }
         require(body.isNotBlank()) { "此章节没有可读正文" }
         require(body.length <= 512_000) { "此章节超过 50 万字，请先在 Novel 中拆分章节" }
         NativeTextChapter(NativeChapterRef(ref.getString("id"), ref.getString("title"), ref.getInt("ordinal"), ref.getString("href")),
-            body, publication.versionId, mapping.json.getInt("total"))
+            body, publication.versionId, mapping.json.getInt("total")).also { parsed.put(cacheKey, it) }
     }
 
     companion object {

@@ -40,6 +40,29 @@ class NativeTextGestureTest {
             listOf(parchment, night, plain).forEach { it.recycle() }
         } finally { view.dispose() }
     }
+    @Test fun returningToAPreparedChapterReusesLayoutButTypographyChangesInvalidateIt() {
+        val view = reader()
+        try {
+            val original = view.document!!
+            val next = original.chapter.copy(ref = original.chapter.ref.copy(id = "next", ordinal = 1))
+            kotlinx.coroutines.runBlocking { view.prepareChapter(next) }
+            view.show(next, "山海夜读", 0, ReaderSettings(pageMode = ReaderPageMode.NONE))
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("next", view.document!!.chapter.ref.id)
+            view.show(original.chapter, "山海夜读", 50, ReaderSettings(pageMode = ReaderPageMode.NONE))
+            shadowOf(Looper.getMainLooper()).idle()
+            assertSame(original, view.document)
+            assertEquals(50, view.readingOffset)
+            view.configure(ReaderSettings(pageMode = ReaderPageMode.NONE, fontSize = 150f))
+            val deadline = System.nanoTime() + 5_000_000_000
+            while (view.document === original && System.nanoTime() < deadline) {
+                shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(10)
+            }
+            assertNotSame(original, view.document)
+            assertEquals(50, view.readingOffset)
+        } finally { view.dispose() }
+    }
+
     private fun reader(): NativeTextView {
         val view = NativeTextView(RuntimeEnvironment.getApplication())
         view.layout(0, 0, 432, 900)

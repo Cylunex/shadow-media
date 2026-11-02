@@ -289,7 +289,7 @@ class ReaderActivity : FragmentActivity() {
         paperJob?.cancel()
         paperJob = lifecycleScope.launch {
             try {
-                val data = if (appearance.paper == ReaderPaper.PARCHMENT) withContext(Dispatchers.IO) {
+                val data = if (appearance.paper.textured) withContext(Dispatchers.IO) {
                     ReaderPaperTexture.dataUri(applicationContext)
                 } else ""
                 fragment.evaluateJavascript(readerPaperScript(appearance, data))

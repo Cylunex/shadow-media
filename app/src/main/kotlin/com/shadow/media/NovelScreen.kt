@@ -18,6 +18,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -42,7 +43,9 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
 }
 
 @Composable internal fun NovelScreen(repository: NovelRepository, onBack: () -> Unit,
-    rootSection: MediaDestination? = null, onLocalShelf: (() -> Unit)? = null) {
+    rootSection: MediaDestination? = null, onLocalShelf: (() -> Unit)? = null,
+    onModule: ((MediaModule) -> Unit)? = null, onModuleTools: (() -> Unit)? = null,
+    onGeneralSettings: (() -> Unit)? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var connections by remember { mutableStateOf<List<CatalogConnection>>(emptyList()) }
@@ -75,6 +78,9 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
     val rootStacks = remember(connection?.id) { mutableMapOf<MediaDestination, List<NovelDestination>>() }
     val rootStates = remember(connection?.id) { mutableMapOf<MediaDestination, NovelDestination>() }
     var previousRoot by remember { mutableStateOf(rootSection) }
+    var refreshRoot by remember { mutableIntStateOf(0) }
+    var refreshing by remember { mutableStateOf(false) }
+    var modulePicker by remember { mutableStateOf(false) }
     LaunchedEffect(rootSection) {
         if (rootSection != null && previousRoot != rootSection) {
             job?.cancelAndJoin(); busy = false
@@ -82,8 +88,9 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
             val restored = rootStates[rootSection]
             route = restored?.route ?: novelRootRoute(rootSection)
             query = restored?.query ?: NovelQuery(); search = restored?.search.orEmpty()
-            // Another tab may have changed shelf membership; restore navigation, then fetch fresh content.
-            data = null; navigation = restored?.navigation ?: JSONObject(); offset = 0
+            // Restore content and scroll position immediately; revalidate the first page in place.
+            data = restored?.data; navigation = restored?.navigation ?: JSONObject(); offset = restored?.offset ?: 0
+            if (data != null && offset == 0) refreshRoot++
             stack = rootStacks[rootSection].orEmpty(); error = null; message = null; previousRoot = rootSection
         }
     }
@@ -210,10 +217,22 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
     LaunchedEffect(connection?.id, route, query, deletedLists, data == null) {
         if (connection != null && data == null) { while (busy) delay(40); execute { load() } }
     }
+    LaunchedEffect(refreshRoot, rootSection) {
+        if (refreshRoot == 0 || data == null || offset != 0 || busy) return@LaunchedEffect
+        refreshing = true
+        try { load() }
+        catch (e: CancellationException) { throw e }
+        catch (e: Exception) { error = e.message ?: "刷新失败，已保留原有内容" }
+        finally { refreshing = false }
+    }
     DisposableEffect(Unit) { onDispose { job?.cancel() } }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle, connection, route) {
+        // Lifecycle replays ON_RESUME when attaching to an already visible page. That is not
+        // a return from the reader and must not start a second, blocking load on every tab switch.
+        var initialResume = true
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME && connection != null) {
+            if (initialResume) { initialResume = false; return@LifecycleEventObserver }
             NovelRepository.schedule(context)
             if (!busy && (route.kind in setOf("work", "home", "offline") || route.kind == "works" && route.id in setOf("shelf", "history"))) execute { load() }
         } }
@@ -224,12 +243,25 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
     val editable = data?.has("_cached_at") != true && !LibraryResources.offlineOnly
     CompositionLocalProvider(LocalNovelArtwork provides c?.let { NovelArtwork(repository, it) }) {
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        TopAppBar(title = { Text(if (c == null) { if (rootSection == null) "Shadow Novel" else "连接小说服务" } else when (route.kind) {
+        TopAppBar(title = { Row(verticalAlignment = Alignment.CenterVertically) { Text(if (c == null) { if (rootSection == null) "Shadow Novel" else "连接小说服务" } else when (route.kind) {
             "work" -> data?.optString("title") ?: "作品"; "author" -> route.name; "list" -> data?.optString("title") ?: "书单"; "contents" -> "版本目录"
             "sources" -> "在线找书"; "tools" -> "书库工具"; "home" -> "书城"; "lists" -> "我的书单"; "rankings" -> "排行榜"; "offline" -> "离线阅读"; "discovery" -> "发现"
             "works" -> if (route.id == "shelf") "我的书架" else if (route.id == "history") "阅读历史" else "发现好书"; else -> c.name
-        }, maxLines = 1, style = if (rootSection != null) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge) },
-            expandedHeight = if (rootSection != null) 48.dp else 64.dp,
+        }, maxLines = 1, style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.weight(1f, fill = false))
+            if (onModule != null && stack.isEmpty()) Box {
+                IconButton(onClick = { modulePicker = true }, modifier = Modifier.testTag("module-switch")) { Icon(Icons.Rounded.ExpandMore, "切换模块") }
+                DropdownMenu(modulePicker, { modulePicker = false }) {
+                    MediaModule.entries.forEach { item -> DropdownMenuItem(text = { Text(item.title) }, leadingIcon = { Icon(item.icon, null) },
+                        onClick = { modulePicker = false; onModule(item) }) }
+                    onGeneralSettings?.let { settings ->
+                        HorizontalDivider()
+                        DropdownMenuItem(text = { Text("通用设置") }, leadingIcon = { Icon(Icons.Rounded.Settings, null) }, onClick = { modulePicker = false; settings() })
+                    }
+                }
+            }
+        } },
+            expandedHeight = 56.dp,
             colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background), navigationIcon = {
             if (rootSection == null || stack.isNotEmpty()) IconButton(onClick = ::back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") }
         }, actions = {
@@ -238,6 +270,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
             Box {
                 IconButton(onClick = { pageTools = true }) { Icon(Icons.Rounded.MoreHoriz, "书库选项") }
                 DropdownMenu(pageTools, { pageTools = false }) {
+                    onModuleTools?.let { tools -> DropdownMenuItem(text = { Text("小说工具与设置") }, onClick = { pageTools = false; tools() }) }
                     if (rootSection != null && c != null) DropdownMenuItem(text = { Text("切换小说服务") }, onClick = {
                         pageTools = false; job?.cancel(); busy = false; connection = null; data = null; stack = emptyList()
                     })
@@ -250,7 +283,9 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
                 }
             }
         })
-        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        Box(Modifier.fillMaxWidth().height(2.dp)) {
+            if (busy || refreshing) LinearProgressIndicator(Modifier.fillMaxSize())
+        }
         error?.let { Text(it, Modifier.padding(horizontal = 20.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.error) }
         if (error != null && c?.oidcIssuer?.isNotBlank() == true) TextButton(enabled = !busy, onClick = { signIn(c.name, c.url, c) }) { Text("重新登录统一账号") }
         message?.let { Text(it, Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.primary) }

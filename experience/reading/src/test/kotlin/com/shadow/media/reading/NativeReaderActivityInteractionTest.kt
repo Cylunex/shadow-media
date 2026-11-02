@@ -48,6 +48,10 @@ class NativeReaderActivityInteractionTest {
             val document = view.document
             val anchor = view.readingOffset
             val fullScreen = activity.window.decorView.systemUiVisibility and View.SYSTEM_UI_FLAG_FULLSCREEN
+            assertEquals("Clock and battery remain visible during fullscreen reading", 0, fullScreen)
+            assertEquals(android.graphics.Color.TRANSPARENT, activity.window.statusBarColor)
+            assertEquals(ReaderPaper.PARCHMENT.background,
+                (activity.window.decorView.background as android.graphics.drawable.ColorDrawable).color)
             val now = SystemClock.uptimeMillis()
             for ((action, delay) in listOf(MotionEvent.ACTION_DOWN to 0, MotionEvent.ACTION_UP to 60)) {
                 MotionEvent.obtain(now, now + delay, action, view.width / 2f, view.height / 2f, 0).also { view.onTouchEvent(it); it.recycle() }

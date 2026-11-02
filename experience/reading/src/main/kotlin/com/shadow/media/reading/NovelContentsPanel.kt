@@ -128,7 +128,10 @@ internal fun ColumnScope.NovelContentsBody(
     val localOnly = page?.optBoolean("_downloaded_only") == true
     fun search() { focus.clearFocus(); onQuery(query.search(draft)) }
     fun go() { target?.let { focus.clearFocus(); onQuery(query.copy(offset = (it - 1) * query.limit)); jump = false } }
-    LaunchedEffect(page, locateRequest) {
+    var positionedFor by remember { mutableStateOf<Pair<NovelContentsQuery, Int>?>(null) }
+    LaunchedEffect(query, loading, locateRequest) {
+        if (loading || page == null || positionedFor == (query to locateRequest)) return@LaunchedEffect
+        positionedFor = query to locateRequest
         val active = if (query.q.isBlank() && !query.descending) entries.indexOfFirst { it.optString("id") == currentId } else -1
         list.scrollToItem(active.coerceAtLeast(0))
     }

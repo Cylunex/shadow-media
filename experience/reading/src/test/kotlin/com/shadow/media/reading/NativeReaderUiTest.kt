@@ -157,13 +157,18 @@ class NativeReaderUiTest {
 
     @Test fun compactControlsKeepToolsReachableAndSeekOnlyOnceAfterDragging() {
         var seeks = 0
+        var previous = 0
+        var next = 0
         var panel: String? = null
         compose.setContent { MaterialTheme(colorScheme = readerColorScheme(ReaderPaper.IVORY)) { Surface { Column(Modifier.width(360.dp).height(180.dp)) {
             NativeReaderControls("第一百四十六章", "12 / 36 页", .3f, true, false, true,
-                onReturn = {}, onSeek = { seeks++ }, onPrevious = {}, onNext = {}, onSpeak = {}, onPanel = { panel = it }, compact = true)
+                onReturn = {}, onSeek = { seeks++ }, onPrevious = { previous++ }, onNext = { next++ }, onSpeak = {}, onPanel = { panel = it }, compact = true)
         } } } }
         compose.onNodeWithText("目录").assertIsDisplayed().performClick()
         assertEquals("目录", panel)
+        compose.onNodeWithContentDescription("上一章").performClick()
+        compose.onNodeWithContentDescription("下一章").performClick()
+        assertEquals(1, previous); assertEquals(1, next)
         compose.onNodeWithContentDescription("返回跳转前的位置").assertIsDisplayed()
         screenshot("reader-compact-controls")
         compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetProgress)).performTouchInput { swipe(Offset(width * .3f, center.y), Offset(width * .8f, center.y), durationMillis = 400) }
@@ -202,7 +207,7 @@ class NativeReaderUiTest {
                 }
             }
         } } } }
-        compose.onNodeWithText("下一页").assertIsDisplayed()
+        compose.onNodeWithText("下一章").assertIsDisplayed()
         compose.onNodeWithText("停止朗读").assertIsDisplayed()
         compose.onNodeWithContentDescription("添加书签").performClick()
         assertEquals(1, bookmarks)

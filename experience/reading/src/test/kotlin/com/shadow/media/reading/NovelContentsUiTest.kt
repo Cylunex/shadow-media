@@ -59,6 +59,25 @@ class NovelContentsUiTest {
         compose.runOnIdle { assertEquals(200, query.offset) }
     }
 
+    @Test fun backgroundCacheUpdatesKeepTheScrolledDirectoryPosition() {
+        var data by mutableStateOf(page())
+        var downloaded by mutableStateOf(emptySet<String>())
+        compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize().padding(20.dp)) {
+            NovelContentsBody(NovelContentsQuery("v", offset = 100), data, false, null, downloaded,
+                "c145", 145, true, {}, {}, {})
+        } } } }
+        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(99)
+        compose.onNodeWithText("第199 节 山海来信").assertIsDisplayed()
+        compose.runOnIdle {
+            downloaded = setOf("c198", "c199")
+            data = JSONObject(data.toString()).put("_cached_at", 1L)
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("第199 节 山海来信").assertIsDisplayed()
+        compose.onNodeWithText("当前章").performClick()
+        compose.onNodeWithText("第145 节 山海来信").assertIsDisplayed()
+    }
+
     @Test fun jumpUsesFilteredPagesAndExplicitEndDisablesNext() {
         var query by mutableStateOf(NovelContentsQuery("v", "山海"))
         val data = page().put("total", 124).put("next_offset", JSONObject.NULL)

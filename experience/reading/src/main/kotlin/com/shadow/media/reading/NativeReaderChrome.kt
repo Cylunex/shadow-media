@@ -22,7 +22,7 @@ import com.shadow.media.library.LibraryRepository
 
 @Composable
 internal fun NativeReaderHeader(title: String, chapter: String, status: String?, enabled: Boolean, onBack: () -> Unit, onClose: () -> Unit, onBookmark: () -> Unit, conflict: (@Composable () -> Unit)? = null, night: Boolean = false, onToggleNight: (() -> Unit)? = null) {
-    Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
+    Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 1.dp) {
         Column(Modifier.fillMaxWidth().statusBarsPadding().padding(bottom = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "退出阅读") }
@@ -48,16 +48,16 @@ internal fun NativeReaderControls(
     canReturn: Boolean, onReturn: () -> Unit, onSeek: (Float) -> Unit, onPrevious: () -> Unit,
     onNext: () -> Unit, onSpeak: () -> Unit, onPanel: (String) -> Unit, compact: Boolean = false, sources: Boolean = false,
 ) {
-    Surface(shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), tonalElevation = 4.dp, shadowElevation = 8.dp) {
+    Surface(shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp), color = MaterialTheme.colorScheme.surface, shadowElevation = 2.dp) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(top = if (compact) 4.dp else 16.dp, bottom = 4.dp)) {
             if (canReturn && !compact) TextButton(enabled = enabled, onClick = onReturn, modifier = Modifier.padding(horizontal = 12.dp)) {
                 Icon(Icons.AutoMirrored.Rounded.Undo, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("返回跳转前的位置")
             }
             if (compact) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (canReturn) IconButton(enabled = enabled, onClick = onReturn) { Icon(Icons.AutoMirrored.Rounded.Undo, "返回跳转前的位置") }
-                IconButton(enabled = enabled, onClick = onPrevious) { Icon(Icons.Rounded.ChevronLeft, "上一页") }
+                IconButton(enabled = enabled, onClick = onPrevious) { Icon(Icons.Rounded.ChevronLeft, "上一章") }
                 ReaderProgressControl(progress, enabled, "本章", compact = true, modifier = Modifier.weight(1f), seek = onSeek)
-                IconButton(enabled = enabled, onClick = onNext) { Icon(Icons.Rounded.ChevronRight, "下一页") }
+                IconButton(enabled = enabled, onClick = onNext) { Icon(Icons.Rounded.ChevronRight, "下一章") }
                 IconButton(enabled = enabled, onClick = onSpeak) { Icon(if (narrating) Icons.Rounded.Stop else Icons.Rounded.Headphones, if (narrating) "停止朗读" else "朗读") }
             } else {
                 Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -67,12 +67,12 @@ internal fun NativeReaderControls(
                 }
                 ReaderProgressControl(progress, enabled, "本章", seek = onSeek)
                 Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(enabled = enabled, onClick = onPrevious, contentPadding = PaddingValues(horizontal = 8.dp)) { Icon(Icons.Rounded.ChevronLeft, null); Text("上一页") }
+                    TextButton(enabled = enabled, onClick = onPrevious, contentPadding = PaddingValues(horizontal = 8.dp)) { Icon(Icons.Rounded.ChevronLeft, null); Text("上一章") }
                     FilledTonalButton(enabled = enabled, onClick = onSpeak) {
                         Icon(if (narrating) Icons.Rounded.Stop else Icons.Rounded.Headphones, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp)); Text(if (narrating) "停止朗读" else "朗读")
                     }
-                    TextButton(enabled = enabled, onClick = onNext, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("下一页"); Icon(Icons.Rounded.ChevronRight, null) }
+                    TextButton(enabled = enabled, onClick = onNext, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("下一章"); Icon(Icons.Rounded.ChevronRight, null) }
                 }
                 HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant)
             }
