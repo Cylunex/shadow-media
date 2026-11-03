@@ -80,7 +80,7 @@ import com.shadow.media.database.SourceHealthEntity
 
 enum class Screen {
     SERVERS, LOGIN, HOME, LIBRARIES, ITEMS, DETAIL, SOURCES, EXTERNAL_ITEMS, EXTERNAL_PLAYER,
-    DISCOVER, PROVIDER_DETAIL, NETWORK_STORAGES, INTEGRATIONS, INSIGHTS, SETTINGS, PLAYER
+    DISCOVER, PROVIDER_DETAIL, MDC, NETWORK_STORAGES, INTEGRATIONS, INSIGHTS, SETTINGS, PLAYER
 }
 
 data class MainUiState(
@@ -409,6 +409,38 @@ class MainViewModel(
             pendingPublication = null,
             errorMessage = null,
         )
+    }
+
+    fun showMdc() = navigate { copy(screen = Screen.MDC, errorMessage = null) }
+
+    internal fun mdcProvider(connection: com.shadow.media.library.CatalogConnection) =
+        MdcMediaProvider(connection, externalClient)
+
+    internal suspend fun playMdc(provider: MdcMediaProvider, key: MediaKey) {
+        val (serverId, itemId) = provider.embyTarget(key)
+        val accounts = sessionStore.loadAll().filter { it.serverId == serverId }
+        val session = accounts.singleOrNull() ?: accounts.singleOrNull { it == state.value.session }
+            ?: error(if (accounts.isEmpty()) "请先在 Media 连接此 Emby 服务器" else "请先在 Emby 媒体服务中选择播放账号")
+        val item = repository.item(session, itemId)
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        check(sessionStore.select(session)) { "此 Emby 账号已移除，请重新连接" }
+        playbackRequest?.cancel()
+        deleteRequest?.cancel()
+        update {
+            copy(
+                session = session,
+                serverUrl = session.serverUrl,
+                userName = session.userName,
+                allowInsecureHttp = session.allowInsecureHttp,
+                libraries = if (this.session == session) libraries else emptyList(),
+                homeSections = if (this.session == session) homeSections else emptyList(),
+                selectedLibrary = if (this.session == session) selectedLibrary else null,
+                items = listOf(item),
+                playerReturnScreen = Screen.MDC,
+                feedMode = false,
+            )
+        }
+        playAt(0)
     }
 
     fun showLibraries() = navigate { copy(screen = Screen.LIBRARIES, errorMessage = null) }
@@ -1833,7 +1865,7 @@ class MainViewModel(
             }
             Screen.NETWORK_STORAGES -> update { copy(screen = networkStorageReturnScreen, errorMessage = null) }
             Screen.LIBRARIES, Screen.SOURCES, Screen.DISCOVER, Screen.SETTINGS, Screen.INTEGRATIONS,
-            Screen.INSIGHTS -> showHome()
+            Screen.INSIGHTS, Screen.MDC -> showHome()
             Screen.HOME -> showServers()
             Screen.SERVERS -> Unit
         }

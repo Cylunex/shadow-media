@@ -487,6 +487,7 @@ import com.shadow.media.reading.ReaderActivity
         item { OutlinedButton(onClick = onOffline, modifier = Modifier.fillMaxWidth()) { Text("离线任务与存储") } }
         item { Text("通用设置", style = MaterialTheme.typography.headlineLarge); Text("你的内容，按自己的方式连接", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item { SourceTile("Emby 媒体服务", "${state.savedSessions.size} 个已保存账号", Icons.Rounded.Dns, viewModel::showServers) }
+        item { SourceTile("Shadow MDC", "作品目录与 Emby 一键播放", Icons.Rounded.VideoLibrary, viewModel::showMdc) }
         item { SourceTile("网络存储", "OpenList / WebDAV / SMB · ${state.networkStorages.size} 个连接", Icons.Rounded.FolderOpen, viewModel::showNetworkStorages) }
         item { SourceTile("影视与直播订阅", "${state.externalSources.size} 个订阅 · 导入、更新与诊断", Icons.Rounded.LiveTv, viewModel::showSources) }
         item { SourceTile("本机视频与链接", "手机视频 / 文件夹 / m3u8 · 继续观看", Icons.Rounded.VideoLibrary, onVideos) }

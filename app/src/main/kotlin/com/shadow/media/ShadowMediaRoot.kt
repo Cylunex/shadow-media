@@ -155,6 +155,7 @@ fun LegacyMediaRoot(viewModel: MainViewModel, container: AppContainer, rootScree
             state.screen == Screen.PLAYER || state.screen == Screen.EXTERNAL_PLAYER
         )
     }
+    val mdcPageState = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
     val imageLoader = rememberEmbyImageLoader(state.session, container.clientIdentity)
     val videoControls = remember { VideoControlState() }
     DisposableEffect(Unit) { onDispose { (rootContext.findActivity() as? MainActivity)?.setPlaybackActive(false) } }
@@ -177,6 +178,7 @@ fun LegacyMediaRoot(viewModel: MainViewModel, container: AppContainer, rootScree
                 Screen.EXTERNAL_PLAYER -> ExternalPlayerScreen(state, viewModel, container)
                 Screen.DISCOVER -> DiscoverScreen(state, viewModel)
                 Screen.PROVIDER_DETAIL -> UnifiedDetailScreen(state, viewModel)
+                Screen.MDC -> mdcPageState.SaveableStateProvider("mdc") { MdcScreen(viewModel) }
                 Screen.NETWORK_STORAGES -> NetworkStorageScreen(state, viewModel)
                 Screen.INTEGRATIONS -> IntegrationScreen(state, viewModel)
                 Screen.INSIGHTS -> InsightsScreen(viewModel)
@@ -689,6 +691,9 @@ private fun LibraryScreen(state: MainUiState, viewModel: MainViewModel) {
                 actionLabel = "媒体中心",
                 onAction = viewModel::showHome,
             )
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            OutlinedButton(onClick = viewModel::showMdc, modifier = Modifier.fillMaxWidth()) { Text("Shadow MDC 片库") }
         }
         if (state.lastFeedLibraryId != null) {
             item(span = { GridItemSpan(maxLineSpan) }) {

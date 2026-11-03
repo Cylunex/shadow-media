@@ -51,6 +51,8 @@ Shadow Novel 提供原生书城、书单、排行榜、作家、个人书架与�
   → 统一详情、选集、线路与播放解析
 ```
 
+MDC 作品目录与 Emby 原生播放接入见 [MDC 接入说明](docs/MDC_INTEGRATION.md)。
+
 ## 已包含
 
 - Kotlin 2.2、Jetpack Compose、Media3 1.11 和 OkHttp 的多模块 Android 工程；
