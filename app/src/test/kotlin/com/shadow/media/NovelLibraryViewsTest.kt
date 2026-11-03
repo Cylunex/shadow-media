@@ -43,6 +43,26 @@ class NovelLibraryViewsTest {
             bitmap.recycle()
         }
     }
+    @Test fun shelfManagementSelectsBooksAndUsesExistingGroupWithoutOpeningReader() {
+        var appliedIds: Set<String> = emptySet()
+        var appliedAction = ""
+        var appliedGroup = ""
+        val data = JSONObject().put("total", 1).put("items", JSONArray().put(book("one", "山海来信")))
+        val navigation = JSONObject().put("groups", JSONArray().put("追更"))
+        compose.setContent { ShadowMediaTheme { Surface { NovelWorksPage("shelf", NovelQuery(view = "shelf"), "", navigation, data, false,
+            {}, {}, {}, {}, {}, { error("Management must not open details") }, { error("Management must not open reader") },
+            onBulk = { ids, action, value, _ -> appliedIds = ids; appliedAction = action; appliedGroup = value }) } } }
+        compose.onNodeWithText("管理", substring = false).performClick()
+        compose.onNodeWithText("选择已显示").performClick()
+        compose.onNodeWithText("整理 1 本").performClick()
+        compose.onNodeWithText("追更", substring = false).performClick()
+        compose.onNodeWithText("应用", substring = false).performClick()
+        compose.waitForIdle()
+        assertEquals(setOf("one"), appliedIds)
+        assertEquals("group", appliedAction)
+        assertEquals("追更", appliedGroup)
+    }
+
     @Test fun homeHasRealSearchShortcutsAndChapterScopedContinueProgress() {
         var search by mutableStateOf("")
         var submitted = ""

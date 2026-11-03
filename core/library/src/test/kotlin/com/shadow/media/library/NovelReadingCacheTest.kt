@@ -350,6 +350,7 @@ class NovelReadingCacheTest {
             service.badXml += 1
             val repository = repository(service)
             val prepared = repository.prepare(service.c, "work", "v1", "c0")
+            assertFalse(service.requests.any { it == "GET chapters/c1" || it == "GET chapters/c2" })
             val publication = repository.dao.publication(prepared.asset.id)!!
             assertEquals(listOf("c0"), NovelPublicationMap(JSONObject(publication.mappingJson)).chapters.map { it.getString("id") })
             assertFalse(repository.dao.state(NovelRepository.stateId(novelScope(service.c), "work"))!!.pending)

@@ -155,7 +155,7 @@ class NovelRepository(private val context: Context, private val library: Library
             val position = JSONObject().put("version_id", map.versionId).put("chapter_id", chapterId ?: NovelPublicationMap(JSONObject(map.mappingJson)).chapters.first().getString("id")).put("ratio", 0)
             return@withLock Prepared(asset, NovelPublicationMap(JSONObject(map.mappingJson)).locator(position)?.toString())
         }
-        val open = try { api.json(c, listOf("works", workId, "open"), listOfNotNull(versionId?.let { "version_id" to it })) }
+        val open = try { api.json(c, listOf("works", workId, "open"), listOfNotNull("compact" to "true", versionId?.let { "version_id" to it }, chapterId?.let { "chapter_id" to it })) }
         catch (e: CancellationException) { throw e }
         catch (e: java.io.IOException) {
             if (e !is NovelApiException && localPrepared != null) return@withLock localPrepared!!
@@ -166,9 +166,10 @@ class NovelRepository(private val context: Context, private val library: Library
         if (chapterId == null && open.optString("quality") != "exact") throw NovelVersionSelectionRequired(workId, selectedVersion)
         val chosen = chapterId ?: remote?.optString("chapter_id")?.takeIf(String::isNotBlank) ?: open.getString("first_chapter_id")
         val chapters = open.novelObjects("chapters")
-        val offset = chapters.indexOfFirst { it.getString("id") == chosen && it.optBoolean("readable") }
+        val offset = if (open.has("chapter_ordinal") && !open.isNull("chapter_ordinal")) open.getInt("chapter_ordinal")
+            else chapters.indexOfFirst { it.getString("id") == chosen && it.optBoolean("readable") }
         require(offset >= 0) { "章节不属于所选版本" }
-        val cached = try { cache.window(c, workId, selectedVersion, offset, WINDOW, chosen, allowPartial = true) }
+        val cached = try { cache.window(c, workId, selectedVersion, offset, 1, chosen) }
         catch (e: NovelCachedChapterUnreadable) {
             if (e.chapterId == chosen) throw e
             cache.window(c, workId, selectedVersion, offset, 1, chosen)

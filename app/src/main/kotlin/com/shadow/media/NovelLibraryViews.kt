@@ -1,7 +1,8 @@
-@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 package com.shadow.media
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.*
@@ -107,7 +108,16 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
     view: String, query: NovelQuery, search: String, navigation: JSONObject, data: JSONObject?, busy: Boolean,
     onSearch: (String) -> Unit, onSubmit: () -> Unit, onQuery: (NovelQuery) -> Unit, onFilter: () -> Unit,
     onMore: () -> Unit, onWork: (String) -> Unit, onRead: (String) -> Unit,
+    onBulk: (suspend (Set<String>, String, String, List<String>) -> Unit)? = null,
 ) {
+    var managing by rememberSaveable { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var actions by remember { mutableStateOf(false) }
+    fun select(id: String) { selected = if (id in selected) selected - id else (selected + id).take(500).toSet() }
+    if (actions && onBulk != null) NovelShelfActions(selected, navigation, onDismiss = { actions = false }, onApply = { action, value, tags ->
+        onBulk(selected, action, value, tags)
+        selected = emptySet(); actions = false
+    })
     val preferences = LocalContext.current.getSharedPreferences("novel_library_ui", android.content.Context.MODE_PRIVATE)
     var grid by rememberSaveable { mutableStateOf(preferences.getBoolean("grid", true)) }
     val items = data?.novelObjects("items").orEmpty()
@@ -128,12 +138,18 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
                 item { FilterChip(query.serialStatus == "completed", enabled = !busy, onClick = { onQuery(query.copy(serialStatus = if (query.serialStatus == "completed") "" else "completed")) }, label = { Text("完结") }) }
                 if (isShelf) item { FilterChip(query.status == "reading", enabled = !busy, onClick = { onQuery(query.copy(status = if (query.status == "reading") "" else "reading")) }, label = { Text("在读") }) }
             }
+            if (managing) Row {
+                TextButton(onClick = { selected = (selected + items.map { it.getString("id") }).take(500).toSet() }) { Text("选择已显示") }
+                TextButton(onClick = { selected = emptySet() }) { Text("清空选择") }
+                TextButton(enabled = selected.isNotEmpty() && !busy, onClick = { actions = true }) { Text("整理 ${selected.size} 本") }
+            }
             if (labels.isNotEmpty()) LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(labels) { (label, cleared) -> InputChip(selected = true, enabled = !busy, onClick = { onQuery(cleared) }, label = { Text(label) }, trailingIcon = { Icon(Icons.Rounded.Close, "移除$label", Modifier.size(14.dp)) }) }
                 item { TextButton(enabled = !busy, onClick = { onQuery(NovelQuery(view = query.view, q = query.q, sort = query.sort)) }) { Text("清除筛选") } }
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (data == null) { if (busy) "正在找书…" else "尚未载入" } else "$total 本书", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (isShelf && onBulk != null) TextButton(enabled = !busy, onClick = { managing = !managing; selected = emptySet() }) { Text(if (managing) "完成管理" else "管理") }
                 var sorting by remember { mutableStateOf(false) }
                 Box {
                     TextButton(enabled = !busy, onClick = { sorting = true }) { Text(when (query.sort) { "last_read" -> "最近阅读"; "title" -> "书名"; "popularity" -> "热度"; else -> if (view == "history") "最近阅读" else "最近收录" }); Icon(Icons.Rounded.ExpandMore, null, Modifier.size(18.dp)) }
@@ -155,12 +171,14 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
             }
         }
         items(items, key = { it.getString("id") }) { work ->
-            val read = if (view in setOf("shelf", "history") && novelCanRead(work)) ({ onRead(work.getString("id")) }) else null
-            val detail = { onWork(work.getString("id")) }
+            val id = work.getString("id")
+            if (managing) Checkbox(id in selected, { select(id) })
+            val read = if (managing) ({ select(id) }) else if (view in setOf("shelf", "history") && novelCanRead(work)) ({ onRead(work.getString("id")) }) else null
+            val detail = { if (managing) select(id) else onWork(id) }
             if (!grid) Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 NovelWorkCard(work, !busy, read ?: detail)
                 if (read != null) TextButton(enabled = !busy, onClick = detail) { Text("详情") }
-            } else NovelShelfTile(work, !busy, detail, read)
+            } else NovelShelfTile(work, !busy, detail, read, onManage = if (isShelf && onBulk != null) ({ managing = true; selected = setOf(id); actions = true }) else null)
         }
         if (items.size < total) item(span = { GridItemSpan(maxLineSpan) }) { OutlinedButton(enabled = !busy, onClick = onMore, modifier = Modifier.fillMaxWidth()) { Text(if (busy) "正在加载…" else "加载更多 · 已显示 ${items.size} 本") } }
     }
@@ -168,9 +186,9 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
 
 internal fun novelCanRead(work: JSONObject) = work.novelStrings("availability").any { it in setOf("local", "online", "cached", "readable") }
 
-@Composable internal fun NovelShelfTile(work: JSONObject, enabled: Boolean, onDetail: () -> Unit, onRead: (() -> Unit)?) {
+@Composable internal fun NovelShelfTile(work: JSONObject, enabled: Boolean, onDetail: () -> Unit, onRead: (() -> Unit)?, onManage: (() -> Unit)? = null) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Card(enabled = enabled, onClick = onRead ?: onDetail, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Card(modifier = Modifier.combinedClickable(enabled = enabled, onClick = onRead ?: onDetail, onLongClick = onManage), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
             Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 Box {
                     NovelBookCover(work, Modifier.fillMaxWidth())
@@ -183,6 +201,7 @@ internal fun novelCanRead(work: JSONObject) = work.novelStrings("availability").
                 Text(if (!novelCanRead(work)) "仅资料" else serialLabel(work.optString("serial_status")).ifBlank { "可阅读" }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             }
         }
+        if (onManage != null) TextButton(enabled = enabled, onClick = onManage, modifier = Modifier.fillMaxWidth()) { Text("管理此书") }
         if (onRead != null) TextButton(enabled = enabled, onClick = onDetail, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 4.dp)) { Text("详情") }
     }
 }

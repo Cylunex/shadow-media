@@ -153,7 +153,7 @@ class NovelClientFlowTest {
         handler = { request -> when {
             request.path!!.contains("providers/catalog") -> {
                 val second = request.requestUrl!!.queryParameter("offset") == "40"
-                json("{\"total\":41,\"groups\":[{\"id\":\"g1\",\"name\":\"组甲\"},{\"id\":\"g2\",\"name\":\"组乙\"}],\"items\":[{\"id\":\"${if (second) "b" else "a"}\",\"name\":\"${if (second) "来源乙" else "来源甲"}\",\"enabled\":true}]}")
+                json("{\"facets\":{\"tags\":[{\"value\":\"直连\"},{\"value\":\"稳定\"}]},\"total\":41,\"groups\":[{\"id\":\"g1\",\"name\":\"组甲\"},{\"id\":\"g2\",\"name\":\"组乙\"}],\"items\":[{\"id\":\"${if (second) "b" else "a"}\",\"name\":\"${if (second) "来源乙" else "来源甲"}\",\"enabled\":true}]}")
             }
             else -> json("{}")
         } }
@@ -162,7 +162,8 @@ class NovelClientFlowTest {
         compose.setContent { ShadowMediaTheme { Surface { NovelSourcePicker(repo, c, NovelSourceFilter(), emptySet(), {}, { f, ids -> applied = f; chosen = ids }) } } }
         waitText("来源甲")
         compose.onNodeWithText("组甲").performClick(); compose.onNodeWithText("组乙").performClick()
-        compose.onNodeWithText("标签（逗号分隔，AND）").performTextInput("直连,稳定")
+        compose.onNodeWithText("直连", substring = false).performClick()
+        compose.onNodeWithText("稳定", substring = false).performClick()
         scrollTo("选择本页"); compose.onNodeWithText("选择本页").performClick()
         scrollTo("下一页"); compose.onNodeWithText("下一页").performClick()
         waitText("来源乙")

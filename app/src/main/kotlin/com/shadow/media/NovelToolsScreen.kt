@@ -184,11 +184,12 @@ internal fun novelJobSummary(job: JSONObject) = when (job.optString("state")) {
     var groups by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var addGroups by remember { mutableStateOf<Set<String>>(emptySet()) }
     var removeGroups by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var tagOptions by remember { mutableStateOf<List<String>>(emptyList()) }
     var addTags by remember { mutableStateOf("") }; var removeTags by remember { mutableStateOf("") }
     var action by remember { mutableStateOf("enable") }; var query by remember { mutableStateOf("") }
     var recipe by remember { mutableStateOf<String?>(null) }
     var currentJob by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) { task.run { groups = repository.live(c, listOf("source-groups")).novelObjects("items") } }
+    LaunchedEffect(Unit) { task.run { groups = repository.live(c, listOf("source-groups")).novelObjects("items"); tagOptions = repository.live(c, listOf("providers", "catalog"), listOf("limit" to "1")).optJSONObject("facets")?.novelObjects("tags").orEmpty().map { it.optString("value") } } }
     LazyColumn(Modifier.fillMaxSize().imePadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Text("书源管理", style = MaterialTheme.typography.titleLarge); NovelTaskStatus(task)
@@ -201,8 +202,8 @@ internal fun novelJobSummary(job: JSONObject) = when (job.optString("state")) {
             Text("导出为 Novel 原生规则 JSON，不是 Legado 格式。规则仅由服务端执行。", style = MaterialTheme.typography.bodySmall)
         }
         item {
-            OutlinedTextField(addTags, { addTags = it }, Modifier.fillMaxWidth(), label = { Text("添加标签（逗号分隔）") })
-            OutlinedTextField(removeTags, { removeTags = it }, Modifier.fillMaxWidth(), label = { Text("移除标签（逗号分隔）") })
+            NovelValuePicker("添加标签", tagOptions, novelTags(addTags), allowCreate = true) { addTags = it.joinToString(","); removeTags = novelTags(removeTags).filterNot(it::contains).joinToString(",") }
+            NovelValuePicker("移除标签", tagOptions, novelTags(removeTags)) { removeTags = it.joinToString(","); addTags = novelTags(addTags).filterNot(it::contains).joinToString(",") }
             Text("添加到分组")
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { groups.forEach { group -> val id = group.getString("id")
                 FilterChip(id in addGroups, { addGroups = if (id in addGroups) addGroups - id else addGroups + id; removeGroups = removeGroups - id }, label = { Text(group.optString("name")) })

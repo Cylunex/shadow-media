@@ -203,7 +203,7 @@ internal data class NovelIntakeAction(val read: Boolean = false, val chapterUrl:
                         FilterChip(id in filter.groups, { filter = filter.copy(groups = if (id in filter.groups) filter.groups - id else filter.groups + id) }, label = { Text(group.optString("name")) })
                     }
                 }
-                OutlinedTextField(tagText, { tagText = it }, Modifier.fillMaxWidth(), label = { Text("标签（逗号分隔，AND）") })
+                NovelValuePicker("同时满足的标签", data?.optJSONObject("facets")?.novelObjects("tags").orEmpty().map { it.optString("value") }, novelTags(tagText)) { tagText = it.joinToString(",") }
                 TextButton(onClick = { advanced = !advanced }) { Text(if (advanced) "收起筛选" else "状态、能力与排序") }
                 if (advanced) {
                     NovelOptionChips("启用", filter.enabled, listOf("" to "全部", "true" to "启用", "false" to "停用")) { filter = filter.copy(enabled = it) }

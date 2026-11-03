@@ -97,7 +97,7 @@ class NativeTextReaderActivity : ComponentActivity() {
             catch (e: Exception) { acquiring = false; busy = false; fatal = e.message ?: "正文打开失败" }
         }
     }
-    private suspend fun open(item: LibraryAssetEntity, locator: JSONObject?, lastPage: Boolean = false) {
+    private suspend fun open(item: LibraryAssetEntity, locator: JSONObject?, lastPage: Boolean = false, savePosition: Boolean = false) {
         val pub = novel.dao.publication(item.id)
         require(item.format == "txt" || pub != null) { "此阅读器支持 TXT 和 Novel 正文" }
         val content = source.chapter(item, pub, locator?.optString("href"),
@@ -110,6 +110,7 @@ class NativeTextReaderActivity : ComponentActivity() {
             observer?.cancel()
             observer = lifecycleScope.launch { novel.observe(pub.scope, pub.workId).collectLatest { state = it } }
         } else { observer?.cancel(); state = null }
+        saveAfterLayout = savePosition
         pendingShow = Triple(content, item.title, restored)
         acquiring = false
         view?.let { it.isEnabled = false; it.show(content, item.title, restored, style); pendingShow = null }
@@ -188,8 +189,7 @@ class NativeTextReaderActivity : ComponentActivity() {
     }
     private fun jumpTo(target: NativeReaderLocation) = navigate {
         val origin = location()
-        open(requireNotNull(library.dao.asset(target.assetId)) { "跳转对应内容已移除" }, JSONObject(target.locator))
-        saveAfterLayout = true
+        open(requireNotNull(library.dao.asset(target.assetId)) { "跳转对应内容已移除" }, JSONObject(target.locator), savePosition = true)
         jumpHistory = jumpHistory.remember(origin, location())
         closePanel()
     }
@@ -197,8 +197,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         val target = jumpHistory.locations.lastOrNull()
         if (target == null) { busy = false; view?.isEnabled = true }
         else {
-            open(requireNotNull(library.dao.asset(target.assetId)) { "原位置对应内容已移除" }, JSONObject(target.locator))
-            saveAfterLayout = true
+            open(requireNotNull(library.dao.asset(target.assetId)) { "原位置对应内容已移除" }, JSONObject(target.locator), savePosition = true)
             jumpHistory = NativeJumpHistory(jumpHistory.locations.dropLast(1))
             closePanel()
         }
@@ -206,16 +205,14 @@ class NativeTextReaderActivity : ComponentActivity() {
     private suspend fun loadChapter(ref: NativeChapterRef, end: Boolean = false) {
         val currentAsset = requireNotNull(asset)
         val pub = publication
-        if (pub == null) open(currentAsset, JSONObject().put("href", ref.href), end)
+        if (pub == null) open(currentAsset, JSONObject().put("href", ref.href), end, savePosition = true)
         else {
             val inPackage = NovelPublicationMap(JSONObject(pub.mappingJson)).chapter(ref.id) != null
             val prepared = if (inPackage) NovelRepository.Prepared(currentAsset, null)
                 else novel.cachedChapter(pub.scope, pub.workId, pub.versionId, ref.id)
                     ?: novel.prepare(novel.connection(pub.scope), pub.workId, pub.versionId, ref.id)
-            open(prepared.asset, JSONObject().put("href", ref.href), end)
+            open(prepared.asset, JSONObject().put("href", ref.href), end, savePosition = true)
         }
-        // Entering another chapter is an intentional movement; save only after its layout is ready.
-        saveAfterLayout = true
     }
     private var saveAfterLayout = false
     private fun boundary(direction: Int) = navigate {
@@ -293,8 +290,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         val pub = requireNotNull(publication)
         val origin = location()
         val prepared = novel.prepare(novel.connection(pub.scope), pub.workId, version, chapterId)
-        open(prepared.asset, prepared.locator?.let(::JSONObject))
-        saveAfterLayout = true
+        open(prepared.asset, prepared.locator?.let(::JSONObject), savePosition = true)
         jumpHistory = jumpHistory.remember(origin, location())
         closePanel()
     }

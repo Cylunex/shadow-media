@@ -355,7 +355,11 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
                 NovelWorksPage(route.id, query, search, navigation, data, busy,
                     onSearch = { search = it }, onSubmit = { rememberSearch(search); if (query.q != search.trim()) { query = query.copy(q = search.trim()); data = null } else execute { load() } },
                     onQuery = ::updateQuery, onFilter = { filter = true }, onMore = { execute { load(true) } },
-                    onWork = { navigate(NovelRoute("work", it)) }, onRead = { open(it) })
+                    onWork = { navigate(NovelRoute("work", it)) }, onRead = { open(it) },
+                    onBulk = { ids, action, value, tags ->
+                        if (action == "refresh_following") check(repository.live(c, listOf("integration")).optJSONObject("capabilities")?.optBoolean("shelf_refresh_following") == true) { "请更新 Novel 服务以检查所选追更来源" }
+                        repository.tools.bulkBooks(c, ids, action, value, tags); load()
+                    })
             } else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (route.kind == "home") {
                     item {
@@ -511,7 +515,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
             execute { load(); message = "已关联来源，可查看作品资料与可用版本" }
         })
     }
-    editor?.let { edit -> NovelEditSheet(edit, busy, error, onDismiss = { editor = null }, onSave = { values -> execute { edit.save(values); editor = null } }) }
+    editor?.let { edit -> NovelEditSheet(edit, busy, error, navigation, onDismiss = { editor = null }, onSave = { values -> execute { edit.save(values); editor = null } }) }
     memberships?.let { lists -> ModalBottomSheet(onDismissRequest = { memberships = null }) { LazyColumn(contentPadding = PaddingValues(20.dp)) {
         item { Text("选择书单", style = MaterialTheme.typography.titleLarge) }
         error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
@@ -568,12 +572,18 @@ private fun splitTags(text: String) = text.split(',', '，').map(String::trim).f
     } }
 }
 
-@Composable private fun NovelEditSheet(edit: NovelEdit, busy: Boolean, error: String?, onDismiss: () -> Unit, onSave: (Map<String, String>) -> Unit) {
+@Composable private fun NovelEditSheet(edit: NovelEdit, busy: Boolean, error: String?, navigation: JSONObject, onDismiss: () -> Unit, onSave: (Map<String, String>) -> Unit) {
     val values = remember(edit) { mutableStateMapOf(*edit.fields.toTypedArray()) }
     ModalBottomSheet(onDismissRequest = onDismiss) { LazyColumn(Modifier.imePadding(), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text(edit.title, style = MaterialTheme.typography.titleLarge) }
         error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
-        items(edit.fields) { (key, _) -> OutlinedTextField(values[key].orEmpty(), { values[key] = it }, Modifier.fillMaxWidth(), label = { Text(key) }, minLines = if (key in setOf("简介", "推荐语")) 4 else 1) }
+        items(edit.fields) { (key, _) ->
+            when (key) {
+                "分组" -> NovelValuePicker("分组", navigation.novelStrings("groups"), listOf(values[key].orEmpty()).filter(String::isNotBlank), single = true, allowCreate = true) { values[key] = it.firstOrNull().orEmpty() }
+                "标签（逗号分隔）" -> NovelValuePicker("标签", navigation.novelStrings("tags"), splitTags(values[key].orEmpty()), allowCreate = true) { values[key] = it.joinToString(",") }
+                else -> OutlinedTextField(values[key].orEmpty(), { values[key] = it }, Modifier.fillMaxWidth(), label = { Text(key) }, minLines = if (key in setOf("简介", "推荐语")) 4 else 1)
+            }
+        }
         item { Button(enabled = !busy, onClick = { onSave(values.toMap()) }, modifier = Modifier.fillMaxWidth()) { Text("保存") } }
     } }
 }
@@ -598,7 +608,8 @@ private fun splitTags(text: String) = text.split(',', '，').map(String::trim).f
         if (query.view == "shelf") item { FilterChip(value.hasUpdates, onClick = { value = value.copy(hasUpdates = !value.hasUpdates) }, label = { Text("只看有新章节的作品") }) }
         item { NovelChoices("内容", value.availability, listOf("" to "全部", "readable" to "可读", "local" to "本地版本", "online" to "在线版本", "metadata_only" to "仅资料")) { value = value.copy(availability = it) } }
         item { NovelChoices("个人状态", value.status, listOf("" to "全部", "want" to "想读", "reading" to "在读", "read" to "已读", "paused" to "暂停")) { value = value.copy(status = it) } }
-        item { OutlinedTextField(value.group, { value = value.copy(group = it) }, Modifier.fillMaxWidth(), label = { Text("个人分组") }); OutlinedTextField(tags, { tags = it }, Modifier.fillMaxWidth(), label = { Text("个人标签（逗号分隔）") }) }
+        item { NovelValuePicker("个人分组", navigation.novelStrings("groups"), listOf(value.group).filter(String::isNotBlank), single = true) { value = value.copy(group = it.firstOrNull().orEmpty()) } }
+        item { NovelValuePicker("个人标签", navigation.novelStrings("tags"), splitTags(tags)) { tags = it.joinToString(",") } }
         item { OutlinedTextField(popularity, { popularity = it.filter { char -> char.isDigit() || char == '.' } }, Modifier.fillMaxWidth(), label = { Text("最低热度 0–100（可留空）") }) }
         item { Row { TextButton(onClick = { value = NovelQuery(view = query.view, q = query.q); tags = ""; popularity = "" }) { Text("重置") }
             Button(enabled = popularity.isBlank() || popularity.toDoubleOrNull()?.let { it in 0.0..100.0 } == true, onClick = { onApply(value.copy(personalTags = splitTags(tags), minPopularity = popularity)) }) { Text("应用筛选") } } }

@@ -43,6 +43,8 @@ class NativeReaderActivityInteractionTest {
                 reader = find(activity.window.decorView)
             }
             val view = requireNotNull(reader)
+            repeat(300) { if (!view.isEnabled || !view.gesturesEnabled) { shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(16)); Thread.sleep(10) } }
+            assertTrue(view.isEnabled && view.gesturesEnabled)
             assertNotNull(view.document)
             shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(100))
             val document = view.document

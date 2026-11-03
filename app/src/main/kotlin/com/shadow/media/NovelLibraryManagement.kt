@@ -22,11 +22,12 @@ import org.json.JSONObject
     var total by remember { mutableIntStateOf(0) }
     var action by remember { mutableStateOf("shelf_add") }; var value by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("want") }
+    var navigation by remember { mutableStateOf(JSONObject()) }
     suspend fun load(more: Boolean = false) {
         val result = repository.live(c, listOf("works"), listOf("view" to if (shelf) "shelf" else "search", "q" to submitted, "limit" to "50", "offset" to if (more) rows.size.toString() else "0"))
         rows = (if (more) rows else emptyList()) + result.novelObjects("items"); total = result.optInt("total")
     }
-    LaunchedEffect(shelf) { task.run { load() } }
+    LaunchedEffect(shelf) { task.run { load(); navigation = repository.live(c, listOf("navigation")) } }
     LazyColumn(Modifier.fillMaxSize().imePadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text("批量整理作品", style = MaterialTheme.typography.titleLarge); NovelTaskStatus(task)
             NovelSearchField(query, { query = it }, !task.busy, { submitted = query.trim(); task.run { load() } }, "按书名或作者查找")
@@ -36,7 +37,7 @@ import org.json.JSONObject
             }
             Text("已选 ${ids.size} 本，跨页保留，最多 500 本。移出书架保留作品与原文件。", style = MaterialTheme.typography.bodySmall)
             NovelOptionChips("操作", action, listOf("shelf_add" to "加入书架", "shelf_remove" to "移出书架", "tags_add" to "添加标签", "tags_remove" to "移除标签", "group" to "主分组", "status" to "阅读状态", "refresh" to "更新目录")) { action = it }
-            if (action in setOf("tags_add", "tags_remove", "group")) OutlinedTextField(value, { value = it }, Modifier.fillMaxWidth(), label = { Text(if (action == "group") "主分组（留空解除）" else "标签（逗号分隔）") })
+            if (action in setOf("tags_add", "tags_remove", "group")) NovelValuePicker(if (action == "group") "主分组" else "标签", navigation.novelStrings(if (action == "group") "groups" else "tags"), if (action == "group") listOf(value).filter(String::isNotBlank) else novelTags(value), single = action == "group", allowCreate = action != "tags_remove") { value = it.joinToString(",") }
             if (action == "status") NovelOptionChips("阅读状态", status, listOf("want" to "想读", "reading" to "在读", "read" to "已读", "paused" to "暂停")) { status = it }
             Button(enabled = !task.busy && ids.isNotEmpty(), onClick = { task.run {
                 val result = repository.tools.bulkBooks(c, ids, action, if (action == "status") status else value, novelTags(value))
