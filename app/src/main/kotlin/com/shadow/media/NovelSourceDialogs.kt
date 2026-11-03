@@ -151,7 +151,7 @@ internal data class NovelIntakeAction(val read: Boolean = false, val chapterUrl:
                     Text(sample.optString("title"), style = MaterialTheme.typography.titleSmall)
                     Text("${sample.optInt("word_count")} 字 · ${sample.optInt("duration_ms")} ms", style = MaterialTheme.typography.labelSmall)
                     Text(sample.optString("text"))
-                    if (sample.optBoolean("truncated")) Text("试读至此，可加入书架继续。")
+                    if (sample.optBoolean("truncated")) Text("这里展示部分正文，打开本章可阅读全文。")
                     TextButton(enabled = !task.busy && canCollect, onClick = { intake(NovelIntakeAction(read = true, chapterUrl = sample.getString("chapter_url"))) }) { Text("从本章开始阅读") }
                 }
                 preview?.novelId("sample_error")?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -162,7 +162,7 @@ internal data class NovelIntakeAction(val read: Boolean = false, val chapterUrl:
                     TextButton(enabled = !task.busy, onClick = { load(false) }) { Text("重试详情") }
                     if (detail.novelStrings("capabilities").containsAll(listOf("detail", "toc"))) TextButton(enabled = !task.busy, onClick = { load(true) }) { Text(if (toc == null) "预览目录" else "刷新目录预览") }
                 }
-                Text(if (bindingWork == null) "查看预览不收录、不下载正文，也不改阅读进度。点击可读章节会先收录或关联，再打开该章。" else "同名同作者的结果自动关联；查看预览不下载正文，也不改阅读进度。点击章节后再打开阅读。", style = MaterialTheme.typography.bodySmall)
+                Text(if (bindingWork == null) "目录预览不获取正文；试读会联网获取样章，不改阅读进度。点击可读章节会先收录或关联，再打开该章。" else "同名同作者的结果自动关联；试读会联网获取样章，不改阅读进度。点击章节后打开阅读。", style = MaterialTheme.typography.bodySmall)
                 if (readable && supported?.chapterOpen == false) Text("当前服务暂不支持点击预览章节；可收录后从作品目录选章。", style = MaterialTheme.typography.bodySmall)
                 preview?.novelId("toc_error")?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
