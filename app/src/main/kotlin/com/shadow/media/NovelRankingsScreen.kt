@@ -21,7 +21,8 @@ import org.json.JSONObject
 /** Native discovery only. Neither server page URLs nor external site pages are navigation targets. */
 @Composable internal fun NovelRankingsScreen(repository: NovelRepository, connection: CatalogConnection, onWork: (String) -> Unit, onSearch: (String) -> Unit, onLogin: () -> Unit) {
     val scope = rememberCoroutineScope()
-    val listState = rememberLazyListState()
+    val snapshots = remember(connection.id) { mutableMapOf<NovelRankingSelection, NovelRankingPage>() }
+    val positions = remember(connection.id) { mutableMapOf<NovelRankingSelection, Pair<Int, Int>>() }
     var loadedSelection by rememberSaveable(connection.id) { mutableStateOf<String?>(null) }
     var provider by rememberSaveable(connection.id) { mutableStateOf("local") }
     var kind by rememberSaveable(connection.id) { mutableStateOf("heat") }
@@ -40,6 +41,9 @@ import org.json.JSONObject
     var authenticationRequired by remember { mutableStateOf(false) }
     val boards = remember(index) { NovelRankingBoard.parse(index ?: JSONObject()) }
     val selection = NovelRankingSelection(provider, kind, boardKey, period, category).resolved(boards)
+    val listState = remember(connection.id, selection) { androidx.compose.foundation.lazy.LazyListState(positions[selection]?.first ?: 0, positions[selection]?.second ?: 0) }
+    DisposableEffect(selection, listState) { onDispose { positions[selection] = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset } }
+    SideEffect { snapshot?.let { snapshots[it.selection] = it } }
     val page = snapshot?.forSelection(selection)
     val external = boards.filter { it.providerId == provider }
     val editable = !LibraryResources.offlineOnly && page?.has("_cached_at") != true
@@ -68,7 +72,6 @@ import org.json.JSONObject
                 }
             }
             val refreshed = fetch(selected)
-            listState.scrollToItem(0)
             snapshot = NovelRankingPage(selected, refreshed)
             notice = result.optString("message").takeIf(String::isNotBlank) ?: "榜单已更新"
         } finally { working = false }
@@ -95,15 +98,15 @@ import org.json.JSONObject
             error = if (index != null) "此来源已停用或没有可用榜单，请切换来源。" else null
             return@LaunchedEffect
         }
-        loading = true; snapshot = null; error = null; notice = null
+        snapshot = snapshots[selection]; loading = snapshot == null; error = null; notice = null
         try {
             val result = fetch(selection)
-            if (loadedSelection != null && loadedSelection != selection.toString()) listState.scrollToItem(0)
+            if (loadedSelection != selection.toString() && selection !in positions) listState.scrollToItem(0)
             loadedSelection = selection.toString()
             snapshot = NovelRankingPage(selection, result); loading = false
             val current = result
             if (!selection.local && !LibraryResources.offlineOnly && !current.has("_cached_at") && current.optBoolean("stale") &&
-                System.currentTimeMillis() / 1000 - current.optDouble("attempted_at", 0.0) > 30) refreshBoard(selection)
+                System.currentTimeMillis() / 1000 - current.optDouble("attempted_at", 0.0) > 30) notice = "榜单有待更新内容，点刷新获取。"
         } catch (e: TimeoutCancellationException) { notice = "服务端仍在更新，稍后点刷新查看；已保留当前榜单" }
         catch (e: CancellationException) { throw e }
         catch (e: Exception) { authenticationRequired = e is NovelApiException && e.status == 401; error = e.message ?: "榜单读取失败，请重试" }
@@ -170,7 +173,7 @@ import org.json.JSONObject
                     Text(row.optInt("rank").toString(), Modifier.widthIn(min = 28.dp).padding(top = 16.dp), style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold, color = if (row.optInt("rank") <= 3) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                     Column(Modifier.weight(1f)) {
-                        NovelWorkCard(work, !loading) { if (workId.isNotBlank()) onWork(workId) else onSearch(row.optString("name")) }
+                        NovelWorkCard(work, !loading) { if (workId.isNotBlank()) onWork(workId) else onSearch(listOf(row.optString("name"), row.optString("author")).filter(String::isNotBlank).joinToString(" ")) }
                         if (!selection.local) Text(listOf(row.optString("score"), when {
                             !row.isNull("change") -> row.optInt("change").let { if (it > 0) "↑ $it" else if (it < 0) "↓ ${-it}" else "排名持平" }
                             row.optBoolean("new_entry") -> "上次未上榜"
@@ -178,11 +181,11 @@ import org.json.JSONObject
                         }).filter(String::isNotBlank).joinToString(" · "), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
                         if (selection.local && !row.isNull("rating")) Text("我的评分 ${row.optInt("rating")} / 5", style = MaterialTheme.typography.labelMedium)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (workId.isNotBlank()) TextButton(enabled = editable && !working && !work.optBoolean("on_shelf"), onClick = { operation {
+                            if (workId.isNotBlank()) TextButton(enabled = editable && !working && !(work.optBoolean("on_shelf") || row.optBoolean("on_shelf")), onClick = { operation {
                                 repository.mutate(connection, listOf("me", "books", workId), "PATCH", JSONObject().put("on_shelf", true))
                                 notice = "已加入书架"
-                                if (selection.local) { work.put("on_shelf", true); snapshot = NovelRankingPage(selection, JSONObject(page!!.toString())) }
-                            } }) { Text(if (work.optBoolean("on_shelf")) "已在书架" else "加入书架") }
+                                work.put("on_shelf", true); row.put("on_shelf", true); snapshot = NovelRankingPage(selection, JSONObject(page!!.toString()))
+                            } }) { Text(if (work.optBoolean("on_shelf") || row.optBoolean("on_shelf")) "已在书架" else "加入书架") }
                             else TextButton(enabled = editable && !working && page?.optString("token").orEmpty().length == 64, onClick = { operation {
                                 try {
                                     val result = repository.mutate(connection, listOf("rankings", selection.provider, selection.key, "collect"), "POST",
@@ -194,7 +197,7 @@ import org.json.JSONObject
                                     notice = "榜单已更新，请在最新榜单中重新选择作品"
                                 }
                             } }) { Text("收录资料") }
-                            if (!selection.local) TextButton(onClick = { onSearch(row.optString("name")) }) { Text("搜索书库") }
+                            if (!selection.local) TextButton(onClick = { onSearch(listOf(row.optString("name"), row.optString("author")).filter(String::isNotBlank).joinToString(" ")) }) { Text("找可读书源") }
                         }
                     }
                 }

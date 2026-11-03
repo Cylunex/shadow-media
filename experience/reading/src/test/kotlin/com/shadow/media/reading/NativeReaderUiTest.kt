@@ -104,7 +104,7 @@ class NativeReaderUiTest {
         compose.onNodeWithText(chapters[45].title).assertIsDisplayed()
         compose.onNodeWithText("正在阅读").assertIsDisplayed()
         screenshot("reader-directory")
-        compose.onNodeWithText("筛选本页标题").performTextInput("146")
+        compose.onNodeWithText("搜索全书章节标题").performTextInput("146")
         compose.onNodeWithText(chapters[46].title).assertIsDisplayed().performClick()
         assertEquals("c146", opened?.id)
         compose.onNodeWithContentDescription("清除目录筛选").performClick()
@@ -152,7 +152,7 @@ class NativeReaderUiTest {
         compose.onNodeWithText("目录序号").assertIsDisplayed()
         compose.onNodeWithContentDescription("下一页目录").assertIsDisplayed()
         compose.onNodeWithContentDescription("收起跳章").performClick()
-        compose.onNodeWithText("筛选本页标题").assertIsDisplayed()
+        compose.onNodeWithText("搜索全书章节标题").assertIsDisplayed()
     }
 
     @Test fun compactControlsKeepToolsReachableAndSeekOnlyOnceAfterDragging() {

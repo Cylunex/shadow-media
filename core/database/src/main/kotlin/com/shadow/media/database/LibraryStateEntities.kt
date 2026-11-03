@@ -73,3 +73,12 @@ data class ContinueRow(val rowId: String, val assetId: String?, val providerId: 
         while (catalogBytes() > 32L * 1024 * 1024) removeOldestCatalogPage()
     }
 }
+
+@Entity(tableName = "local_shelf_metadata", indices = [Index("groupName")])
+data class LocalShelfMetadataEntity(
+    @PrimaryKey val assetId: String,
+    val groupName: String = "",
+    val tagsJson: String = "[]",
+    val pinned: Boolean = false,
+    val readingStatus: String = "",
+)

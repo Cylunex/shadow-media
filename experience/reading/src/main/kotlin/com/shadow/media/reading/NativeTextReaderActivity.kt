@@ -302,10 +302,19 @@ class NativeTextReaderActivity : ComponentActivity() {
             narrating = true
             try {
                 val reader = aloud ?: ReadAloud(this@NativeTextReaderActivity).also { aloud = it }
-                reader.readText(content.text, offset) { view?.seek(it) }
+                while (true) {
+                    val current = chapter ?: break
+                    reader.readText(current.text, offset) { view?.seek(it) }
+                    view?.seek(current.text.length)
+                    val next = adjacent(current.ref.ordinal, 1) ?: break
+                    busy = true; acquiring = true
+                    ProgressWriter.flush()
+                    loadChapter(next)
+                    while (busy) delay(16)
+                }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { message = e.message ?: "朗读失败，请检查系统语音包" }
-            finally { narrating = false }
+            finally { narrating = false; busy = false; acquiring = false; view?.isEnabled = true }
         }
     }
 

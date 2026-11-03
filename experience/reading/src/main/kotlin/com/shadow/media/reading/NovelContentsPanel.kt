@@ -183,6 +183,9 @@ internal fun ColumnScope.NovelContentsBody(
                 Row(Modifier.heightIn(min = 60.dp).padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("${entry.optInt("ordinal") + 1}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        entry.optJSONObject("source_meta")?.let { meta ->
+                            if (meta.optBoolean("vip")) Text(if (meta.optBoolean("paid")) "VIP · 已购" else "VIP · 正文可用性待获取", style = MaterialTheme.typography.labelSmall)
+                        }
                         Text(entry.optString("title"), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
                         if (active || !readable) Text(if (active) "正在阅读" else "卷标题", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                     }

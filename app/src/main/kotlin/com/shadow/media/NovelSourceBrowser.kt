@@ -1,6 +1,8 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 package com.shadow.media
 
+import androidx.core.content.edit
+
 import android.content.Intent
 import androidx.core.net.toUri
 import androidx.activity.compose.BackHandler
@@ -79,6 +81,10 @@ internal class NovelBrowserState(initial: String = "") {
 @Composable internal fun NovelSourceBrowser(repository: NovelRepository, connection: CatalogConnection,
     state: NovelBrowserState, onWork: (String) -> Unit, onManage: () -> Unit, bindingWork: JSONObject? = null, onBound: () -> Unit = {}, onRead: (NovelSourceOpening) -> Unit = {}) {
     val scope = rememberCoroutineScope()
+    val preferences = LocalContext.current.getSharedPreferences("novel_source_columns", android.content.Context.MODE_PRIVATE)
+    var favorites by remember(connection.id) { mutableStateOf(runCatching { JSONObject(preferences.getString(connection.id, "{}") ?: "{}").novelObjects("items") }.getOrDefault(emptyList())) }
+    var recent by remember(connection.id) { mutableStateOf(runCatching { JSONObject(preferences.getString(connection.id + ":recent", "{}") ?: "{}").novelObjects("items") }.getOrDefault(emptyList())) }
+    fun saveFavorites(rows: List<JSONObject>) { favorites = rows.take(50); preferences.edit { putString(connection.id, JSONObject().put("items", JSONArray(favorites)).toString()) } }
     var task by remember { mutableStateOf<Job?>(null) }
     var generation by remember { mutableIntStateOf(0) }
     var busy by remember { mutableStateOf(false) }
@@ -149,6 +155,9 @@ internal class NovelBrowserState(initial: String = "") {
         }
     }
     fun discover(provider: JSONObject, entry: JSONObject, page: Int, refresh: Boolean = false) {
+        val visit = JSONObject().put("provider", provider.getString("id")).put("entry", entry.getString("key")).put("name", provider.optString("name") + " · " + entry.optString("name"))
+        recent = (listOf(visit) + recent.filterNot { it.optString("provider") == visit.optString("provider") && it.optString("entry") == visit.optString("entry") }).take(8)
+        preferences.edit { putString(connection.id + ":recent", JSONObject().put("items", JSONArray(recent)).toString()) }
         val same = state.provider?.optString("id") == provider.optString("id") && state.entry?.optString("key") == entry.optString("key") && state.page == page
         state.provider = provider; state.entry = entry; state.page = page
         if (!same) state.discovery = null
@@ -245,6 +254,23 @@ internal class NovelBrowserState(initial: String = "") {
             }
             if (state.explore) {
                 if (state.entry == null) {
+                    items((favorites + recent).distinctBy { it.optString("provider") + ":" + it.optString("entry") }, key = { it.optString("provider") + ":" + it.optString("entry") }) { favorite ->
+                        Row {
+                            TextButton(enabled = !busy, onClick = {
+                                val provider = state.choices.firstOrNull { it.optString("id") == favorite.optString("provider") }
+                                if (provider == null) error = "此栏目来源已停用或不在当前筛选范围"
+                                else run {
+                                    val entries = repository.live(connection, listOf("source-browser", provider.getString("id"), "entries")).novelObjects("items")
+                                    val entry = entries.firstOrNull { it.optString("key") == favorite.optString("entry") }
+                                    if (entry == null) error = "栏目已变化，请重新选择" else discover(provider, entry, 1)
+                                }
+                            }) { Text(favorite.optString("name")) }
+                            TextButton(onClick = {
+                                saveFavorites(favorites - favorite); recent = recent - favorite
+                                preferences.edit { putString(connection.id + ":recent", JSONObject().put("items", JSONArray(recent)).toString()) }
+                            }) { Text(if (favorite in favorites) "移除收藏" else "移除记录") }
+                        }
+                    }
                     item { Text("选择书源与栏目；发现开关独立于搜索开关。", style = MaterialTheme.typography.bodySmall) }
                     items(visibleChoices, key = { it.getString("id") }) { provider ->
                         TextButton(enabled = !busy, onClick = { state.provider = provider; state.entries = emptyList(); run {
@@ -259,6 +285,12 @@ internal class NovelBrowserState(initial: String = "") {
                     item { Text("${state.provider?.optString("name")} · ${state.entry?.optString("name")} · 第 ${state.page} 页")
                         FlowRow { TextButton(onClick = { task?.cancel(); generation++; busy = false; state.entry = null }) { Text("选择其他栏目") }
                             TextButton(enabled = !busy, onClick = { discover(state.provider!!, state.entry!!, state.page, true) }) { Text("刷新本页") }
+                            TextButton(onClick = {
+                                val favorite = JSONObject().put("provider", state.provider!!.getString("id")).put("entry", state.entry!!.getString("key"))
+                                    .put("name", state.provider!!.optString("name") + " · " + state.entry!!.optString("name"))
+                                saveFavorites(listOf(favorite) + favorites.filterNot { it.optString("provider") == favorite.optString("provider") && it.optString("entry") == favorite.optString("entry") })
+                                notice = "栏目已收藏，可在栏目选择页直接进入"
+                            }) { Text("收藏栏目") }
                         }
                         state.discovery?.novelId("error")?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                         if (state.discovery?.optBoolean("stale") == true) Text("显示上次成功内容，更新失败时继续保留。", style = MaterialTheme.typography.bodySmall)
@@ -275,8 +307,7 @@ internal class NovelBrowserState(initial: String = "") {
                 if (bindingWork != null && state.matchingOnly && state.rows.isNotEmpty() && novelWorkSourceResults(bindingWork, state.rows, true).isEmpty()) item {
                     Text("暂无同名同作者结果，可关闭筛选查看全部；未知作者不会自动关联。", style = MaterialTheme.typography.bodySmall)
                 }
-                items(novelWorkSourceResults(bindingWork, state.rows, state.matchingOnly), key = ::novelResultKey) { row -> Column {
-                    NovelSourceResultCard(row) { state.detail = row }
+                items(novelResultGroups(novelWorkSourceResults(bindingWork, state.rows, state.matchingOnly)), key = { novelSourceIdentity(it.first()) }) { group -> NovelSourceResultGroup(group, { state.detail = it }) { row ->
                     if (novelSourceIdentity(row) in state.autoReceipts) Text("已自动关联", style = MaterialTheme.typography.labelSmall)
                     state.autoFailures[novelSourceIdentity(row)]?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 } }
@@ -311,6 +342,16 @@ internal class NovelBrowserState(initial: String = "") {
     Card(onClick = onClick) { Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(row.optString("name"), style = MaterialTheme.typography.titleMedium)
         Text("${row.optString("author").ifBlank { "作者待补全" }} · ${row.optString("provider_name")}", style = MaterialTheme.typography.bodySmall)
+        row.optJSONObject("stages")?.let { stages ->
+            Text("来源表现 · " + listOf("search" to "搜索", "toc" to "目录", "chapter" to "正文").joinToString(" · ") { (key, label) ->
+                val status = stages.optJSONObject(key)
+                label + when (status?.optString("state")) { "passed" -> "已验证"; "empty" -> "无结果"; "failed" -> "失败"; "unsupported" -> "不支持"; else -> "未测" }
+            }, style = MaterialTheme.typography.labelSmall)
+            stages.optJSONObject("chapter")?.takeIf { it.optString("state") == "passed" && it.has("duration_ms") }?.let { measurement ->
+                val measuredAt = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(java.util.Date((measurement.optDouble("at") * 1000).toLong()))
+                Text("此源上次正文 ${measurement.optInt("result_count")} 字 · ${measurement.optInt("duration_ms")} ms · $measuredAt", style = MaterialTheme.typography.labelSmall)
+            }
+        }
         Text(row.optString("intro"), maxLines = 3, style = MaterialTheme.typography.bodySmall)
         Text(listOfNotNull(if (readableNovelSource(row)) "可尝试获取目录" else "仅资料", row.novelId("library_work_id")?.let { "已收录" },
             if (row.optBoolean("on_shelf")) "在书架" else null, if (row.optBoolean("has_read")) "读过" else null).joinToString(" · "), style = MaterialTheme.typography.labelSmall)

@@ -163,7 +163,7 @@ class NovelRepository(private val context: Context, private val library: Library
         }
         val selectedVersion = open.getString("version_id")
         val remote = open.optJSONObject("position")
-        if (chapterId == null && open.optString("quality") != "exact") throw NovelVersionSelectionRequired(workId, selectedVersion)
+        if (chapterId == null && open.optString("quality") != "exact" && !open.optBoolean("offset_preserved")) throw NovelVersionSelectionRequired(workId, selectedVersion)
         val chosen = chapterId ?: remote?.optString("chapter_id")?.takeIf(String::isNotBlank) ?: open.getString("first_chapter_id")
         val chapters = open.novelObjects("chapters")
         val offset = if (open.has("chapter_ordinal") && !open.isNull("chapter_ordinal")) open.getInt("chapter_ordinal")

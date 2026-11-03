@@ -1,4 +1,4 @@
-@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 package com.shadow.media.reading
 
 import androidx.compose.foundation.layout.*
@@ -24,6 +24,8 @@ internal fun NovelDownloadPanel(repository: NovelRepository, connection: Catalog
     var wifi by rememberSaveable { mutableStateOf(true) }
     var start by rememberSaveable { mutableStateOf(((currentOrdinal ?: 0) + 1).toString()) }
     var end by rememberSaveable { mutableStateOf("") }
+    var choosing by remember { mutableStateOf<String?>(null) }
+    var chapterQuery by remember { mutableStateOf("") }
     var custom by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -31,6 +33,19 @@ internal fun NovelDownloadPanel(repository: NovelRepository, connection: Catalog
     val updates by repository.cache.changes.collectAsState()
     LaunchedEffect(scope, workId, versionId, updates) { directory = repository.cache.savedDirectory(scope, workId, versionId) }
     val online = connection != null && !LibraryResources.offlineOnly
+    choosing?.let { target ->
+        ModalBottomSheet(onDismissRequest = { choosing = null }) {
+            Column(Modifier.padding(20.dp)) {
+                OutlinedTextField(chapterQuery, { chapterQuery = it }, label = { Text("查找章节") }, singleLine = true)
+                androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                    val chapters = directory?.novelObjects("items").orEmpty().filter { it.optBoolean("readable") && it.optString("title").contains(chapterQuery, true) }
+                    items(chapters.size) { index -> val chapter = chapters[index]
+                        TextButton(onClick = { if (target == "start") start = (chapter.getInt("ordinal") + 1).toString() else end = (chapter.getInt("ordinal") + 1).toString(); choosing = null }) { Text(chapter.optString("title")) }
+                    }
+                }
+            }
+        }
+    }
     val first = start.toIntOrNull()?.takeIf { it > 0 }
     val last = end.toIntOrNull()?.takeIf { it >= (first ?: 1) }
     fun execute(block: suspend () -> Unit) {
@@ -80,6 +95,10 @@ internal fun NovelDownloadPanel(repository: NovelRepository, connection: Catalog
                         TextButton(enabled = online && !busy && first != null && last != null, onClick = { execute {
                             repository.downloads.start(scope, workId, versionId, directory?.optString("title") ?: "小说", requireNotNull(first) - 1, requireNotNull(last), wifi)
                         } }) { Text("缓存") }
+                    }
+                    Row {
+                        TextButton(enabled = directory != null, onClick = { choosing = "start" }) { Text("点选起始章") }
+                        TextButton(enabled = directory != null, onClick = { choosing = "end" }) { Text("点选结束章") }
                     }
                     Text("按目录中的序号选择，包含起止章节。", style = MaterialTheme.typography.labelSmall)
                 }

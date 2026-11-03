@@ -54,6 +54,7 @@ internal fun ColumnScope.NativeReaderContentsPanel(
     var requested by remember { mutableIntStateOf(current.ref.ordinal) }
     var total by remember { mutableIntStateOf(current.total) }
     val start = nativeContentsOffset(requested, total)
+    var allEntries by remember { mutableStateOf<List<NativeChapterRef>>(emptyList()) }
     var entries by remember(start) { mutableStateOf<List<NativeChapterRef>>(emptyList()) }
     var downloaded by remember { mutableStateOf<Set<String>>(emptySet()) }
     var loading by remember(start) { mutableStateOf(true) }
@@ -65,21 +66,22 @@ internal fun ColumnScope.NativeReaderContentsPanel(
         try {
             val local = source.local(asset)
             total = local.size
+            allEntries = local.map { it.ref }
             entries = local.drop(start).take(NATIVE_CONTENTS_PAGE_SIZE).map { it.ref }
-            downloaded = entries.map { it.id }.toSet()
+            downloaded = allEntries.map { it.id }.toSet()
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) { notice = e.message ?: "目录加载失败" }
         finally { loading = false }
     }
     NativeContentsBody(entries, downloaded, current.ref.id, current.ref.ordinal, requested, total, start, loading, notice, enabled,
-        onRequest = { requested = it }, onRetry = { retry++ }, onOpen = onOpen)
+        onRequest = { requested = it }, onRetry = { retry++ }, onOpen = onOpen, allEntries = allEntries)
 }
 
 @Composable
 internal fun ColumnScope.NativeContentsBody(
     entries: List<NativeChapterRef>, downloaded: Set<String>, currentId: String, currentOrdinal: Int, requested: Int,
     total: Int, start: Int, loading: Boolean, notice: String?, enabled: Boolean,
-    onRequest: (Int) -> Unit, onRetry: () -> Unit, onOpen: (NativeChapterRef) -> Unit,
+    onRequest: (Int) -> Unit, onRetry: () -> Unit, onOpen: (NativeChapterRef) -> Unit, allEntries: List<NativeChapterRef> = entries,
 ) {
     var filter by remember { mutableStateOf("") }
     var number by remember { mutableStateOf("") }
@@ -88,7 +90,7 @@ internal fun ColumnScope.NativeContentsBody(
     var scrollRequest by remember { mutableIntStateOf(0) }
     val focus = LocalFocusManager.current
     val listState = rememberLazyListState()
-    val visible = remember(entries, filter) { entries.filter { filter.isBlank() || it.title.contains(filter.trim(), ignoreCase = true) } }
+    val visible = remember(entries, allEntries, filter) { if (filter.isBlank()) entries else allEntries.filter { it.title.contains(filter.trim(), ignoreCase = true) } }
     val target = number.toIntOrNull()?.takeIf { it in 1..total }
     fun locate(ordinal: Int) { filter = ""; focus.clearFocus(); onRequest(ordinal); scrollRequest++ }
     fun jump() { target?.let { locate(it - 1); showJump = false } }
@@ -123,14 +125,14 @@ internal fun ColumnScope.NativeContentsBody(
         FilledTonalButton(enabled = !loading && target != null, onClick = { jump() }) { Text("定位") }
     }
     if (!showJump) OutlinedTextField(filter, { filter = it }, Modifier.fillMaxWidth(), singleLine = true,
-        leadingIcon = { Icon(Icons.Rounded.Search, null) }, placeholder = { Text("筛选本页标题") },
+        leadingIcon = { Icon(Icons.Rounded.Search, null) }, placeholder = { Text("搜索全书章节标题") },
         trailingIcon = { if (filter.isNotEmpty()) IconButton(onClick = { filter = "" }) { Icon(Icons.Rounded.Close, "清除目录筛选") } },
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }))
     notice?.let { Text(it, Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
     LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (!loading && visible.isEmpty()) item {
-            ReaderEmptyState(Icons.Rounded.SearchOff, if (filter.isBlank()) "本页暂无章节" else "没有匹配的标题", if (filter.isBlank()) "试试其他分页，或刷新目录。" else "这里只筛选当前分页，清除关键词可显示本页全部章节。")
+            ReaderEmptyState(Icons.Rounded.SearchOff, if (filter.isBlank()) "本页暂无章节" else "没有匹配的标题", if (filter.isBlank()) "试试其他分页，或刷新目录。" else "全书没有匹配章节，清除关键词可返回当前分页。")
         }
         items(visible, key = { it.id }) { ref ->
             val active = ref.id == currentId

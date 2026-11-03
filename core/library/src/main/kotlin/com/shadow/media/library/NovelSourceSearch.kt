@@ -8,7 +8,7 @@ import org.json.JSONArray
 fun readableNovelSource(row: JSONObject): Boolean =
     row.novelStrings("capabilities").containsAll(listOf("detail", "toc", "chapter"))
 
-data class NovelSourceFeatures(val searchModes: Boolean = false, val chapterOpen: Boolean = false, val intakeReuse: Boolean = false, val autoBind: Boolean = false, val versionPrepare: Boolean = false)
+data class NovelSourceFeatures(val searchModes: Boolean = false, val chapterOpen: Boolean = false, val intakeReuse: Boolean = false, val autoBind: Boolean = false, val versionPrepare: Boolean = false, val bodyPreview: Boolean = false)
 class NovelVersionSelectionRequired(val workId: String, val versionId: String) : IllegalStateException("版本间位置无法精确恢复，请从目录选择章节")
 
 data class NovelSourceOpening(val workId: String, val versionId: String, val chapterId: String? = null)
@@ -20,7 +20,7 @@ class NovelSourceSearch(private val api: NovelApi) {
         catch (e: NovelApiException) { if (e.status in setOf(404, 405)) null else throw e }
         return NovelSourceFeatures(caps?.optBoolean("source_search_modes") == true,
             caps?.optBoolean("source_chapter_open") == true, caps?.optBoolean("source_intake_reuse") == true, caps?.optBoolean("source_search_auto_bind") == true,
-            caps?.optBoolean("source_version_prepare") == true)
+            caps?.optBoolean("source_version_prepare") == true, caps?.optBoolean("source_body_preview") == true)
     }
     suspend fun search(connection: CatalogConnection, query: String, onUpdate: (JSONObject) -> Unit): JSONObject {
         return search(connection, query, NovelSearchOptions(), onUpdate = onUpdate)
@@ -48,9 +48,9 @@ class NovelSourceSearch(private val api: NovelApi) {
         return binding
     }
 
-    suspend fun preview(connection: CatalogConnection, row: JSONObject, includeToc: Boolean = false): JSONObject {
+    suspend fun preview(connection: CatalogConnection, row: JSONObject, includeToc: Boolean = false, includeBody: Boolean = false, chapterUrl: String? = null): JSONObject {
         val receipt = api.json(connection, listOf("source-previews"), method = "POST", body = JSONObject()
-            .put("provider_id", row.getString("provider_id")).put("url", row.getString("bookUrl")).put("include_toc", includeToc))
+            .put("provider_id", row.getString("provider_id")).put("url", row.getString("bookUrl")).put("include_toc", includeToc || includeBody).put("include_body", includeBody).put("chapter_url", chapterUrl.orEmpty()))
         val id = receipt.novelId("job_id") ?: return receipt
         return awaitJob(connection, id) {}.getJSONObject("result")
     }

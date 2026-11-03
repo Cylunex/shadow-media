@@ -247,6 +247,28 @@ class LibraryRepository(context: Context) {
         }
     }
 
+    suspend fun organizeShelf(ids: Set<String>, action: String, value: String, tags: List<String>) = ShadowMediaDatabase.create(context).withTransaction {
+        require(ids.isNotEmpty() && ids.size <= 500) { "一次整理 1～500 本" }
+        require(tags.all { it.isNotBlank() && it.length <= 64 }) { "标签长度无效" }
+        require(action in setOf("group", "tags_add", "tags_remove", "status", "pin", "unpin"))
+        for (id in ids) {
+            requireNotNull(dao.asset(id)) { "作品已移除，请刷新书架" }
+            val current = dao.localShelfMetadata(id) ?: com.shadow.media.database.LocalShelfMetadataEntity(id)
+            val array = org.json.JSONArray(current.tagsJson)
+            val previous = (0 until array.length()).map { array.getString(it) }
+            val changed = when (action) {
+                "group" -> current.copy(groupName = value)
+                "tags_add" -> current.copy(tagsJson = org.json.JSONArray((previous + tags).distinct()).toString())
+                "tags_remove" -> current.copy(tagsJson = org.json.JSONArray(previous - tags.toSet()).toString())
+                "status" -> { require(value in setOf("want", "reading", "read", "paused")); current.copy(readingStatus = value) }
+                "pin" -> current.copy(pinned = true)
+                else -> current.copy(pinned = false)
+            }
+            require(org.json.JSONArray(changed.tagsJson).length() <= 30 && changed.groupName.length <= 128) { "分组或标签超过限制" }
+            dao.putLocalShelfMetadata(changed)
+        }
+    }
+
     suspend fun bookmark(id: String, locator: String, note: String) = dao.putAnnotation(
         ContentAnnotationEntity(UUID.randomUUID().toString(), id, locator, note, System.currentTimeMillis())
     )

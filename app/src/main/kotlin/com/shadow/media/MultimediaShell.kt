@@ -1,8 +1,9 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 package com.shadow.media
 
 import android.content.Intent
+import androidx.compose.foundation.combinedClickable
 import android.content.res.Configuration
 import com.shadow.media.library.LibraryResources
 import com.shadow.media.network.ResourceScheduler
@@ -15,6 +16,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -339,14 +341,20 @@ import com.shadow.media.reading.ReaderActivity
     onImport: () -> Unit, onDirectory: () -> Unit, onAssociate: (LibraryAssetEntity) -> Unit, onOffline: (LibraryAssetEntity) -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onFavorite: (LibraryAssetEntity) -> Unit, onRemove: (LibraryAssetEntity) -> Unit,
 ) {
     val audio = module == MediaModule.AUDIOBOOK
+    val localMetadata by remember(library) { library.dao.localShelfMetadata() }.collectAsStateWithLifecycle(emptyList())
+    var tag by rememberSaveable(module) { mutableStateOf("") }
+    var groupName by rememberSaveable(module) { mutableStateOf("") }
+    var managing by remember { mutableStateOf(false) }
+    var chosen by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var organizing by remember { mutableStateOf(false) }
     var filter by rememberSaveable(module) { mutableStateOf("全部") }
     var query by rememberSaveable(module) { mutableStateOf("") }
     var sort by rememberSaveable(module) { mutableStateOf(false) }
     var selected by remember { mutableStateOf<LibraryAssetEntity?>(null) }
     var removing by remember { mutableStateOf<LibraryAssetEntity?>(null) }
     val kinds = remember(module) { module.assetKinds.toList() }
-    val flow = remember(library, kinds, query, filter, sort) { Pager(PagingConfig(60, enablePlaceholders = false)) {
-        library.dao.shelf(kinds, "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%", filter == "收藏", filter == "未完成", sort)
+    val flow = remember(library, kinds, query, filter, sort, groupName, tag) { Pager(PagingConfig(60, enablePlaceholders = false)) {
+        library.dao.shelf(kinds, "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%", filter == "收藏", filter == "未完成", sort, groupName, if (tag.isBlank()) "" else org.json.JSONObject.quote(tag))
     }.flow }
     val books = flow.collectAsLazyPagingItems()
     val recentRow by remember(kinds) { library.dao.continuing(kinds) }.collectAsStateWithLifecycle(null)
@@ -357,10 +365,24 @@ import com.shadow.media.reading.ReaderActivity
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) { Text(if (module == MediaModule.NOVEL) "本机书架" else "我的书架", style = MaterialTheme.typography.headlineLarge); Text(if (audio) "让故事陪你走远一点" else "把时间留给下一章", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    TextButton(onClick = { managing = !managing; chosen = emptySet() }) { Text(if (managing) "完成管理" else "管理") }
                     IconButton(onClick = onImport) { Icon(Icons.Rounded.Add, "导入文件") }
                     if (module == MediaModule.COMIC) IconButton(onClick = onDirectory) { Icon(Icons.Rounded.FolderOpen, "导入漫画图片目录") }
                 }
                 if (module == MediaModule.NOVEL) TextButton(onClick = onNovel) { Text("返回小说服务书架") }
+                LazyRow {
+                    item { TextButton(onClick = { groupName = "" }) { Text("全部分组") } }
+                    items(localMetadata.map { it.groupName }.filter(String::isNotBlank).distinct()) { group -> TextButton(onClick = { groupName = group }) { Text(group) } }
+                }
+                LazyRow {
+                    item { TextButton(onClick = { tag = "" }) { Text("全部标签") } }
+                    val tags = localMetadata.flatMap { row -> runCatching { org.json.JSONArray(row.tagsJson) }.getOrDefault(org.json.JSONArray()).let { list -> (0 until list.length()).map { list.getString(it) } } }.distinct()
+                    items(tags) { value -> FilterChip(tag == value, { tag = if (tag == value) "" else value }, label = { Text(value) }) }
+                }
+                if (managing) Row {
+                    TextButton(onClick = { chosen = books.itemSnapshotList.items.map { it.asset.id }.take(500).toSet() }) { Text("选择已显示") }
+                    TextButton(enabled = chosen.isNotEmpty(), onClick = { organizing = true }) { Text("整理 ${chosen.size} 本") }
+                }
                 Spacer(Modifier.height(20.dp))
                 OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("搜索标题、作者") }, leadingIcon = { Icon(Icons.Rounded.Search, null) }, singleLine = true, shape = RoundedCornerShape(18.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -396,19 +418,38 @@ import com.shadow.media.reading.ReaderActivity
         items(books.itemCount, key = books.itemKey { it.asset.id }, contentType = { "publication" }) { index ->
             val row = books[index] ?: return@items
             val item = row.asset
+            val entryMetadata = localMetadata.firstOrNull { it.assetId == item.id }
             Column {
-            Box(Modifier.clickable { onOpen(item) }) {
+            Box(Modifier.combinedClickable(onClick = {
+                if (managing) chosen = if (item.id in chosen) chosen - item.id else (chosen + item.id).take(500).toSet() else onOpen(item)
+            }, onLongClick = { managing = true; chosen = setOf(item.id); organizing = true })) {
                 PublicationCover(item, Modifier.fillMaxWidth().aspectRatio(if (audio) 1f else .69f))
-                if (item.favorite) Icon(Icons.Rounded.Favorite, "已收藏", Modifier.align(Alignment.TopStart).padding(8.dp).size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                if (managing) Checkbox(item.id in chosen, { checked -> chosen = if (checked) (chosen + item.id).take(500).toSet() else chosen - item.id }, Modifier.align(Alignment.TopStart))
+                if (!managing && item.favorite) Icon(Icons.Rounded.Favorite, "已收藏", Modifier.align(Alignment.TopStart).padding(8.dp).size(18.dp), tint = MaterialTheme.colorScheme.primary)
                 IconButton(onClick = { selected = item }, modifier = Modifier.align(Alignment.TopEnd)) {
                     Icon(Icons.Rounded.MoreHoriz, "作品选项", Modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = .92f), RoundedCornerShape(8.dp)).padding(3.dp))
                 }
             }
             Text(item.title, Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 4.dp).clickable { onOpen(item) }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
+            if (entryMetadata?.pinned == true) Text("置顶", style = MaterialTheme.typography.labelSmall)
+            entryMetadata?.readingStatus?.takeIf(String::isNotBlank)?.let { status -> Text(mapOf("want" to "想读", "reading" to "在读", "read" to "已读", "paused" to "暂停")[status].orEmpty(), style = MaterialTheme.typography.labelSmall) }
+            entryMetadata?.groupName?.takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
+            entryMetadata?.tagsJson?.let { tags ->
+                val labels = runCatching { org.json.JSONArray(tags) }.getOrDefault(org.json.JSONArray()).let { values -> (0 until values.length()).map { values.getString(it) } }
+                if (labels.isNotEmpty()) Text(labels.joinToString(" · "), maxLines = 1, style = MaterialTheme.typography.labelSmall)
+            }
             Text(item.author.ifBlank { item.format.uppercase() }, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, style = MaterialTheme.typography.labelSmall)
-            AssetAvailabilityLabel(item.providerId, item.itemId, when { row.completed == true -> "已完成"; row.progression != null -> "${(row.progression!!.coerceIn(0.0, 1.0) * 100).toInt()}%"; row.updatedAt != null -> "位置已保存"; else -> null })
+            AssetAvailabilityLabel(item.providerId, item.itemId, when { entryMetadata?.readingStatus == "read" -> "已读"; row.completed == true -> "已完成"; row.progression != null -> "${(row.progression!!.coerceIn(0.0, 1.0) * 100).toInt()}%"; row.updatedAt != null -> "位置已保存"; else -> null })
             row.progression?.let { LinearProgressIndicator(progress = { it.toFloat() }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp), trackColor = MaterialTheme.colorScheme.surfaceVariant) }
         } }
+    }
+    if (organizing) {
+        val navigation = org.json.JSONObject().put("groups", org.json.JSONArray(localMetadata.map { it.groupName }.filter(String::isNotBlank).distinct()))
+            .put("tags", org.json.JSONArray(localMetadata.flatMap { runCatching { org.json.JSONArray(it.tagsJson) }.getOrDefault(org.json.JSONArray()).let { values -> (0 until values.length()).map { values.getString(it) } } }.distinct()))
+        NovelShelfActions(chosen, navigation, onDismiss = { organizing = false }, localOnly = true, onApply = { action, value, tags ->
+            library.organizeShelf(chosen, action, value, tags)
+            organizing = false; chosen = emptySet()
+        })
     }
     selected?.let { item -> ModalBottomSheet(onDismissRequest = { selected = null }) {
         Column(Modifier.padding(24.dp)) {
@@ -416,6 +457,7 @@ import com.shadow.media.reading.ReaderActivity
             TextButton(onClick = { selected = null; onOpen(item) }) { Text(if (audio) "开始收听" else "打开阅读") }
             if (item.providerId != "local" && item.localUri.isBlank()) TextButton(onClick = { selected = null; onOffline(item) }) { Text("保存离线副本（最多 1 GiB）") }
             if (item.localUri.isNotBlank()) Text("此内容可从本机打开", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TextButton(onClick = { selected = null; chosen = setOf(item.id); organizing = true }) { Text("分组、标签与状态") }
             TextButton(onClick = { selected = null; onAssociate(item) }) { Text("作品与其他版本") }
             TextButton(onClick = { selected = null; onFavorite(item) }) { Text(if (item.favorite) "取消收藏" else "收藏") }
             TextButton(onClick = { selected = null; removing = item }) { Text("从书架移除", color = MaterialTheme.colorScheme.error) }

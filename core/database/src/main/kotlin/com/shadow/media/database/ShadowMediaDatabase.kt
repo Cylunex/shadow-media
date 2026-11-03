@@ -30,9 +30,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         UserCollectionEntity::class, WorkEntity::class, RenditionEntity::class, PlaylistExportEntity::class, CatalogPageEntity::class, RemoteUserStateEntity::class,
         ResourceTaskEntity::class, CatalogScopeEntity::class, CatalogEntryEntity::class,
         AudioChapterEntity::class, MusicTrackEntity::class, MusicListeningEntity::class, MusicPlaylistEntity::class, MusicPlaylistEntryEntity::class,
-        NovelPublicationEntity::class, NovelReadingStateEntity::class,
+        NovelPublicationEntity::class, NovelReadingStateEntity::class, LocalShelfMetadataEntity::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = true,
 )
 abstract class ShadowMediaDatabase : RoomDatabase() {
@@ -54,9 +54,15 @@ abstract class ShadowMediaDatabase : RoomDatabase() {
                 context.applicationContext,
                 ShadowMediaDatabase::class.java,
                 "shadow-media.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11).build().also { instance = it }
         }
 
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS local_shelf_metadata (assetId TEXT NOT NULL PRIMARY KEY, groupName TEXT NOT NULL, tagsJson TEXT NOT NULL, pinned INTEGER NOT NULL, readingStatus TEXT NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_local_shelf_metadata_groupName ON local_shelf_metadata(groupName)")
+            }
+        }
         val MIGRATION_9_10 = object : Migration(9, 10) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS novel_publications (assetId TEXT NOT NULL PRIMARY KEY, scope TEXT NOT NULL, workId TEXT NOT NULL, versionId TEXT NOT NULL, mappingJson TEXT NOT NULL, packageRevision TEXT NOT NULL)")

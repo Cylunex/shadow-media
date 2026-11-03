@@ -103,8 +103,8 @@ internal const val LOGICAL_LIBRARY_PROGRESS = LOGICAL_LIBRARY_ASSETS + """
 interface LibraryDao {
     @Query("SELECT a.localUri != '' AS localCopy, COALESCE(t.state, '') AS state, COALESCE(t.revision = a.revision, 0) AS currentRevision FROM library_assets a LEFT JOIN resource_tasks t ON t.assetId = a.id WHERE a.providerId = :provider AND a.itemId = :item LIMIT 1")
     fun availability(provider: String, item: String): Flow<AssetAvailability?>
-    @Query(LOGICAL_LIBRARY_PROGRESS + "SELECT * FROM shelf_rows WHERE kind IN (:kinds) AND (:favorite = 0 OR favorite = 1) AND (:unfinished = 0 OR completed IS NULL OR completed = 0) AND (title LIKE :query ESCAPE '\\' OR author LIKE :query ESCAPE '\\') ORDER BY CASE WHEN :byName THEN title END COLLATE NOCASE, addedAt DESC, id")
-    fun shelf(kinds: List<String>, query: String, favorite: Boolean, unfinished: Boolean, byName: Boolean): androidx.paging.PagingSource<Int, LibraryShelfRow>
+    @Query(LOGICAL_LIBRARY_PROGRESS + "SELECT s.* FROM shelf_rows s LEFT JOIN local_shelf_metadata m ON m.assetId = s.id WHERE s.kind IN (:kinds) AND (:favorite = 0 OR s.favorite = 1) AND (:unfinished = 0 OR ((s.completed IS NULL OR s.completed = 0) AND COALESCE(m.readingStatus, 'want') != 'read')) AND (:groupName = '' OR m.groupName = :groupName) AND (:tagNeedle = '' OR instr(COALESCE(m.tagsJson, '[]'), :tagNeedle) > 0) AND (s.title LIKE :query ESCAPE '\\' OR s.author LIKE :query ESCAPE '\\') ORDER BY COALESCE(m.pinned, 0) DESC, CASE WHEN :byName THEN s.title END COLLATE NOCASE, s.addedAt DESC, s.id")
+    fun shelf(kinds: List<String>, query: String, favorite: Boolean, unfinished: Boolean, byName: Boolean, groupName: String = "", tagNeedle: String = ""): androidx.paging.PagingSource<Int, LibraryShelfRow>
     @Query(LOGICAL_LIBRARY_PROGRESS + "SELECT * FROM shelf_rows WHERE kind IN (:kinds) AND completed = 0 ORDER BY updatedAt DESC, id LIMIT 1")
     fun continuing(kinds: List<String>): Flow<LibraryShelfRow?>
     @Query(LOGICAL_LIBRARY_ASSETS + "SELECT * FROM shelf_assets WHERE (:kind = '' OR kind = :kind) AND (title LIKE :query ESCAPE '\\' OR author LIKE :query ESCAPE '\\') ORDER BY addedAt DESC, id LIMIT :limit OFFSET :offset")
@@ -122,6 +122,9 @@ interface LibraryDao {
     suspend fun assetsByIds(ids: List<String>): List<LibraryAssetEntity>
     @Query("SELECT * FROM library_assets WHERE providerId LIKE 'catalog:OPDS:%' AND itemId NOT LIKE 'opds-ref:v1:%'") suspend fun legacyOpdsAssets(): List<LibraryAssetEntity>
     @Query("UPDATE library_assets SET itemId = :value WHERE id = :id AND itemId = :expected") suspend fun updateItemId(id: String, expected: String, value: String)
+    @Query("SELECT * FROM local_shelf_metadata") fun localShelfMetadata(): Flow<List<LocalShelfMetadataEntity>>
+    @Query("SELECT * FROM local_shelf_metadata WHERE assetId = :id") suspend fun localShelfMetadata(id: String): LocalShelfMetadataEntity?
+    @Upsert suspend fun putLocalShelfMetadata(value: LocalShelfMetadataEntity)
     @Upsert suspend fun putAsset(asset: LibraryAssetEntity)
     @Query("UPDATE library_assets SET localUri = '' WHERE id = :id AND localUri = :expectedUri")
     suspend fun clearLocalCopy(id: String, expectedUri: String)
@@ -144,7 +147,9 @@ interface LibraryDao {
     @Query("UPDATE library_assets SET coverPath = :path WHERE id = :id AND coverPath = ''")
     suspend fun fillCover(id: String, path: String): Int
     @Query("DELETE FROM library_assets WHERE id = :id")
-    suspend fun removeAsset(id: String)
+    suspend fun removeAssetRow(id: String)
+    @Query("DELETE FROM local_shelf_metadata WHERE assetId = :id") suspend fun removeLocalShelfMetadata(id: String)
+    @Transaction suspend fun removeAsset(id: String) { removeLocalShelfMetadata(id); removeAssetRow(id) }
     @Query("SELECT * FROM progress_records")
     fun progress(): Flow<List<ContentProgressEntity>>
     @Query("SELECT * FROM progress_records WHERE assetId = :id")
@@ -154,6 +159,8 @@ interface LibraryDao {
     fun annotations(id: String): Flow<List<ContentAnnotationEntity>>
     @Query("SELECT * FROM content_annotations WHERE assetId IN (:ids) ORDER BY createdAt DESC")
     fun annotationsForAssets(ids: List<String>): Flow<List<ContentAnnotationEntity>>
+    @Query("SELECT a.* FROM content_annotations a JOIN novel_publications p ON p.assetId = a.assetId WHERE p.scope = :scope ORDER BY a.createdAt DESC")
+    fun novelAnnotations(scope: String): Flow<List<ContentAnnotationEntity>>
     @Upsert suspend fun putAnnotation(annotation: ContentAnnotationEntity)
     @Query("DELETE FROM content_annotations WHERE id = :id")
     suspend fun removeAnnotation(id: String)

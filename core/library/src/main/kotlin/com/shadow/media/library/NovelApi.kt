@@ -153,11 +153,15 @@ data class NovelQuery(
     val serialStatus: String = "", val availability: String = "", val status: String = "",
     val group: String = "", val personalTags: List<String> = emptyList(), val minPopularity: String = "",
     val hasUpdates: Boolean = false, val precise: Boolean = false,
+    val minWords: String = "", val maxWords: String = "", val updatedDays: String = "", val unknownWords: Boolean = false, val ungrouped: Boolean = false,
 ) {
     fun parameters(): List<Pair<String, String>> = buildList {
         add("view" to view); add("sort" to sort)
         if (precise) add("precise" to "true")
         if (hasUpdates) add("has_updates" to "true")
+        if (ungrouped) add("ungrouped" to "true")
+        if (unknownWords) add("unknown_words" to "true")
+        listOf("min_words" to minWords, "max_words" to maxWords, "updated_days" to updatedDays).filter { it.second.isNotBlank() }.forEach(::add)
         listOf("q" to q, "serial_status" to serialStatus, "availability" to availability, "status" to status,
             "group" to group, "min_popularity" to minPopularity).filter { it.second.isNotBlank() }.forEach(::add)
         categories.forEach { add("category_id" to it) }; genres.forEach { add("genre_tag" to it) }

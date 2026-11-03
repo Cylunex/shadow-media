@@ -55,12 +55,24 @@ class NovelLibraryViewsTest {
         compose.onNodeWithText("管理", substring = false).performClick()
         compose.onNodeWithText("选择已显示").performClick()
         compose.onNodeWithText("整理 1 本").performClick()
-        compose.onNodeWithText("追更", substring = false).performClick()
+        compose.onAllNodesWithText("追更", substring = false).onLast().performClick()
         compose.onNodeWithText("应用", substring = false).performClick()
         compose.waitForIdle()
         assertEquals(setOf("one"), appliedIds)
         assertEquals("group", appliedAction)
         assertEquals("追更", appliedGroup)
+    }
+
+    @Test fun savedFilterRoundTripPreservesExclusionsGroupsAndRanges() {
+        val query = NovelQuery(view = "shelf", q = "远航", genres = listOf("科幻"), excluded = listOf("恐怖"),
+            personalTags = listOf("周末"), group = "常读", minWords = "300000", maxWords = "1000000", updatedDays = "7", hasUpdates = true)
+        assertEquals(query, novelRestoreFilter(novelFilterSnapshot(query)))
+    }
+
+    @Test fun sourceGroupingKeepsUnknownAndDifferentAuthorsSeparate() {
+        fun row(id: String, title: String, author: String) = JSONObject().put("provider_id", id).put("bookUrl", "/book").put("name", title).put("author", author)
+        val groups = novelResultGroups(listOf(row("a", "远航", "行舟"), row("b", " 远航 ", "行舟"), row("c", "远航", "另一人"), row("d", "远航", "未知"), row("e", "远航", "未知")))
+        assertEquals(listOf(2, 1, 1, 1), groups.map { it.size })
     }
 
     @Test fun homeHasRealSearchShortcutsAndChapterScopedContinueProgress() {
@@ -174,4 +186,22 @@ class NovelLibraryViewsTest {
         assertFalse(novelCanRead(JSONObject().put("availability", JSONArray().put("metadata_only"))))
         assertTrue(novelCanRead(JSONObject().put("availability", JSONArray().put("cached"))))
     }
+    @Test fun nextOfflineChapterSkipsVolumeAndNeedsExactPosition() {
+        val directory = JSONObject("""{"items":[{"id":"a","readable":true},{"id":"volume","readable":false},{"id":"b","readable":true}]}""")
+        assertEquals("下一章已缓存", novelNextOfflineStatus(directory, "a", setOf("b")))
+        assertEquals("下一章未缓存", novelNextOfflineStatus(directory, "a", setOf("a")))
+        assertEquals("已到目录末章", novelNextOfflineStatus(directory, "b", setOf("b")))
+        assertEquals("离线位置待确认", novelNextOfflineStatus(directory, "missing", setOf("b")))
+        assertEquals("离线目录待缓存", novelNextOfflineStatus(null, "a", setOf("b")))
+    }
+
+    @Test fun continuousOfflineRangeNeverSkipsMissingBodyAndIgnoresVolumes() {
+        val directory = JSONObject("""{"items":[{"id":"a"},{"id":"volume","readable":false},{"id":"b"},{"id":"c"}]}""")
+        assertEquals(2, novelContinuousOfflineCount(directory, "a", setOf("a", "b")))
+        assertEquals(0, novelContinuousOfflineCount(directory, "a", setOf("b", "c")))
+        assertEquals(2, novelContinuousOfflineCount(directory, "b", setOf("b", "c")))
+        assertEquals(null, novelContinuousOfflineCount(directory, "missing", setOf("a", "b")))
+        assertEquals(null, novelContinuousOfflineCount(null, "a", setOf("a")))
+    }
+
 }

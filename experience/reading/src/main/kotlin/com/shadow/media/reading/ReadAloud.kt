@@ -46,7 +46,9 @@ internal class ReadAloud(private val context: Context) : AutoCloseable {
         var start = safeTextOffset(text, offset)
         while (start < text.length) {
             currentCoroutineContext().ensureActive()
-            val end = safeTextOffset(text, (start + 1000).coerceAtMost(text.length))
+            val maximum = (start + 1000).coerceAtMost(text.length)
+            val sentence = text.indexOfAny(charArrayOf('。', '！', '？', '\n', '.', '!', '?'), start)
+            val end = safeTextOffset(text, if (sentence in start until maximum) sentence + 1 else maximum)
             onLocation(start)
             speak(text.substring(start, end))
             start = end

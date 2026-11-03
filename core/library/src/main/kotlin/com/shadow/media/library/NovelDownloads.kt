@@ -56,6 +56,12 @@ class NovelDownloads(private val context: Context) {
         NovelDownloadTask.parse(JSONObject(AtomicFile(file(key)).openRead().use { SafeArchives.readBounded(it, 64 * 1024) }.toString(Charsets.UTF_8)))
     }.getOrNull()
     fun observe(scope: String, work: String, version: String): Flow<NovelDownloadTask?> = changes.map { read(key(scope, work, version)) }
+    fun observeAll(scope: String): Flow<List<NovelDownloadTask>> = changes.map {
+        withContext(Dispatchers.IO) {
+            File(context.filesDir, "novel-downloads").listFiles().orEmpty().filter { it.extension == "json" && it.nameWithoutExtension.matches(Regex("[a-f0-9]{64}")) }
+                .mapNotNull { read(it.nameWithoutExtension) }.filter { it.scope == scope }.sortedBy { it.title }
+        }
+    }
 
     internal suspend fun save(task: NovelDownloadTask, expectedOperation: String? = null): Boolean = withContext(Dispatchers.IO) {
         locks[(task.key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {

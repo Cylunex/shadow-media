@@ -65,9 +65,9 @@ internal data class NovelIntakeAction(val read: Boolean = false, val chapterUrl:
     var pending by remember(row) { mutableStateOf(NovelIntakeAction()) }
     var tocQuery by remember(row) { mutableStateOf("") }
     var descending by remember(row) { mutableStateOf(false) }
-    fun load(toc: Boolean) = task.run {
+    fun load(toc: Boolean, body: Boolean = false) = task.run {
         if (supported == null) supported = repository.sourceSearch.features(connection)
-        preview = mergeNovelPreview(preview, repository.sourceSearch.preview(connection, row, toc))
+        preview = mergeNovelPreview(preview, repository.sourceSearch.preview(connection, row, toc, body))
     }
     LaunchedEffect(row) { load(false) }
     val detail = novelSourceDetail(row, preview)
@@ -146,6 +146,15 @@ internal data class NovelIntakeAction(val read: Boolean = false, val chapterUrl:
                 if (!canCollect && supported != null) Text("当前服务不支持把纯资料来源关联到已有作品，请更新服务后再试。")
                 Text(if (readable) "收录后由服务获取目录；阅读此来源沿用版本定位与进度冲突规则。" else "此来源只收录资料，不提供可读正文。", style = MaterialTheme.typography.bodySmall)
                 Text(detail.optString("intro").ifBlank { "暂无简介" })
+                if (readable && supported?.bodyPreview == true) TextButton(enabled = !task.busy, onClick = { load(true, true) }) { Text("试读正文") }
+                preview?.optJSONObject("sample")?.let { sample ->
+                    Text(sample.optString("title"), style = MaterialTheme.typography.titleSmall)
+                    Text("${sample.optInt("word_count")} 字 · ${sample.optInt("duration_ms")} ms", style = MaterialTheme.typography.labelSmall)
+                    Text(sample.optString("text"))
+                    if (sample.optBoolean("truncated")) Text("试读至此，可加入书架继续。")
+                    TextButton(enabled = !task.busy && canCollect, onClick = { intake(NovelIntakeAction(read = true, chapterUrl = sample.getString("chapter_url"))) }) { Text("从本章开始阅读") }
+                }
+                preview?.novelId("sample_error")?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 listOf("kind" to "分类", "category" to "类别", "word_count" to "字数", "latest_chapter" to "最新章节", "source_updated_at" to "来源更新", "status" to "状态").forEach { (key, title) ->
                     detail.novelId(key)?.let { Text("$title：$it", style = MaterialTheme.typography.bodyMedium) }
                 }

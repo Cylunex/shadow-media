@@ -53,6 +53,7 @@ class NovelReaderToolsUiTest {
 
     @Test fun sourceSelectionShowsTargetContentsAndOnlyExplicitChapterMovesReading() {
         handler = { request -> if (request.path == "/api/v1/works/work") json("""{"id":"work","versions":[{"id":"v1","state":"ready","label":"主书源"},{"id":"v2","state":"ready","label":"备用书源"}]}""")
+            else if (request.path!!.contains("/open")) json("""{"version_id":"v2","quality":"approximate","mapping_basis":"title","position":{"chapter_id":"next"}}""")
             else json("""{"version_id":"v2","total":1,"offset":0,"limit":100,"next_offset":null,"items":[{"id":"next","title":"山海来信","ordinal":8,"readable":true}]}""") }
         val repo = repository(); val state = NovelReaderSourceState(); var opened = ""
         compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -61,14 +62,14 @@ class NovelReaderToolsUiTest {
         waitText("备用书源")
         screenshot("novel-reader-sources-320")
         compose.onNodeWithText("备用书源").performClick()
-        waitText("接着读当前章")
+        waitText("从同名章开头读")
         assertEquals("", opened)
-        compose.onNodeWithText("接着读当前章").performClick()
+        compose.onNodeWithText("从同名章开头读").performClick()
         assertEquals("v2/next", opened)
         compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
         waitText("搜索其他书源")
         assertNull(state.selectedVersion)
-        assertFalse(requests.any { it.first.contains("progress") || it.first.endsWith("/open") })
+        assertFalse(requests.any { it.first.contains("progress") })
     }
 
     @Test fun partialSearchResultsCanOpenTheirDirectoryWhileOtherSourcesAreStillSearching() {

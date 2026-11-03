@@ -112,7 +112,10 @@ internal class NativeTextView(context: Context) : View(context) {
             longPress = true
             val doc = document ?: return
             if (e.x < doc.margin || e.x > width - doc.margin || e.y < doc.topInset || e.y > height - doc.topInset) return
-            val line = doc.pages[pageIndex].lines.minByOrNull { abs(it.baseline - (e.y + scrollOffset)) } ?: return
+            val stride = (height - 2 * doc.topInset).coerceAtLeast(1f)
+            val index = if (settings.pageMode == ReaderPageMode.SCROLL && e.y + scrollOffset >= doc.topInset + stride) (pageIndex + 1).coerceAtMost(doc.pages.lastIndex) else pageIndex
+            val localY = e.y + scrollOffset - (index - pageIndex) * stride
+            val line = doc.pages[index].lines.minByOrNull { abs(it.baseline - localY) } ?: return
             if (settings.haptics) performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
             val text = doc.chapter.text
             val start = text.lastIndexOf('\n', (line.start - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
@@ -401,7 +404,10 @@ internal class NativeTextView(context: Context) : View(context) {
                 overScroll += scrollOffset
                 showNotice(if (overScroll > 0) "继续上拉，松手进入下一章" else "继续下拉，松手进入上一章")
             } else scroller.abortAnimation()
-            scrollOffset = 0f; invalidate(); return
+            val next = if (overScroll != 0f) overScroll else scrollOffset
+            scrollOffset = 0f
+            if (!fromTouch || abs(overScroll) > slop * 2) requestBoundary(if (next > 0) 1 else -1)
+            invalidate(); return
         }
         val newOffset = doc.offsetAt(pageIndex, scrollOffset)
         if (newOffset != readingOffset) { readingOffset = newOffset; updateDescription(); onPosition(readingOffset, true) }

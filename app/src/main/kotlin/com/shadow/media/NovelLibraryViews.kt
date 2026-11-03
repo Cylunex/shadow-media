@@ -1,4 +1,4 @@
-@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 package com.shadow.media
 
 import androidx.compose.foundation.layout.*
@@ -16,6 +16,7 @@ import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -39,7 +40,7 @@ import org.json.JSONObject
         } }, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { submit() }))
 }
 
-@Composable internal fun NovelContinueCard(work: JSONObject, enabled: Boolean, onRead: () -> Unit, onDetail: () -> Unit) {
+@Composable internal fun NovelContinueCard(work: JSONObject, enabled: Boolean, onRead: () -> Unit, onDetail: () -> Unit, onBookmarks: (() -> Unit)? = null) {
     val progress = work.optJSONObject("progress")
     val ratio = progress?.optDouble("ratio", 0.0)?.takeIf { it.isFinite() }?.coerceIn(0.0, 1.0)?.toFloat() ?: 0f
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(24.dp)) {
@@ -48,6 +49,14 @@ import org.json.JSONObject
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("接着上次读", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
                 Text(work.optString("title"), style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                if (work.optString("last_chapter_title").isNotBlank()) Text(work.optString("last_chapter_title"), style = MaterialTheme.typography.bodySmall)
+                var expanded by remember { mutableStateOf(false) }
+                val quote = progress?.optJSONObject("anchor")?.optString("quote").orEmpty()
+                if (quote.isNotBlank()) {
+                    TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "收起上次片段" else "看看上次读到哪里") }
+                    if (expanded) Text(quote, maxLines = 4, style = MaterialTheme.typography.bodySmall)
+                }
+                if (onBookmarks != null) TextButton(onClick = onBookmarks) { Text("书签与摘录") }
                 if (progress != null) {
                     Text("本章已读 ${(ratio * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     LinearProgressIndicator(progress = { ratio }, modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .12f))
@@ -88,12 +97,15 @@ internal fun novelFilterLabels(query: NovelQuery, navigation: JSONObject): List<
     query.genres.forEach { add(it to query.copy(genres = query.genres - it)) }
     query.excluded.forEach { add("排除 $it" to query.copy(excluded = query.excluded - it)) }
     if (query.serialStatus.isNotBlank()) add(serialLabel(query.serialStatus).ifBlank { "状态未知" } to query.copy(serialStatus = ""))
-    if (query.availability.isNotBlank()) add((mapOf("readable" to "可阅读", "local" to "本地版本", "online" to "在线版本", "metadata_only" to "仅资料")[query.availability] ?: query.availability) to query.copy(availability = ""))
+    if (query.availability.isNotBlank()) add((mapOf("readable" to "可阅读", "local" to "本地版本", "online" to "在线版本", "cached" to "服务端已缓存", "metadata_only" to "仅资料")[query.availability] ?: query.availability) to query.copy(availability = ""))
     if (query.precise) add("精确搜索" to query.copy(precise = false))
     if (query.hasUpdates) add("有更新" to query.copy(hasUpdates = false))
     if (query.status.isNotBlank()) add((mapOf("want" to "想读", "reading" to "在读", "read" to "已读", "paused" to "暂停")[query.status] ?: query.status) to query.copy(status = ""))
+    if (query.ungrouped) add("未分组" to query.copy(ungrouped = false))
     if (query.group.isNotBlank()) add("分组 ${query.group}" to query.copy(group = ""))
     query.personalTags.forEach { add("标签 $it" to query.copy(personalTags = query.personalTags - it)) }
+    if (query.minWords.isNotBlank() || query.maxWords.isNotBlank() || query.unknownWords) add("字数筛选" to query.copy(minWords = "", maxWords = "", unknownWords = false))
+    if (query.updatedDays.isNotBlank()) add("${query.updatedDays}天内更新" to query.copy(updatedDays = ""))
     if (query.minPopularity.isNotBlank()) add("热度 ≥ ${query.minPopularity}" to query.copy(minPopularity = ""))
 }
 
@@ -108,20 +120,32 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
     view: String, query: NovelQuery, search: String, navigation: JSONObject, data: JSONObject?, busy: Boolean,
     onSearch: (String) -> Unit, onSubmit: () -> Unit, onQuery: (NovelQuery) -> Unit, onFilter: () -> Unit,
     onMore: () -> Unit, onWork: (String) -> Unit, onRead: (String) -> Unit,
+    onUpdates: ((String) -> Unit)? = null,
     onBulk: (suspend (Set<String>, String, String, List<String>) -> Unit)? = null,
 ) {
     var managing by rememberSaveable { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
     var actions by remember { mutableStateOf(false) }
+    var groupManager by remember { mutableStateOf(false) }
+    var selectionError by remember { mutableStateOf<String?>(null) }
+    var selecting by remember { mutableStateOf(false) }
+    var review by remember { mutableStateOf(false) }
+    val names = remember { mutableStateMapOf<String, String>() }
+    val artwork = LocalNovelArtwork.current
+    val selectionScope = rememberCoroutineScope()
+    if (groupManager && artwork != null) ModalBottomSheet(onDismissRequest = { groupManager = false }) {
+        NovelShelfGroupManager(artwork.repository, artwork.connection) { groupManager = false; onQuery(query.copy(group = "", ungrouped = false)) }
+    }
     fun select(id: String) { selected = if (id in selected) selected - id else (selected + id).take(500).toSet() }
     if (actions && onBulk != null) NovelShelfActions(selected, navigation, onDismiss = { actions = false }, onApply = { action, value, tags ->
         onBulk(selected, action, value, tags)
         selected = emptySet(); actions = false
     })
     val preferences = LocalContext.current.getSharedPreferences("novel_library_ui", android.content.Context.MODE_PRIVATE)
-    var grid by rememberSaveable { mutableStateOf(preferences.getBoolean("grid", true)) }
+    var grid by rememberSaveable(query.group) { mutableStateOf(preferences.getBoolean("grid:${query.group}", preferences.getBoolean("grid", true))) }
     val items = data?.novelObjects("items").orEmpty()
     val total = data?.optInt("total") ?: 0
+    LaunchedEffect(items) { items.forEach { names[it.getString("id")] = it.optString("title") } }
     val labels = novelFilterLabels(query, navigation)
     val isShelf = view == "shelf"
     val gridState = rememberLazyGridState()
@@ -129,7 +153,10 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
     LaunchedEffect(query) { if (query != previousQuery) gridState.scrollToItem(0); previousQuery = query }
     LazyVerticalGrid(modifier = Modifier.fillMaxSize(), state = gridState, columns = if (grid) GridCells.Adaptive(96.dp) else GridCells.Fixed(1),
         contentPadding = PaddingValues(20.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item(span = { GridItemSpan(maxLineSpan) }) { NovelSearchField(search, onSearch, !busy, onSubmit, if (isShelf) "搜索我的书架" else "搜索书名、作者或题材", onClear = { onQuery(query.copy(q = "")) }) }
+        item(span = { GridItemSpan(maxLineSpan) }) { Column {
+            NovelSearchField(search, onSearch, !busy, onSubmit, if (isShelf) "搜索我的书架" else "搜索书名、作者或题材", onClear = { onQuery(query.copy(q = "")) })
+            NovelSavedFilters(view, query, onQuery)
+        } }
         item(span = { GridItemSpan(maxLineSpan) }) { Column {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (isShelf) item { FilterChip(query.hasUpdates, enabled = !busy, onClick = { onQuery(query.copy(hasUpdates = !query.hasUpdates)) },
@@ -138,11 +165,32 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
                 item { FilterChip(query.serialStatus == "completed", enabled = !busy, onClick = { onQuery(query.copy(serialStatus = if (query.serialStatus == "completed") "" else "completed")) }, label = { Text("完结") }) }
                 if (isShelf) item { FilterChip(query.status == "reading", enabled = !busy, onClick = { onQuery(query.copy(status = if (query.status == "reading") "" else "reading")) }, label = { Text("在读") }) }
             }
+            if (isShelf) LazyRow {
+                item { FilterChip(query.group.isBlank() && !query.ungrouped, { onQuery(query.copy(group = "", ungrouped = false)) }, label = { Text("全部分组") }) }
+                item { FilterChip(query.ungrouped, { onQuery(query.copy(group = "", ungrouped = !query.ungrouped)) }, label = { Text("未分组") }) }
+                items(navigation.novelStrings("groups")) { group -> FilterChip(query.group == group, { onQuery(query.copy(group = group, ungrouped = false, sort = preferences.getString("sort:$view:$group", query.sort) ?: query.sort)) }, label = { Text(group) }) }
+                if (artwork != null) item { TextButton(onClick = { groupManager = true }) { Text("管理分组") } }
+            }
             if (managing) Row {
                 TextButton(onClick = { selected = (selected + items.map { it.getString("id") }).take(500).toSet() }) { Text("选择已显示") }
                 TextButton(onClick = { selected = emptySet() }) { Text("清空选择") }
+                TextButton(onClick = { val visible = items.map { it.getString("id") }.toSet(); selected = ((selected - visible) + (visible - selected)).take(500).toSet() }) { Text("反选已显示") }
                 TextButton(enabled = selected.isNotEmpty() && !busy, onClick = { actions = true }) { Text("整理 ${selected.size} 本") }
             }
+            if (managing && artwork != null) Row {
+                TextButton(enabled = !selecting, onClick = {
+                    selecting = true; selectionError = null
+                    selectionScope.launch {
+                        try { selected = artwork.repository.live(artwork.connection, listOf("library", "books", "selection"), query.copy(view = view).parameters()).novelStrings("work_ids").toSet() }
+                        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                        catch (e: Exception) { selectionError = e.message ?: "选择失败" }
+                        finally { selecting = false }
+                    }
+                }) { Text("选择全部匹配") }
+                TextButton(onClick = { review = !review }) { Text("查看已选 ${selected.size} 本") }
+            }
+            if (review) selected.forEach { id -> Text(names[id] ?: "已选作品 ${id.take(8)}", style = MaterialTheme.typography.bodySmall) }
+            selectionError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (labels.isNotEmpty()) LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(labels) { (label, cleared) -> InputChip(selected = true, enabled = !busy, onClick = { onQuery(cleared) }, label = { Text(label) }, trailingIcon = { Icon(Icons.Rounded.Close, "移除$label", Modifier.size(14.dp)) }) }
                 item { TextButton(enabled = !busy, onClick = { onQuery(NovelQuery(view = query.view, q = query.q, sort = query.sort)) }) { Text("清除筛选") } }
@@ -155,12 +203,12 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
                     TextButton(enabled = !busy, onClick = { sorting = true }) { Text(when (query.sort) { "last_read" -> "最近阅读"; "title" -> "书名"; "popularity" -> "热度"; else -> if (view == "history") "最近阅读" else "最近收录" }); Icon(Icons.Rounded.ExpandMore, null, Modifier.size(18.dp)) }
                     DropdownMenu(sorting, onDismissRequest = { sorting = false }) {
                         novelSortOptions(view).forEach { (key, text) ->
-                            DropdownMenuItem(text = { Text(text) }, onClick = { sorting = false; onQuery(query.copy(sort = key)) })
+                            DropdownMenuItem(text = { Text(text) }, onClick = { sorting = false; preferences.edit { putString("sort:$view:${query.group}", key) }; onQuery(query.copy(sort = key)) })
                         }
                     }
                 }
                 IconButton(enabled = !busy, onClick = onFilter) { Icon(Icons.Rounded.Tune, "全部筛选") }
-                IconButton(onClick = { grid = !grid; preferences.edit { putBoolean("grid", grid) } }) { Icon(if (grid) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.GridView, if (grid) "切换列表视图" else "切换网格视图") }
+                IconButton(onClick = { grid = !grid; preferences.edit { putBoolean("grid:${query.group}", grid) } }) { Icon(if (grid) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.GridView, if (grid) "切换列表视图" else "切换网格视图") }
             }
         } }
         if (!busy && data != null && items.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
@@ -171,7 +219,9 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
             }
         }
         items(items, key = { it.getString("id") }) { work ->
+            Column {
             val id = work.getString("id")
+            if (!managing && work.optInt("update_count") > 0 && onUpdates != null) TextButton(enabled = !busy, onClick = { onUpdates(id) }) { Text("查看本次更新") }
             if (managing) Checkbox(id in selected, { select(id) })
             val read = if (managing) ({ select(id) }) else if (view in setOf("shelf", "history") && novelCanRead(work)) ({ onRead(work.getString("id")) }) else null
             val detail = { if (managing) select(id) else onWork(id) }
@@ -179,6 +229,8 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
                 NovelWorkCard(work, !busy, read ?: detail)
                 if (read != null) TextButton(enabled = !busy, onClick = detail) { Text("详情") }
             } else NovelShelfTile(work, !busy, detail, read, onManage = if (isShelf && onBulk != null) ({ managing = true; selected = setOf(id); actions = true }) else null)
+            if (isShelf) NovelShelfReadingSummary(work, showLastChapter = !grid)
+            }
         }
         if (items.size < total) item(span = { GridItemSpan(maxLineSpan) }) { OutlinedButton(enabled = !busy, onClick = onMore, modifier = Modifier.fillMaxWidth()) { Text(if (busy) "正在加载…" else "加载更多 · 已显示 ${items.size} 本") } }
     }
@@ -196,7 +248,9 @@ internal fun novelCanRead(work: JSONObject) = work.novelStrings("availability").
                         Text("+${work.optInt("update_count")}章", Modifier.padding(horizontal = 6.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall)
                     }
                 }
+                if (work.optBoolean("pinned")) Text("置顶", style = MaterialTheme.typography.labelSmall)
                 Text(work.optString("title"), maxLines = 2, minLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
+                if (work.optString("last_chapter_title").isNotBlank()) Text("读至 " + work.optString("last_chapter_title"), maxLines = 1, style = MaterialTheme.typography.labelSmall)
                 Text(work.optString("author").ifBlank { "作者待补全" }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(if (!novelCanRead(work)) "仅资料" else serialLabel(work.optString("serial_status")).ifBlank { "可阅读" }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             }

@@ -153,11 +153,9 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
         val version = state.selectedVersion ?: return@LaunchedEffect
         if (version == publication.versionId || currentTitle.isBlank()) return@LaunchedEffect
         try {
-            val saved = repository.cache.savedDirectory(publication.scope, publication.workId, version)
-            val page = if (saved != null) novelSavedDirectoryContents(saved, NovelContentsQuery(version, q = currentTitle, limit = 200))
-                else c?.let { repository.get(it, listOf("works", publication.workId, "contents"), NovelContentsQuery(version, q = currentTitle, limit = 200).parameters()) }
-            if (page != null && page.optInt("total") <= 200) recommendation = page.novelObjects("items")
-                .filter { it.optBoolean("readable") && it.optString("title") == currentTitle }.singleOrNull()
+            if (online && c != null) {
+                recommendation = repository.get(c, listOf("works", publication.workId, "open"), listOf("version_id" to version, "compact" to "true"))
+            }
         } catch (e: CancellationException) { throw e } catch (_: Exception) { /* Explicit TOC selection remains available. */ }
     }
     if (busy || searching) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -168,7 +166,20 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
         Text(versions.firstOrNull { it.getString("id") == version }?.optString("label") ?: "所选来源", style = MaterialTheme.typography.titleSmall)
         Row {
             TextButton(enabled = enabled && !busy, onClick = { onOpen(version, null) }) { Text("续读此来源") }
-            recommendation?.let { row -> TextButton(enabled = enabled && !busy, onClick = { onOpen(version, row.getString("id")) }) { Text("接着读当前章") } }
+            recommendation?.let { opening ->
+                val position = opening.optJSONObject("position")
+                val label = when (opening.optString("mapping_basis")) {
+                    "version_progress" -> "恢复此来源上次位置"
+                    "body_hash" -> "接着读相同正文"
+                    "title" -> "从同名章开头读"
+                    "locator" -> "接着读对应章节"
+                    else -> "继续阅读"
+                }
+                if (position != null && opening.optString("quality") != "needs_selection") TextButton(enabled = enabled && !busy, onClick = {
+                    onOpen(version, position.optString("chapter_id").takeIf(String::isNotBlank).takeIf { opening.optString("quality") != "exact" && !opening.optBoolean("offset_preserved") })
+                }) { Text(label) }
+                if (opening.optString("quality") == "needs_selection") Text("此来源章节无法唯一定位，请从目录选择。", style = MaterialTheme.typography.bodySmall)
+            }
         }
         Text("也可从目录选择章节。换源后可返回原位置。", style = MaterialTheme.typography.bodySmall)
         NovelContentsPanel(repository, c, publication.workId, version, enabled && !busy,

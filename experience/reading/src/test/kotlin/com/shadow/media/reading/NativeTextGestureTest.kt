@@ -150,7 +150,7 @@ class NativeTextGestureTest {
             assertEquals(0, boundaries)
         } finally { view.dispose() }
     }
-    @Test fun scrollingFlingStopsAtChapterEndWithoutAnAutomaticChapterJump() {
+    @Test fun scrollingFlingRequestsTheNextChapterOnceAtTheEnd() {
         val view = reader()
         try {
             view.configure(ReaderSettings(pageMode = ReaderPageMode.SCROLL))
@@ -161,11 +161,11 @@ class NativeTextGestureTest {
             event(view, MotionEvent.ACTION_MOVE, 216f, 450f, time, 20)
             event(view, MotionEvent.ACTION_UP, 216f, 450f, time, 40)
             repeat(120) { shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(16)); view.computeScroll() }
-            assertEquals(0, boundaries)
+            assertEquals(1, boundaries)
             assertEquals(view.document!!.pages.lastIndex, view.pageIndex)
         } finally { view.dispose() }
     }
-    @Test fun scrollingPastTheEndRequiresARealPullAndRelease() {
+    @Test fun scrollingPastTheEndRequestsChapterBeforeReleaseAndDoesNotDuplicate() {
         val view = reader()
         try {
             view.configure(ReaderSettings(pageMode = ReaderPageMode.SCROLL))
@@ -174,7 +174,7 @@ class NativeTextGestureTest {
             val time = SystemClock.uptimeMillis()
             event(view, MotionEvent.ACTION_DOWN, 216f, 650f, time, 0)
             event(view, MotionEvent.ACTION_MOVE, 216f, 250f, time, 60)
-            assertEquals(0, boundaries)
+            assertEquals(1, boundaries)
             event(view, MotionEvent.ACTION_UP, 216f, 250f, time, 120)
             assertEquals(1, boundaries)
         } finally { view.dispose() }
