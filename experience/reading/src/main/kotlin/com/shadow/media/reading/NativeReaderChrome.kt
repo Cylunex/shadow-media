@@ -10,7 +10,7 @@ import androidx.compose.material.icons.automirrored.rounded.MenuBook
 import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -77,9 +77,8 @@ internal fun NativeReaderControls(
                 HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant)
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                (listOf("目录" to Icons.AutoMirrored.Rounded.MenuBook, "排版" to Icons.Rounded.TextFields,
-                    "搜索" to Icons.Rounded.Search, "书签" to Icons.Rounded.Bookmarks) +
-                    if (sources) listOf("书源" to Icons.Rounded.SwapHoriz) else emptyList()).forEach { (label, icon) ->
+                listOf("目录" to Icons.AutoMirrored.Rounded.MenuBook, "排版" to Icons.Rounded.TextFields,
+                    "听读" to Icons.Rounded.Headphones, "更多" to Icons.Rounded.MoreHoriz).forEach { (label, icon) ->
                     ReaderTool(label, icon, enabled, Modifier.weight(1f)) { onPanel(label) }
                 }
             }
@@ -104,10 +103,20 @@ internal fun NativeReaderControls(
     }
 }
 
-@Composable internal fun ColumnScope.NativeReaderBookmarks(marks: List<ContentAnnotationEntity>, enabled: Boolean, onOpen: (ContentAnnotationEntity) -> Unit, onDelete: (ContentAnnotationEntity) -> Unit) {
-    if (marks.isEmpty()) ReaderEmptyState(Icons.Rounded.Bookmarks, "还没有书签", "阅读菜单右上角可添加书签，长按正文可保存摘录。", Modifier.weight(1f))
+@Composable internal fun ColumnScope.NativeReaderBookmarks(marks: List<ContentAnnotationEntity>, enabled: Boolean, onOpen: (ContentAnnotationEntity) -> Unit, onDelete: (ContentAnnotationEntity) -> Unit, onEdit: ((ContentAnnotationEntity) -> Unit)? = null) {
+    var filter by remember { mutableStateOf("全部") }
+    Row {
+        listOf("全部", "书签", "摘录").forEach { label ->
+            FilterChip(selected = filter == label, onClick = { filter = label }, label = { Text(label) })
+        }
+    }
+    val visible = marks.filter { mark ->
+        val excerpt = runCatching { org.json.JSONObject(mark.locatorJson).let { it.has("selection_end") || !it.optJSONObject("text")?.optString("highlight").isNullOrBlank() } }.getOrDefault(false)
+        filter == "全部" || if (filter == "摘录") excerpt else !excerpt
+    }
+    if (visible.isEmpty()) ReaderEmptyState(Icons.Rounded.Bookmarks, "还没有书签", "阅读菜单右上角可添加书签，长按正文可保存摘录。", Modifier.weight(1f))
     else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(marks, key = { it.id }) { mark ->
+        items(visible, key = { it.id }) { mark ->
             Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Surface(onClick = { onOpen(mark) }, enabled = enabled, color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.weight(1f)) {

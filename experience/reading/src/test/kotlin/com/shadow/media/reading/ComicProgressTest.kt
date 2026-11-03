@@ -10,7 +10,8 @@ class ComicProgressTest {
         assertFalse(comicCompleted(8, 10, "LTR", 1f))
     }
     @Test fun `final double spread completes for even and odd page counts`() {
-        assertTrue(comicCompleted(8, 10, "双页", 0f))
+        assertFalse(comicCompleted(8, 10, "双页", 0f))
+        assertTrue(comicCompleted(9, 10, "双页", 0f))
         assertTrue(comicCompleted(10, 11, "双页", 0f))
         assertFalse(comicCompleted(8, 11, "双页", 0f))
     }

@@ -66,43 +66,51 @@ class NativeTextReaderActivity : ComponentActivity() {
     private var sync: Job? = null
     private var prefetch: Job? = null
     private var cacheStatus by mutableStateOf<String?>(null)
-    private var aloud: ReadAloud? = null
-    private var aloudJob: Job? = null
     private var narrationOffset by mutableIntStateOf(0)
     private var narrationChapter: String? = null
     private var followNarration by mutableStateOf(true)
     private var narrationSeeking = false
-    private var speechSpeed by mutableFloatStateOf(1f)
-    private var stopAtChapter by mutableStateOf(false)
-    private var sleepJob: Job? = null
-    private val noisy = object : android.content.BroadcastReceiver() {
-        override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) { stopAloud() }
-    }
-    private fun sentenceStep(direction: Int) {
-        val text = chapter?.text ?: return
-        val point = narrationOffset.coerceIn(0, text.length)
-        val target = if (direction > 0) text.indexOfAny(charArrayOf('。', '！', '？', '\n', '.', '!', '?'), point).let { if (it < 0) text.length else it + 1 }
-            else text.lastIndexOfAny(charArrayOf('。', '！', '？', '\n', '.', '!', '?'), (point - 2).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
-        stopAloud(); narrationOffset = safeTextOffset(text, target)
-        narrationChapter = chapter?.ref?.id
-        speak()
-    }
     private var narrating by mutableStateOf(false)
     private var excerpt by mutableStateOf<Pair<String, Int>?>(null)
+    private var readerSearch = NativeSearchSession()
     private var nativeSaved: JSONObject? = null
     private var pendingShow: Triple<NativeTextChapter, String, Int>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        installReaderBackNavigation({ panel != null || excerpt != null || menu || acquiring && chapter != null }) {
-            when { excerpt != null -> excerpt = null; panel != null -> panel = null; menu -> menu = false; else -> navigationJob?.cancel() }
+        installReaderBackNavigation({ view?.selectedText?.isNotEmpty() == true || panel != null || excerpt != null || menu || acquiring && chapter != null }) {
+            when { view?.clearSelection() == true -> Unit; excerpt != null -> excerpt = null; panel != null -> panel = null; menu -> menu = false; else -> navigationJob?.cancel() }
             applyWindow()
         }
         library = LibraryRepository(this); novel = NovelRepository(this, library); source = NativeTextSource(library, novel)
         store = ReaderSettingsStore(getSharedPreferences("reader_preferences", MODE_PRIVATE)); style = store.load()
+        readerSearch = NativeSearchSession(savedInstanceState?.getInt("search_index") ?: 0, savedInstanceState?.getInt("search_pixels") ?: 0)
+        readerSearch.executed = savedInstanceState?.getBoolean("search_executed") ?: false
+        readerSearch.query.value = savedInstanceState?.getString("search_query").orEmpty()
+        readerSearch.includeFuture.value = savedInstanceState?.getBoolean("search_future") ?: false
         jumpHistory = NativeJumpHistory.restore(savedInstanceState?.getString("jump_history"))
         nativeSaved = savedInstanceState?.getString("native_locator")?.let { runCatching { JSONObject(it) }.getOrNull() }
-        WindowCompat.setDecorFitsSystemWindows(window, false); applyWindow()
+        lifecycleScope.launch {
+            ReaderNarrationService.state.collectLatest { playing ->
+                val id = playing.assetId ?: return@collectLatest
+                val item = library.dao.asset(id) ?: return@collectLatest
+                val pub = novel.dao.publication(id)
+                if (id != asset?.id && (pub == null || pub.workId != publication?.workId || pub.scope != publication?.scope)) { narrating = false; return@collectLatest }
+                ReaderNarrationService.activeSession?.takeIf { it.first == asset?.id }?.let { session = it.second }
+                narrating = playing.playing
+                if (playing.error != null) message = playing.error
+                val locator = playing.locator?.let(::JSONObject) ?: return@collectLatest
+                narrationChapter = locator.optJSONObject("native_text")?.optString("chapter_id")
+                narrationOffset = locator.optJSONObject("native_text")?.optInt("offset") ?: 0
+                if (!followNarration || !lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) return@collectLatest
+                if (chapter?.ref?.id != narrationChapter && !busy) open(item, locator)
+                if (chapter?.ref?.id == narrationChapter) {
+                    narrationSeeking = true; view?.seek(narrationOffset); narrationSeeking = false
+                    view?.highlightSentence(if (playing.playing) narrationOffset else null)
+                }
+            }
+        }
+                WindowCompat.setDecorFitsSystemWindows(window, false); applyWindow()
         setContent { Chrome() }
         lifecycleScope.launch {
             try {
@@ -127,7 +135,7 @@ class NativeTextReaderActivity : ComponentActivity() {
             if (locator?.optJSONObject("native_text") == null) locator?.optJSONObject("locations")?.optDouble("progression", 0.0)?.takeIf { it.isFinite() } else null)
         val restored = if (lastPage) content.text.length else content.restore(locator)
         if (pub != null) novel.beginReading(pub, locator ?: content.locator(restored))
-        val newSession = if (asset?.id != item.id || session == null) ProgressWriter.begin(library, item) else session
+        val newSession = ReaderNarrationService.activeSession?.takeIf { it.first == item.id }?.second ?: if (asset?.id != item.id || session == null) ProgressWriter.begin(library, item) else session
         asset = item; publication = pub; chapter = content; offset = restored; session = newSession
         if (!narrating && narrationChapter != content.ref.id) {
             val saved = getSharedPreferences("reader_narration", MODE_PRIVATE).getString(item.id, null)
@@ -144,6 +152,11 @@ class NativeTextReaderActivity : ComponentActivity() {
         acquiring = false
         view?.let { it.isEnabled = false; it.show(content, item.title, restored, style); pendingShow = null }
         prefetchFollowing(pub, content.ref.ordinal)
+        val hints = getSharedPreferences("reader_hints", MODE_PRIVATE)
+        if (!hints.getBoolean("gestures", false)) {
+            message = "轻点中间打开菜单，左右两侧翻页；长按文字可选句。更多中可再次查看手势帮助。"
+            hints.edit().putBoolean("gestures", true).apply()
+        }
     }
     private fun prefetchFollowing(pub: NovelPublicationEntity?, ordinal: Int) {
         prefetch?.cancel(); cacheStatus = null
@@ -190,7 +203,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         offset = value
         pageLabel = view?.let { "${it.pageIndex + 1} / ${it.document?.pages?.size ?: 1} 页" }.orEmpty()
         if (user && narrating && !narrationSeeking) followNarration = false
-        if (!user || busy) return
+        if (!user || busy || narrating) return
         val content = chapter ?: return
         val locator = content.locator(value)
         val fraction = (content.ref.ordinal + value.toDouble() / content.text.length.coerceAtLeast(1)) / content.total.coerceAtLeast(1)
@@ -283,7 +296,9 @@ class NativeTextReaderActivity : ComponentActivity() {
         }
     }
     private fun ref(json: JSONObject) = NativeChapterRef(json.getString("id"), json.optString("title"), json.getInt("ordinal"), "chapters/${json.getString("id")}.xhtml", json.optBoolean("readable", true))
-    private fun update(value: ReaderSettings) { style = value.normalized(); store.save(style); view?.configure(style); applyWindow() }
+    private fun update(value: ReaderSettings) {
+        if (value.leftHanded != style.leftHanded) message = if (value.leftHanded) "左手点击：左侧下一页，中央菜单，右侧上一页" else "常规点击：左侧上一页，中央菜单，右侧下一页"
+        style = value.normalized(); store.save(style); view?.configure(style); applyWindow() }
     private fun applyWindow() {
         WindowInsetsControllerCompat(window, window.decorView).apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -342,40 +357,28 @@ class NativeTextReaderActivity : ComponentActivity() {
         jumpHistory = jumpHistory.remember(origin, location())
         closePanel()
     }
-    private fun stopAloud() { aloudJob?.cancel(); aloud?.stop(); narrating = false }
+    private fun stopAloud() {
+        if (narrating) ReaderNarrationService.command(this, ReaderNarrationService.PAUSE)
+        narrating = false
+    }
     private fun speak(fromHere: Boolean = false) {
-        if (narrating) { stopAloud(); return }
-        val content = chapter ?: return
-        if (fromHere || narrationChapter != content.ref.id) narrationOffset = offset
-        narrationChapter = content.ref.id
+        if (narrating && !fromHere) { stopAloud(); return }
+        val current = chapter ?: return
+        val existing = ReaderNarrationService.state.value
         followNarration = true
-        val previous = aloudJob
-        aloudJob = lifecycleScope.launch {
-            previous?.join()
-            narrating = true
-            try {
-                val reader = aloud ?: ReadAloud(this@NativeTextReaderActivity).also { aloud = it }
-                while (true) {
-                    val current = chapter ?: break
-                    reader.speed = speechSpeed
-                    reader.readText(current.text, narrationOffset) {
-                        narrationOffset = it; narrationChapter = current.ref.id
-                        getSharedPreferences("reader_narration", MODE_PRIVATE).edit().putString(asset?.id,
-                            current.locator(it).toString()).apply()
-                        if (followNarration) { narrationSeeking = true; view?.seek(it); narrationSeeking = false }
-                    }
-                    if (stopAtChapter || !followNarration) break
-                    narrationSeeking = true; view?.seek(current.text.length); narrationSeeking = false
-                    val next = adjacent(current.ref.ordinal, 1) ?: break
-                    busy = true; acquiring = true
-                    ProgressWriter.flush()
-                    loadChapter(next)
-                    narrationOffset = 0; narrationChapter = chapter?.ref?.id
-                    while (busy) delay(16)
-                }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { message = e.message ?: "朗读失败，请检查系统语音包" }
-            finally { narrating = false; busy = false; acquiring = false; view?.isEnabled = true }
+        if (!fromHere && existing.assetId == asset?.id && existing.locator != null)
+            ReaderNarrationService.command(this, ReaderNarrationService.PLAY)
+        else ReaderNarrationService.command(this, ReaderNarrationService.PLAY, asset?.id, current.locator(offset).toString())
+    }
+    private fun followSpeech() {
+        val playing = ReaderNarrationService.state.value
+        val id = playing.assetId ?: return
+        val locator = playing.locator?.let(::JSONObject) ?: return
+        followNarration = true
+        lifecycleScope.launch {
+            val item = library.dao.asset(id) ?: return@launch
+            open(item, locator)
+            closePanel()
         }
     }
 
@@ -411,7 +414,12 @@ class NativeTextReaderActivity : ComponentActivity() {
                 AndroidView(factory = { context -> NativeTextView(context).also { reader ->
                     view = reader
                     reader.onMenu = ::toggleMenu; reader.onBoundary = ::boundary; reader.onPosition = ::positionChanged
-                    reader.onSettings = ::update; reader.onExcerpt = { text, position -> excerpt = text to position }
+                    reader.onSettings = ::update
+                    reader.onReadFromSelection = { point ->
+                        chapter?.let { ReaderNarrationService.command(this@NativeTextReaderActivity, ReaderNarrationService.PLAY,
+                            asset?.id, it.locator(point).toString()) }
+                    }
+                    reader.onExcerpt = { text, position -> excerpt = text to position }
                     reader.onBrightnessPreview = { brightness -> window.attributes = window.attributes.apply { screenBrightness = brightness ?: style.brightness } }
                     reader.onError = { fatal = it; busy = false }
                     reader.onReady = ready@{
@@ -460,7 +468,6 @@ class NativeTextReaderActivity : ComponentActivity() {
                             }, onPrevious = { skipChapter(-1) }, onNext = { skipChapter(1) },
                             onSpeak = { speak() }, onPanel = { if (it == "书源") sourceState.selectedVersion = null; panel = it; applyWindow() }, compact = compactControls, sources = publication != null)
                     }
-                if (menu) TextButton(onClick = { panel = "听读" }, modifier = Modifier.align(Alignment.CenterEnd)) { Text("听读控制") }
                 if (panel == null) SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp))
             }
             if (panel != null) ModalBottomSheet(sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), onDismissRequest = { panel = null; applyWindow() }) {
@@ -470,38 +477,7 @@ class NativeTextReaderActivity : ComponentActivity() {
                         IconButton(onClick = { panel = null; applyWindow() }) { Icon(Icons.Rounded.Close, "关闭面板") }
                     }
                     when (panel) {
-                        "听读" -> {
-                            Row {
-                                TextButton(onClick = { sentenceStep(-1) }) { Text("上一句") }
-                                TextButton(onClick = { speak() }) { Text(if (narrating) "暂停" else "继续听") }
-                                TextButton(onClick = { sentenceStep(1) }) { Text("下一句") }
-                            }
-                            Row {
-                                TextButton(onClick = { stopAloud(); speak(true) }) { Text("从这里听") }
-                                TextButton(onClick = { narrationSeeking = true; view?.seek(narrationOffset); narrationSeeking = false; followNarration = true; closePanel() }) { Text("回到正在听") }
-                            }
-                            Row {
-                                TextButton(onClick = { speechSpeed = (speechSpeed - .25f).coerceAtLeast(.5f); aloud?.speed = speechSpeed }) { Text("慢一点") }
-                                Text("${speechSpeed}×")
-                                TextButton(onClick = { speechSpeed = (speechSpeed + .25f).coerceAtMost(3f); aloud?.speed = speechSpeed }) { Text("快一点") }
-                            }
-                            Row {
-                                Checkbox(stopAtChapter, onCheckedChange = { stopAtChapter = it })
-                                Text("本章结束停止")
-                            }
-                            FlowRow {
-                                listOf(15, 30, 60).forEach { minutes -> TextButton(onClick = {
-                                    sleepJob?.cancel()
-                                    sleepJob = lifecycleScope.launch { delay(minutes * 60_000L); stopAloud(); message = "定时已停止" }
-                                    message = "${minutes} 分钟后停止"
-                                }) { Text("${minutes} 分钟") } }
-                                TextButton(onClick = { sleepJob?.cancel(); message = "已取消定时" }) { Text("取消定时") }
-                            }
-                            TextButton(onClick = {
-                                try { startActivity(android.content.Intent("com.android.settings.TTS_SETTINGS")) }
-                                catch (_: android.content.ActivityNotFoundException) { message = "请在系统设置中打开文字转语音" }
-                            }) { Text("系统语音设置") }
-                        }
+                        "听读" -> NarrationControls(onFromHere = { speak(true) }, onFollow = ::followSpeech)
                         "排版" -> Column(Modifier.weight(1f)) {
                             Row {
                                 TextButton(onClick = { store.followDefaults(); style = store.load(); view?.configure(style); applyWindow() }) { Text("跟随默认") }
@@ -514,16 +490,27 @@ class NativeTextReaderActivity : ComponentActivity() {
                                 navigate { val item = requireNotNull(asset); val locator = chapter?.locator(offset); library.setTextEncoding(item.id, encoding); source.invalidate(); session = null; open(item, locator) }
                             }) { Text(encoding) } } }
                         }) else null) }
+                        "更多" -> {
+                            TextButton(onClick = { panel = "搜索" }) { Text("搜正文") }
+                            TextButton(onClick = { panel = "书签" }) { Text("书签与摘录") }
+                            if (publication != null) TextButton(onClick = { panel = "书源" }) { Text("切换阅读书源") }
+                            TextButton(onClick = { message = "轻点中间打开菜单，左右两侧翻页。长按正文选字，拖动两端手柄调整范围。" }) { Text("手势帮助") }
+                        }
                         "目录" -> asset?.let { item -> chapter?.let { content ->
+                            Row {
+                                TextButton(onClick = { panel = "目录" }) { Text("目录") }
+                                TextButton(onClick = { panel = "书签" }) { Text("书签与摘录") }
+                            }
                             NativeReaderContentsPanel(item, publication, content, source, novel, !busy, ::openChapter)
                         } }
                         "书源" -> publication?.let { pub -> chapter?.let { content ->
                             NovelReaderSourcesPanel(novel, pub, asset?.title.orEmpty(), content.ref.title, !busy, sourceState, ::switchSource)
                         } }
                         "搜索" -> asset?.let { item ->
-                            NativeReaderSearchPanel(item, publication, source, !busy, chapter?.let { it.ref.ordinal to offset }) { hit -> jumpTo(NativeReaderLocation(hit.assetId, hit.locator)) }
+                            NativeReaderSearchPanel(item, publication, source, !busy, chapter?.let { it.ref.ordinal to offset }, session = readerSearch) { hit -> jumpTo(NativeReaderLocation(hit.assetId, hit.locator)) }
                         }
                         "书签" -> asset?.let {
+                            TextButton(onClick = { panel = "目录" }) { Text("返回目录") }
                             val marks by library.dao.annotationsForAssets(bookmarkAssets).collectAsState(emptyList())
                             NativeReaderBookmarks(marks, !busy, onOpen = { mark ->
                                 jumpTo(NativeReaderLocation(mark.assetId, mark.locatorJson))
@@ -541,17 +528,18 @@ class NativeTextReaderActivity : ComponentActivity() {
                 dismissButton = { TextButton(onClick = { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("正文", text)); message = "已复制正文"; excerpt = null }) { Text("复制") } }) }
         }
     }
-    override fun onSaveInstanceState(outState: Bundle) { outState.putString("jump_history", jumpHistory.toJson()); chapter?.let { outState.putString("native_locator", it.locator(offset).toString()) }; asset?.let { outState.putString("active_asset", it.id) }; super.onSaveInstanceState(outState) }
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putInt("search_index", readerSearch.list.firstVisibleItemIndex)
+        outState.putInt("search_pixels", readerSearch.list.firstVisibleItemScrollOffset)
+        outState.putBoolean("search_executed", readerSearch.executed)
+        outState.putString("search_query", readerSearch.query.value); outState.putBoolean("search_future", readerSearch.includeFuture.value); outState.putString("jump_history", jumpHistory.toJson()); chapter?.let { outState.putString("native_locator", it.locator(offset).toString()) }; asset?.let { outState.putString("active_asset", it.id) }; super.onSaveInstanceState(outState) }
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (style.volumeToTurn && !menu && panel == null && excerpt == null && !narrating && keyCode in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) { if (event.repeatCount == 0) view?.turn(if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) 1 else -1); return true }
         return super.onKeyDown(keyCode, event)
     }
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean = if (style.volumeToTurn && !menu && panel == null && excerpt == null && !narrating && keyCode in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) true else super.onKeyUp(keyCode, event)
-    override fun onStart() { super.onStart()
-        val filter = android.content.IntentFilter(android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY)
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(noisy, filter, RECEIVER_NOT_EXPORTED)
-        else { @Suppress("DEPRECATION") registerReceiver(noisy, filter) }
-         chapter?.let { prefetchFollowing(publication, it.ref.ordinal) } }
-    override fun onStop() { unregisterReceiver(noisy); prefetch?.cancel(); stopAloud(); view?.pause(); if (publication != null) lifecycleScope.launch { ProgressWriter.flush(); NovelRepository.schedule(this@NativeTextReaderActivity) }; super.onStop() }
-    override fun onDestroy() { view?.dispose(); view = null; aloud?.close(); super.onDestroy() }
+    override fun onStart() { super.onStart(); chapter?.let { prefetchFollowing(publication, it.ref.ordinal) } }
+    override fun onStop() { prefetch?.cancel(); view?.pause(); if (publication != null) lifecycleScope.launch { ProgressWriter.flush(); NovelRepository.schedule(this@NativeTextReaderActivity) }; super.onStop() }
+    override fun onDestroy() { view?.dispose(); view = null; super.onDestroy() }
+
 }

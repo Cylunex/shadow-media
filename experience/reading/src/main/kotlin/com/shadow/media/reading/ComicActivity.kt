@@ -29,6 +29,7 @@ import java.io.File
 import java.util.zip.ZipFile
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import org.json.JSONObject
 import com.shadow.media.database.LibraryAssetEntity
 import com.shadow.media.library.*
@@ -64,8 +65,8 @@ class ComicActivity : ComponentActivity() {
         lifecycleScope.launch {
             try {
                 val item = requireNotNull(intent.getStringExtra("assetId")?.let { library.dao.asset(it) }) { "文件已移除" }
-                if (mode == "REFLOW" && (item.format != "pdf" || android.os.Build.VERSION.SDK_INT < 35)) mode = "LTR"
                 if (savedInstanceState == null) mode = getPreferences(MODE_PRIVATE).getString("mode:" + item.id, "LTR") ?: "LTR"
+                if (mode == "REFLOW" && (item.format != "pdf" || android.os.Build.VERSION.SDK_INT < 35)) mode = "LTR"
                 val source = LibraryComicSource(item, library)
                 val manifest = withContext(Dispatchers.IO) { source.pages() }
                 require(manifest.isNotEmpty()) { "未找到可显示的页面" }
@@ -101,12 +102,12 @@ class ComicActivity : ComponentActivity() {
             val scope = rememberCoroutineScope()
             var settings by remember { mutableStateOf(false) }
             var marksVisible by remember { mutableStateOf(false) }
-            fun spreadFor(page: Int) = if (mode == "双页") (page + 1) / 2 else page
-            fun firstInSpread(spread: Int) = if (mode == "双页") (spread * 2 - 1).coerceAtLeast(0) else spread
+            fun spreadFor(page: Int) = comicSpreadIndex(page, mode)
+            fun firstInSpread(spread: Int) = comicSpreadStart(spread, mode)
             val perSpread = if (mode == "双页") 2 else 1
             val pager = rememberPagerState(initialPage = spreadFor(initialPage)) { (if (mode == "双页") 1 + pages.size / 2 else pages.size).coerceAtLeast(1) }
-            LaunchedEffect(pager, pages, perSpread) {
-                if (pages.isEmpty()) return@LaunchedEffect
+            LaunchedEffect(pager, pages, perSpread, mode) {
+                if (mode == "长图" || pages.isEmpty()) return@LaunchedEffect
                 pager.scrollToPage(spreadFor(currentPage).coerceAtMost(pager.pageCount - 1))
                 snapshotFlow { pager.settledPage }.distinctUntilChanged().collect { page ->
                     val index = firstInSpread(page)
@@ -129,7 +130,10 @@ class ComicActivity : ComponentActivity() {
                 IconButton(onClick = { settings = true }) { Icon(Icons.Rounded.Tune, "阅读方向与模式") }
             }) }, bottomBar = {
                 Column(Modifier.navigationBarsPadding().padding(horizontal = 20.dp)) {
-                    if (pages.isNotEmpty()) Slider(value = currentPage.toFloat(), onValueChange = { scope.launch { pager.scrollToPage(spreadFor(it.toInt())) } }, valueRange = 0f..(pages.size - 1).coerceAtLeast(1).toFloat())
+                    if (pages.isNotEmpty()) Slider(value = currentPage.toFloat(), onValueChange = { target ->
+                        if (mode == "长图") { initialPage = target.toInt(); initialOffset = 0f; restoreEpoch++ }
+                        else scope.launch { pager.scrollToPage(spreadFor(target.toInt())) }
+                    }, valueRange = 0f..(pages.size - 1).coerceAtLeast(1).toFloat())
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("${if (pages.isEmpty()) 0 else currentPage + 1} / ${pages.size}")
                         TextButton(onClick = { scope.launch { asset?.let { library.bookmark(it.id, JSONObject().put("pageIndex", currentPage).put("offset", currentOffset).put("reflowBlock", reflowBlock).toString(), "第 ${currentPage + 1} 页") } } }) { Text("添加书签") }
@@ -139,6 +143,7 @@ class ComicActivity : ComponentActivity() {
                 Box(Modifier.fillMaxSize().padding(padding).background(Color.Black)) {
                     if (error != null) Text(error!!, Modifier.padding(24.dp))
                     else if (pages.isEmpty()) CircularProgressIndicator(Modifier.padding(24.dp))
+                    else if (mode == "长图") StripReader()
                     else HorizontalPager(pager, reverseLayout = mode == "RTL", beyondViewportPageCount = 0, modifier = Modifier.fillMaxSize()) { spread ->
                         Row(Modifier.fillMaxSize()) {
                             repeat(perSpread) { offset ->
@@ -153,8 +158,8 @@ class ComicActivity : ComponentActivity() {
                 }
             }
             if (settings) AlertDialog(onDismissRequest = { settings = false }, title = { Text("阅读模式") }, text = {
-                Column { listOf("LTR" to "从左向右", "RTL" to "从右向左", "长图" to "长图 · 宽度适配，可上下拖动", "双页" to "双页对开").forEach { (key, label) ->
-                    TextButton(onClick = { initialPage = currentPage; initialOffset = currentOffset; mode = key; getPreferences(MODE_PRIVATE).edit().putString("mode:" + asset?.id, key).apply(); settings = false }) { Text(label) }
+                Column { listOf("LTR" to "从左向右", "RTL" to "从右向左", "长图" to "条漫 · 连续上下滚动", "双页" to "双页对开").forEach { (key, label) ->
+                    TextButton(onClick = { initialPage = currentPage; initialOffset = currentOffset; mode = key; restoreEpoch++; save(force = true); getPreferences(MODE_PRIVATE).edit().putString("mode:" + asset?.id, key).apply(); settings = false }) { Text(label) }
                 }
                 if (asset?.format == "pdf" && android.os.Build.VERSION.SDK_INT >= 35) TextButton(onClick = { mode = "REFLOW"; settings = false }) { Text("文字重排（实验）") }
                 }
@@ -221,16 +226,60 @@ class ComicActivity : ComponentActivity() {
         }
     }
 
-    @Composable private fun PageImage(index: Int, modifier: Modifier) {
+    @Composable private fun StripReader() {
+        val list = androidx.compose.foundation.lazy.rememberLazyListState(initialFirstVisibleItemIndex = initialPage)
+        val ratios = remember(asset?.revision) { mutableStateMapOf<Int, Float>() }
+        var restored by remember(restoreEpoch) { mutableStateOf(false) }
+        LaunchedEffect(restoreEpoch, pages) {
+            if (pages.isEmpty()) return@LaunchedEffect
+            restored = false
+            val target = initialPage.coerceIn(pages.indices)
+            list.scrollToItem(target)
+            snapshotFlow { ratios[target] }.first { it != null }
+            val size = snapshotFlow { list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == target }?.size }.first { it != null && it > 0 }!!
+            list.scrollToItem(target, (size * initialOffset).toInt().coerceAtMost(size - 1))
+            restored = true
+        }
+        LaunchedEffect(list) {
+            snapshotFlow {
+                val visible = list.layoutInfo.visibleItemsInfo.firstOrNull()
+                Triple(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset, visible?.size ?: 1)
+            }.distinctUntilChanged().collect { (index, pixels, size) ->
+                if (restored) {
+                    currentPage = index; currentOffset = if (!list.canScrollForward && index == pages.lastIndex) 1f else (pixels.toFloat() / size.coerceAtLeast(1)).coerceIn(0f, 1f)
+                    save()
+                }
+            }
+        }
+        androidx.compose.foundation.lazy.LazyColumn(state = list, modifier = Modifier.fillMaxSize()) {
+            items(pages.size, key = { pages[it] }) { index ->
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    val height = maxWidth * (ratios[index] ?: 1.5f).coerceAtLeast(.05f)
+                    PageImage(index, Modifier.fillMaxWidth().height(height), strip = true, onAspect = { if (it > 0) ratios[index] = it else if (index !in ratios) ratios[index] = 1.5f })
+                }
+            }
+        }
+    }
+
+    @Composable private fun PageImage(index: Int, modifier: Modifier, strip: Boolean = false, onAspect: (Float) -> Unit = {}) {
         var local by remember(index, asset?.revision) { mutableStateOf<File?>(null) }
         var failure by remember(index) { mutableStateOf<String?>(null) }
         var retry by remember(index) { mutableIntStateOf(0) }
         LaunchedEffect(index, asset?.revision, retry) {
             failure = null
             var prepared: File? = null
-            try { withContext(Dispatchers.IO) { prepared = adjacentCache.take(index) }; local = prepared; prepared = null }
+            try {
+                val ratio = withContext(Dispatchers.IO) {
+                    prepared = adjacentCache.take(index)
+                    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    android.graphics.BitmapFactory.decodeFile(requireNotNull(prepared).path, bounds)
+                    if (bounds.outWidth > 0) bounds.outHeight.toFloat() / bounds.outWidth else 1.5f
+                }
+                onAspect(ratio)
+                local = prepared; prepared = null
+            }
             catch (e: CancellationException) { throw e }
-            catch (_: Exception) { failure = "第 ${index + 1} 页读取失败" }
+            catch (_: Exception) { onAspect(-1f); failure = "第 ${index + 1} 页读取失败" }
             finally { prepared?.delete() }
         }
         Box(modifier) {
@@ -238,10 +287,11 @@ class ComicActivity : ComponentActivity() {
             if (image != null) key(image.path, mode, restoreEpoch) {
                 AndroidView(factory = { context -> SubsamplingScaleImageView(context).apply {
                     setMaxTileSize(1024)
+                    if (strip) { isPanEnabled = false; isZoomEnabled = false }
                     setMinimumScaleType(if (mode == "长图") SubsamplingScaleImageView.SCALE_TYPE_START else SubsamplingScaleImageView.SCALE_TYPE_CENTER_INSIDE)
                     setOnImageEventListener(object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
                         override fun onReady() {
-                            if (mode == "长图") {
+                            if (mode == "长图" && !strip) {
                                 val scale = width.toFloat() / sWidth.coerceAtLeast(1)
                                 val offset = if (index == initialPage) initialOffset else 0f
                                 setScaleAndCenter(scale, PointF(sWidth / 2f, (height / (2 * scale) + offset * (sHeight - height / scale)).coerceAtLeast(0f)))
@@ -253,7 +303,7 @@ class ComicActivity : ComponentActivity() {
                     setOnStateChangedListener(object : SubsamplingScaleImageView.OnStateChangedListener {
                         override fun onScaleChanged(newScale: Float, origin: Int) {}
                         override fun onCenterChanged(newCenter: PointF, origin: Int) {
-                            if (index == currentPage && scale > 0 && origin != 0) {
+                            if (!strip && index == currentPage && scale > 0 && origin != 0) {
                                 val visible = height / scale
                                 currentOffset = if (sHeight <= visible) 1f else ((newCenter.y - visible / 2) / (sHeight - visible)).coerceIn(0f, 1f)
                                 save()

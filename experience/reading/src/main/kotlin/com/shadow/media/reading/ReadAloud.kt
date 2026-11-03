@@ -17,8 +17,8 @@ import org.readium.r2.shared.publication.services.content.Content
 import org.readium.r2.shared.publication.services.content.content
 
 /** Basic in-reader narration. Only a locally installed, offline voice is allowed. */
-internal class ReadAloud(private val context: Context) : AutoCloseable {
-    private val audible = com.shadow.media.model.PlaybackCoordinator.process.participant { stop() }
+internal class ReadAloud(private val context: Context, private val onInterrupted: () -> Unit = {}) : AutoCloseable {
+    private val audible = com.shadow.media.model.PlaybackCoordinator.process.participant { stop(); onInterrupted() }
     private val initialized = CompletableDeferred<Unit>()
     private val engine = TextToSpeech(context) { status ->
         if (status == TextToSpeech.SUCCESS) initialized.complete(Unit)
@@ -34,7 +34,7 @@ internal class ReadAloud(private val context: Context) : AutoCloseable {
 
     private val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
         .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-        .setOnAudioFocusChangeListener { if (it < 0) stop() }.build()
+        .setOnAudioFocusChangeListener { if (it < 0) { stop(); onInterrupted() } }.build()
 
     suspend fun read(publication: Publication, locator: Locator?, onLocation: (Locator) -> Unit) = narrate(Locale.getDefault().language) {
         val iterator = requireNotNull(publication.content(locator)) { "这本书不支持正文提取" }.iterator()
@@ -54,6 +54,7 @@ internal class ReadAloud(private val context: Context) : AutoCloseable {
             currentCoroutineContext().ensureActive()
             if (stopAt?.let { android.os.SystemClock.elapsedRealtime() >= it } == true) throw CancellationException("定时停止")
             engine.setSpeechRate(speed)
+            availableVoices.firstOrNull { it.name == voiceName }?.let { engine.voice = it }
             val maximum = (start + 1000).coerceAtMost(text.length)
             val sentence = text.indexOfAny(charArrayOf('。', '！', '？', '\n', '.', '!', '?'), start)
             val end = safeTextOffset(text, if (sentence in start until maximum) sentence + 1 else maximum)

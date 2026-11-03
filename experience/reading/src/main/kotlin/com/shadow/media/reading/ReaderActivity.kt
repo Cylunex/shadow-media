@@ -78,8 +78,7 @@ class ReaderActivity : FragmentActivity() {
     private var gestureMessageJob: Job? = null
     private var positions by mutableStateOf<List<Locator>>(emptyList())
     private var initial: Locator? = null
-    private var aloud: ReadAloud? = null
-    private var narrating by mutableStateOf(false)
+    private var followNarration = true
     private var searchJob: Job? = null
     private var progressJob: Job? = null
     private var progressSession: com.shadow.media.library.ProgressSession? = null
@@ -127,7 +126,7 @@ class ReaderActivity : FragmentActivity() {
                     lifecycleScope.launch { novel.observe(publication.scope, publication.workId).collectLatest { state -> novelState = state } }
                 }
                 require(item.format in setOf("epub", "txt")) { "此阅读器支持 EPUB 和 TXT" }
-                progressSession = ProgressWriter.begin(library, item)
+                progressSession = ReaderNarrationService.activeSession?.takeIf { it.first == item.id }?.second ?: ProgressWriter.begin(library, item)
                 val file = readerOpeningStep(ReaderOpenStage.LOCAL_COPY) { library.publicationFile(item) }
                 readerOpeningStep(ReaderOpenStage.POSITION) {
                     initial = (saved.takeIf { savedRevision == item.revision } ?: intent.getStringExtra("novelLocator") ?: library.dao.progress(item.id)?.locatorJson)?.let { runCatching { Locator.fromJSON(JSONObject(it)) }.getOrNull() }
@@ -207,6 +206,17 @@ class ReaderActivity : FragmentActivity() {
         })
         applyPaper()
         collectProgress(fragment)
+        lifecycleScope.launch {
+            ReaderNarrationService.state.collectLatest { state ->
+                if (state.assetId != asset?.id) { fragment.applyDecorations(emptyList(), "shadow.narration"); return@collectLatest }
+                ReaderNarrationService.activeSession?.let { progressSession = it.second }
+                val spoken = state.locator?.let { Locator.fromJSON(JSONObject(it)) }
+                if (!state.playing || spoken == null) { fragment.applyDecorations(emptyList(), "shadow.narration"); return@collectLatest }
+                fragment.applyDecorations(listOf(Decoration("spoken", spoken,
+                    Decoration.Style.Highlight(android.graphics.Color.rgb(205, 184, 136)))), "shadow.narration")
+                if (followNarration && lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) fragment.go(spoken)
+            }
+        }
         asset?.let { item -> lifecycleScope.launch {
             library.dao.annotations(item.id).collectLatest { marks ->
                 fragment.applyDecorations(marks.mapNotNull { mark ->
@@ -226,6 +236,7 @@ class ReaderActivity : FragmentActivity() {
                 locator = current
                 applyPaper()
                 if (tracker != null && !tracker.moved(current.toJSON())) return@collectLatest
+                if (ReaderNarrationService.state.value.let { it.playing && it.assetId == asset?.id }) return@collectLatest
                 progressSession?.let { ProgressWriter.save(library, it, "text", current.toJSON(), current.locations.totalProgression,
                     completed = novelPublication == null && (current.locations.totalProgression ?: 0.0) >= 0.999) }
                 if (novelPublication != null) { delay(1200); ProgressWriter.flush(); NovelRepository.schedule(this@ReaderActivity) }
@@ -281,7 +292,7 @@ class ReaderActivity : FragmentActivity() {
             navigator?.submitPreferences(prefs)
         }
         applyReaderWindow()
-        if (old.paper != readerSettings.paper || old.paperTexture != readerSettings.paperTexture || old.publisherStyles != readerSettings.publisherStyles) applyPaper()
+        if (old.paper != readerSettings.paper || old.paperTexture != readerSettings.paperTexture || old.publisherStyles != readerSettings.publisherStyles) { styledResource = null; applyPaper() }
     }
 
     private fun applyPaper() {
@@ -296,6 +307,7 @@ class ReaderActivity : FragmentActivity() {
                     ReaderPaperTexture.dataUri(applicationContext)
                 } else ""
                 fragment.evaluateJavascript(readerPaperScript(appearance, data))
+                fragment.evaluateJavascript(readerContentToolsScript())
                 styledResource = resource
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { /* Solid paper color remains available during resource replacement. */ }
@@ -321,6 +333,7 @@ class ReaderActivity : FragmentActivity() {
     }
 
     private fun turnPage(forward: Boolean) {
+        followNarration = false
         val fragment = navigator ?: return
         if (turning?.isActive == true || novelBusy) return
         val view = surface
@@ -344,7 +357,7 @@ class ReaderActivity : FragmentActivity() {
     }
 
     private fun handlesVolumeKey(keyCode: Int) = readerSettings.volumeToTurn && !chromeVisible && panel == null &&
-        !narrating && navigator != null && keyCode in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)
+        !ReaderNarrationService.state.value.playing && navigator != null && keyCode in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (handlesVolumeKey(keyCode)) {
@@ -358,10 +371,12 @@ class ReaderActivity : FragmentActivity() {
         if (handlesVolumeKey(keyCode)) true else super.onKeyUp(keyCode, event)
 
     private fun jumpTo(location: Locator) {
+        followNarration = false
         turning?.cancel(); surface?.cancelTurn(); navigator?.go(location, animated = false)
     }
 
     private fun jumpTo(link: Link) {
+        followNarration = false
         turning?.cancel(); surface?.cancelTurn(); navigator?.go(link, animated = false)
     }
 
@@ -437,13 +452,10 @@ class ReaderActivity : FragmentActivity() {
                         title = { Text(asset?.title ?: "阅读", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         navigationIcon = { IconButton(onClick = { finish() }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回书架") } },
                         actions = {
-                            IconButton(onClick = { panel = "搜索" }) { Icon(Icons.Rounded.Search, "全文搜索") }
                             IconButton(onClick = { panel = "目录"; if (novelPublication != null) loadNovelContents() }) { Icon(Icons.AutoMirrored.Rounded.FormatListBulleted, "目录") }
-                            IconButton(onClick = { panel = "书签" }) { Icon(Icons.Rounded.Bookmarks, "书签") }
-                            IconButton(onClick = { updateSettings(readerSettings.copy(fullScreen = !readerSettings.fullScreen)); chromeVisible = false }) {
-                                Icon(if (readerSettings.fullScreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen, "切换全屏")
-                            }
-                            IconButton(onClick = { panel = "排版" }) { Icon(Icons.Rounded.TextFields, "排版与阅读设置") }
+                            IconButton(onClick = { panel = "排版" }) { Icon(Icons.Rounded.TextFields, "排版") }
+                            IconButton(onClick = { panel = "听读" }) { Icon(Icons.Rounded.Headphones, "听读") }
+                            IconButton(onClick = { panel = "更多" }) { Icon(Icons.Rounded.MoreHoriz, "更多") }
                         }
                     )
                     Box(Modifier.weight(1f).fillMaxWidth().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null,
@@ -515,17 +527,7 @@ class ReaderActivity : FragmentActivity() {
                                     Icon(if (readerSettings.paper == ReaderPaper.NIGHT) Icons.Rounded.LightMode else Icons.Rounded.DarkMode,
                                         if (readerSettings.paper == ReaderPaper.NIGHT) "恢复日间纸张" else "切换夜间阅读")
                                 }
-                                IconButton(onClick = {
-                                    if (narrating) aloud?.stop() else scope.launch {
-                                        try {
-                                            narrating = true
-                                            val reader = aloud ?: ReadAloud(this@ReaderActivity).also { aloud = it }
-                                            publication?.let { reader.read(it, locator) { location -> jumpTo(location) } }
-                                        } catch (e: CancellationException) { throw e }
-                                        catch (e: Exception) { message = e.message ?: "朗读失败" }
-                                        finally { narrating = false }
-                                    }
-                                }) { Icon(if (narrating) Icons.Rounded.Stop else Icons.Rounded.RecordVoiceOver, if (narrating) "停止朗读" else "离线朗读，退出阅读时停止") }
+                                IconButton(onClick = { panel = "听读" }) { Icon(Icons.Rounded.Headphones, "听读") }
                             }
                         }
                     }
@@ -535,6 +537,21 @@ class ReaderActivity : FragmentActivity() {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 8.dp).navigationBarsPadding()) {
                     Text(panel!!, style = MaterialTheme.typography.titleLarge)
                     when (panel) {
+                        "更多" -> {
+                            TextButton(onClick = { panel = "搜索" }) { Text("搜正文") }
+                            TextButton(onClick = { panel = "书签" }) { Text("书签与摘录") }
+                            TextButton(onClick = { updateSettings(readerSettings.copy(fullScreen = !readerSettings.fullScreen)); panel = null }) { Text("切换全屏") }
+                            TextButton(onClick = { message = "轻点中间打开菜单，长按正文选择文字；点脚注或插图可预览。" }) { Text("手势帮助") }
+                        }
+                        "听读" -> NarrationControls(onFromHere = {
+                            followNarration = true
+                            asset?.let { ReaderNarrationService.command(this@ReaderActivity, ReaderNarrationService.PLAY, it.id, locator?.toJSON()?.toString()) }
+                        }, onFollow = {
+                            followNarration = true
+                            val state = ReaderNarrationService.state.value
+                            if (state.assetId == asset?.id) state.locator?.let { Locator.fromJSON(JSONObject(it)) }?.let { navigator?.go(it) }
+                            panel = null
+                        })
                         "搜索" -> {
                             OutlinedTextField(searchQuery, { searchQuery = it }, Modifier.fillMaxWidth(), placeholder = { Text("输入书中内容") }, singleLine = true)
                             TextButton(enabled = searchQuery.isNotBlank(), onClick = {
@@ -582,13 +599,13 @@ class ReaderActivity : FragmentActivity() {
                             }
                         }
                         "书签" -> asset?.let { item ->
+                            TextButton(onClick = { panel = "目录" }) { Text("返回目录") }
                             val marks by library.dao.annotations(item.id).collectAsState(emptyList())
-                            if (marks.isEmpty()) Text("选中文字或点击底部“标记”保存位置。", Modifier.padding(vertical = 16.dp))
-                            LazyColumn(Modifier.heightIn(max = 480.dp)) { items(marks, key = { it.id }) { mark ->
-                                Row { TextButton(onClick = { runCatching { Locator.fromJSON(JSONObject(mark.locatorJson)) }.getOrNull()?.let { jumpTo(it) }; panel = null }, Modifier.weight(1f)) { Text(mark.note, maxLines = 3) }
-                                    IconButton(onClick = { editingNote = mark; noteText = mark.note }) { Icon(Icons.Rounded.EditNote, "编辑笔记") }
-                                    IconButton(onClick = { scope.launch { library.dao.removeAnnotation(mark.id) } }) { Icon(Icons.Rounded.DeleteOutline, "删除书签") } }
-                            } }
+                            NativeReaderBookmarks(marks, !novelBusy, onOpen = { mark ->
+                                runCatching { Locator.fromJSON(JSONObject(mark.locatorJson)) }.getOrNull()?.let { jumpTo(it) }
+                                panel = null
+                            }, onDelete = { mark -> scope.launch { library.dao.removeAnnotation(mark.id) } },
+                                onEdit = { mark -> editingNote = mark; noteText = mark.note })
                         }
                         "排版" -> {
                             Row {
@@ -617,7 +634,7 @@ class ReaderActivity : FragmentActivity() {
             encodingChange?.let { encoding -> AlertDialog(onDismissRequest = { encodingChange = null }, title = { Text("切换为 $encoding？") },
                 text = { Text("重新解码可能改变章节位置，将从头打开。原 TXT 和已有书签不会删除，但旧书签位置可能失效。") },
                 confirmButton = { TextButton(onClick = { asset?.let { item -> lifecycleScope.launch {
-                    aloud?.stop()
+                    ReaderNarrationService.command(this@ReaderActivity, ReaderNarrationService.PAUSE)
                     progressJob?.cancelAndJoin()
                     ProgressWriter.flush()
                     library.setTextEncoding(item.id, encoding)
@@ -626,6 +643,6 @@ class ReaderActivity : FragmentActivity() {
                 } }; encodingChange = null }) { Text("重新打开") } }, dismissButton = { TextButton(onClick = { encodingChange = null }) { Text("取消") } }) }
         }
     }
-    override fun onStop() { turning?.cancel(); surface?.cancelTurn(); aloud?.stop(); if (novelPublication != null) NovelRepository.schedule(this); super.onStop() }
-    override fun onDestroy() { turning?.cancel(); paperJob?.cancel(); surface?.cancelTurn(); surface = null; searchJob?.cancel(); aloud?.close(); super.onDestroy(); publication?.close() }
+    override fun onStop() { turning?.cancel(); surface?.cancelTurn(); if (novelPublication != null) NovelRepository.schedule(this); super.onStop() }
+    override fun onDestroy() { turning?.cancel(); paperJob?.cancel(); surface?.cancelTurn(); surface = null; searchJob?.cancel(); super.onDestroy(); publication?.close() }
 }

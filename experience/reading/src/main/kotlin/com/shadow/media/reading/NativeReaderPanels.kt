@@ -158,17 +158,27 @@ internal fun ColumnScope.NativeContentsBody(
     }
 }
 
+internal class NativeSearchSession(index: Int = 0, pixels: Int = 0) {
+    val query = mutableStateOf("")
+    val includeFuture = mutableStateOf(false)
+    val result = mutableStateOf<NativeSearchResult?>(null)
+    val list = androidx.compose.foundation.lazy.LazyListState(index, pixels)
+    var executed = false
+}
+
 @Composable
-internal fun ColumnScope.NativeReaderSearchPanel(asset: LibraryAssetEntity, publication: NovelPublicationEntity?, source: NativeTextSource, enabled: Boolean, before: Pair<Int, Int>? = null, onOpen: (NativeSearchHit) -> Unit) {
-    var includeFuture by remember { mutableStateOf(false) }
+internal fun ColumnScope.NativeReaderSearchPanel(asset: LibraryAssetEntity, publication: NovelPublicationEntity?, source: NativeTextSource, enabled: Boolean, before: Pair<Int, Int>? = null, session: NativeSearchSession? = null, onOpen: (NativeSearchHit) -> Unit) {
+    val state = session ?: remember { NativeSearchSession() }
+    var includeFuture by state.includeFuture
     var preview by remember { mutableStateOf<NativeSearchHit?>(null) }
-    var query by remember { mutableStateOf("") }
-    var result by remember { mutableStateOf<NativeSearchResult?>(null) }
+    var query by state.query
+    var result by state.result
     var searching by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var job by remember { mutableStateOf<Job?>(null) }
     var generation by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
+    DisposableEffect(Unit) { onDispose { job?.cancel() } }
     if (before != null) Row(verticalAlignment = Alignment.CenterVertically) {
         Checkbox(includeFuture, onCheckedChange = { includeFuture = it; generation++; job?.cancel(); result = null; searching = false })
         Text("包括后文")
@@ -176,25 +186,30 @@ internal fun ColumnScope.NativeReaderSearchPanel(asset: LibraryAssetEntity, publ
     preview?.let { hit -> AlertDialog(onDismissRequest = { preview = null }, title = { Text(hit.title) },
         text = { Text(hit.preview) }, confirmButton = { TextButton(onClick = { preview = null; onOpen(hit) }) { Text("到原文") } },
         dismissButton = { TextButton(onClick = { preview = null }) { Text("返回结果") } }) }
-    NativeSearchBody(query, result, searching, error, publication != null, enabled,
-        onQuery = { generation++; job?.cancel(); query = it; searching = false; result = null; error = null },
-        onSearch = {
-            if (query.isNotBlank() && !searching) {
-                val request = ++generation
-                result = null; error = null; searching = true
-                job = scope.launch {
-                    try { searchNativeText(source.searchEntries(asset, publication), query, before = before.takeUnless { includeFuture }).collect { if (request == generation) result = it } }
-                    catch (e: CancellationException) { throw e }
-                    catch (e: Exception) { if (request == generation) error = e.message ?: "搜索失败，请重试" }
-                    finally { if (request == generation) searching = false }
-                }
+    val runSearch = {
+        if (query.isNotBlank() && !searching) {
+            val request = ++generation
+            result = null; error = null; searching = true; state.executed = true
+            job = scope.launch {
+                try {
+                    searchNativeText(source.searchEntries(asset, publication), query,
+                        before = before.takeUnless { includeFuture }).collect { if (request == generation) result = it }
+                } catch (e: CancellationException) { throw e }
+                catch (e: Exception) { if (request == generation) error = e.message ?: "搜索失败，请重试" }
+                finally { if (request == generation) searching = false }
             }
-        }, onStop = { generation++; job?.cancel(); searching = false }, onOpen = { preview = it })
+        }
+    }
+    LaunchedEffect(Unit) { if (state.executed && result == null) runSearch() }
+    NativeSearchBody(query, result, searching, error, publication != null, enabled,
+        onQuery = { generation++; job?.cancel(); query = it; state.executed = false; searching = false; result = null; error = null },
+        onSearch = runSearch, onStop = { generation++; job?.cancel(); searching = false }, onOpen = { preview = it }, listState = state.list)
 }
 
 @Composable
 internal fun ColumnScope.NativeSearchBody(query: String, result: NativeSearchResult?, searching: Boolean, error: String?, downloadedOnly: Boolean, enabled: Boolean,
-    onQuery: (String) -> Unit, onSearch: () -> Unit, onStop: () -> Unit, onOpen: (NativeSearchHit) -> Unit) {
+    onQuery: (String) -> Unit, onSearch: () -> Unit, onStop: () -> Unit, onOpen: (NativeSearchHit) -> Unit,
+    listState: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState()) {
     val focus = LocalFocusManager.current
     fun search() { if (query.isNotBlank() && !searching) { focus.clearFocus(); onSearch() } }
     OutlinedTextField(query, onQuery, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("搜索正文内容") },
@@ -217,7 +232,7 @@ internal fun ColumnScope.NativeSearchBody(query: String, result: NativeSearchRes
             Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (value.skipped > 0) Text("${value.skipped} 章读取失败，其余结果已保留", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         if (value.complete && value.hits.isEmpty()) ReaderEmptyState(Icons.Rounded.SearchOff, "没有找到匹配内容", if (downloadedOnly) "试试更短的关键词，或确认目标章节已下载。" else "试试更短的关键词或其他原文片段。")
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(value.hits, key = { it.assetId + it.locator }) { hit ->
                 Surface(onClick = { focus.clearFocus(); onOpen(hit) }, enabled = enabled, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
