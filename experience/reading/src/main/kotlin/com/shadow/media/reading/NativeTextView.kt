@@ -61,9 +61,18 @@ internal class NativeTextView(context: Context) : View(context) {
             if (!movingSelection || selectionEdge == 0 || target !in doc.pages.indices) return
             pageIndex = target
             val point = if (selectionEdge > 0) doc.pages[target].end else doc.pages[target].start
-            if (movingStart) selectionStart = point.coerceAtMost(selectionEnd - 1) else selectionEnd = point.coerceAtLeast(selectionStart + 1)
+            moveSelectionHandle(point)
             invalidate()
             postDelayed(this, 500)
+        }
+    }
+    private fun moveSelectionHandle(point: Int) {
+        val text = document?.chapter?.text ?: return
+        if (selectionStart !in text.indices || selectionEnd !in 1..text.length) return
+        if (movingStart) selectionStart = safeTextOffset(text, point.coerceIn(0, selectionEnd - 1))
+        else {
+            val minimum = selectionStart + Character.charCount(Character.codePointAt(text, selectionStart))
+            selectionEnd = safeTextOffset(text, point.coerceIn(minimum, text.length))
         }
     }
     fun clearSelection(): Boolean {
@@ -236,7 +245,8 @@ internal class NativeTextView(context: Context) : View(context) {
             if (localY < line.baseline - fontHeight || localY > line.baseline + fontHeight * .35f) return
             if (settings.haptics) performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
             val text = doc.chapter.text
-            val hit = offsetAtTouch(e.x, e.y) ?: return
+            if (text.isEmpty()) return
+            val hit = safeTextOffset(text, (offsetAtTouch(e.x, e.y) ?: return).coerceAtMost(text.lastIndex))
             var start = hit
             var end = hit
             while (start > 0 && text[start - 1] !in "。！？\n.!?") start--
@@ -450,7 +460,7 @@ internal class NativeTextView(context: Context) : View(context) {
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (!movingSelection) return true
-                    if (movingStart) selectionStart = hit.coerceAtMost(selectionEnd - 1) else selectionEnd = hit.coerceAtLeast(selectionStart + 1)
+                    moveSelectionHandle(hit)
                     selectionEdge = when { event.y < height * .1f -> -1; event.y > height * .9f -> 1; else -> 0 }
                     removeCallbacks(advanceSelection)
                     if (selectionEdge != 0) postDelayed(advanceSelection, 500)

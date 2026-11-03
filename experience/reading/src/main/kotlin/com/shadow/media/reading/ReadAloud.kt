@@ -30,7 +30,8 @@ internal class ReadAloud(private val context: Context, private val onInterrupted
         set(value) { field = value.coerceIn(.5f, 3f) }
     var stopAt: Long? = null
     var voiceName: String? = null
-    val availableVoices get() = engine.voices.orEmpty().filter { !it.isNetworkConnectionRequired }.sortedBy { it.name }
+    private var language: String? = null
+    val availableVoices get() = engine.voices.orEmpty().filter { !it.isNetworkConnectionRequired && (language == null || it.locale.language == language) }.sortedBy { it.name }
 
     private val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
         .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
@@ -65,6 +66,7 @@ internal class ReadAloud(private val context: Context, private val onInterrupted
     }
 
     private suspend fun narrate(language: String, block: suspend () -> Unit) {
+        this.language = language
         speaking = currentCoroutineContext()[Job]
         try {
             initialized.await()

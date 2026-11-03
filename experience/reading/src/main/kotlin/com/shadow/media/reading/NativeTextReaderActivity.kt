@@ -364,11 +364,21 @@ class NativeTextReaderActivity : ComponentActivity() {
     private fun speak(fromHere: Boolean = false) {
         if (narrating && !fromHere) { stopAloud(); return }
         val current = chapter ?: return
-        val existing = ReaderNarrationService.state.value
+        val item = asset ?: return
         followNarration = true
-        if (!fromHere && existing.assetId == asset?.id && existing.locator != null)
-            ReaderNarrationService.command(this, ReaderNarrationService.PLAY)
-        else ReaderNarrationService.command(this, ReaderNarrationService.PLAY, asset?.id, current.locator(offset).toString())
+        lifecycleScope.launch {
+            val saved = if (fromHere) null else getSharedPreferences("reader_narration", MODE_PRIVATE)
+                .getString("resume:" + narrationBookKey(item.id, publication), null)
+                ?.let { runCatching { JSONObject(it) }.getOrNull() }
+            val legacy = if (fromHere) null else getSharedPreferences("reader_narration", MODE_PRIVATE).getString(item.id, null)
+            val resumed = saved?.optString("asset")?.let { library.dao.asset(it) }
+            val resumedPub = resumed?.let { novel.dao.publication(it.id) }
+            val sameBook = resumed != null && narrationBookKey(resumed.id, resumedPub) == narrationBookKey(item.id, publication)
+            val target = if (sameBook) resumed!!.id else item.id
+            val locator = if (sameBook) saved!!.optJSONObject("locator")?.toString() else null
+            ReaderNarrationService.command(this@NativeTextReaderActivity, ReaderNarrationService.PLAY, target,
+                locator ?: legacy ?: current.locator(offset).toString())
+        }
     }
     private fun followSpeech() {
         val playing = ReaderNarrationService.state.value
@@ -477,7 +487,7 @@ class NativeTextReaderActivity : ComponentActivity() {
                         IconButton(onClick = { panel = null; applyWindow() }) { Icon(Icons.Rounded.Close, "关闭面板") }
                     }
                     when (panel) {
-                        "听读" -> NarrationControls(onFromHere = { speak(true) }, onFollow = ::followSpeech)
+                        "听读" -> NarrationControls(onFromHere = { speak(true) }, onFollow = ::followSpeech, onContinue = { speak() })
                         "排版" -> Column(Modifier.weight(1f)) {
                             Row {
                                 TextButton(onClick = { store.followDefaults(); style = store.load(); view?.configure(style); applyWindow() }) { Text("跟随默认") }

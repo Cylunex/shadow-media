@@ -45,6 +45,7 @@ class ReaderNarrationService : Service() {
     private val wakeLock by lazy {
         getSystemService(android.os.PowerManager::class.java).newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "shadow:readerSpeech").apply { setReferenceCounted(false) }
     }
+    private var resumeKey: String? = null
     private var offset = 0
     private var epubText: String? = null
     private var epubBase: Locator? = null
@@ -55,6 +56,11 @@ class ReaderNarrationService : Service() {
     override fun onCreate() {
         super.onCreate()
         library = LibraryRepository(this); novel = NovelRepository(this, library); source = NativeTextSource(library, novel)
+        val saved = getSharedPreferences("reader_narration", MODE_PRIVATE)
+        if (snapshot.value.assetId == null) saved.getString("last_asset", null)?.let { asset ->
+            snapshot.value = NarrationState(assetId = asset, locator = saved.getString(asset, null),
+                speed = saved.getFloat("speed", 1f), voice = saved.getString("voice", null))
+        }
         speech = ReadAloud(this) { pause() }
         media = MediaSession(this, "ReaderNarration").apply {
             setCallback(object : MediaSession.Callback() {
@@ -80,9 +86,9 @@ class ReaderNarrationService : Service() {
                 val asset = intent.getStringExtra("asset")
                 if (asset != null) {
                     pause()
-                    publication?.close(); publication = null; chapter = null; writer = null
+                    publication?.close(); publication = null; chapter = null; writer = null; epubText = null; epubBase = null; resumeKey = null
                     timer?.cancel()
-                    snapshot.value = NarrationState(assetId = asset, locator = intent.getStringExtra("locator"), speed = snapshot.value.speed, voice = snapshot.value.voice)
+                    snapshot.value = NarrationState(assetId = asset, locator = intent.getStringExtra("locator"), speed = snapshot.value.speed, voice = snapshot.value.voice, stopAtChapter = snapshot.value.stopAtChapter, deadline = snapshot.value.deadline)
                 }
                 play()
             }
@@ -97,11 +103,11 @@ class ReaderNarrationService : Service() {
                 snapshot.value = value.copy(speed = speed, voice = voice,
                     stopAtChapter = intent.getBooleanExtra("chapter", value.stopAtChapter))
                 speech.speed = speed; speech.voiceName = voice
+                getSharedPreferences("reader_narration", MODE_PRIVATE).edit().putFloat("speed", speed).putString("voice", voice).apply()
                 if (intent.hasExtra("minutes")) {
-                    timer?.cancel()
                     val minutes = intent.getIntExtra("minutes", 0).coerceIn(0, 480)
                     snapshot.value = snapshot.value.copy(deadline = if (minutes == 0) null else SystemClock.elapsedRealtime() + minutes * 60_000L)
-                    if (minutes > 0) timer = scope.launch { delay(minutes * 60_000L); pause() }
+                    armTimer()
                 }
                 updateNotification()
                 if (snapshot.value.assetId == null) stopSelf()
@@ -110,9 +116,16 @@ class ReaderNarrationService : Service() {
         }
         return START_NOT_STICKY
     }
+    private fun armTimer() {
+        timer?.cancel()
+        val remaining = snapshot.value.deadline?.minus(SystemClock.elapsedRealtime()) ?: return
+        if (remaining <= 0) { snapshot.value = snapshot.value.copy(deadline = null); return }
+        timer = scope.launch { delay(remaining); snapshot.value = snapshot.value.copy(deadline = null); pause() }
+    }
     private fun play() {
         if (snapshot.value.playing || snapshot.value.assetId == null) return
         idle?.cancel()
+        armTimer()
         val previous = job
         wakeLock.acquire(10 * 60_000L)
         snapshot.value = snapshot.value.copy(playing = true, error = null)
@@ -126,6 +139,7 @@ class ReaderNarrationService : Service() {
                     val state = snapshot.value
                     val item = requireNotNull(library.dao.asset(requireNotNull(state.assetId))) { "图书已移除" }
                     val pub = novel.dao.publication(item.id)
+                    resumeKey = narrationBookKey(item.id, pub)
                     writer = writer ?: ProgressWriter.begin(library, item).also { activeSession = item.id to it }
                     speech.speed = state.speed; speech.voiceName = state.voice
                     if (item.format == "txt" || pub != null) {
@@ -134,18 +148,20 @@ class ReaderNarrationService : Service() {
                             offset = it.restore(locator); chapter = it
                         }
                         if (pub != null) novel.beginReading(pub, current.locator(offset))
+                        val beganBeforeEnd = offset < current.text.length
                         speech.readText(current.text, offset) { point ->
                             offset = point
                             publish(item.id, current.ref.title, current.locator(point).toString())
                             val fraction = (current.ref.ordinal + point.toDouble() / current.text.length.coerceAtLeast(1)) / current.total.coerceAtLeast(1)
                             ProgressWriter.save(library, requireNotNull(writer), "text", current.locator(point), fraction, false)
                         }
-                        val finished = current.locator(current.text.length)
+                        offset = current.text.length
+                        val finished = current.locator(offset)
                         ProgressWriter.save(library, requireNotNull(writer), "text", finished,
                             (current.ref.ordinal + 1.0) / current.total.coerceAtLeast(1),
                             pub == null && current.ref.ordinal == current.total - 1)
-                        snapshot.value = snapshot.value.copy(locator = finished.toString())
-                        if (snapshot.value.stopAtChapter) break
+                        publish(item.id, current.ref.title, finished.toString())
+                        if (snapshot.value.stopAtChapter && beganBeforeEnd) break
                         val next = nextChapter(item, pub, current) ?: break
                         ProgressWriter.flush()
                         val prepared = if (pub == null) item else novel.cachedChapter(pub.scope, pub.workId, pub.versionId, next.id)?.asset
@@ -159,16 +175,21 @@ class ReaderNarrationService : Service() {
                         val iterator = requireNotNull(book.content(initial)) { "本书无法提取正文" }.iterator()
                         var first = true
                         var reachedEnd = true
+                        var spoke = false
                         var initialHref = initial?.href
                         while (iterator.hasNext()) {
                             val element = iterator.next() as? Content.TextElement ?: continue
                             if (element.text.isBlank()) continue
                             if (initialHref == null) initialHref = element.locator.href
-                            if (snapshot.value.stopAtChapter && element.locator.href != initialHref) { reachedEnd = false; break }
+                            if (element.locator.href != initialHref) {
+                                if (snapshot.value.stopAtChapter && spoke) { reachedEnd = false; break }
+                                initialHref = element.locator.href
+                            }
                             epubText = element.text; epubBase = element.locator
                             val start = if (first) saved?.optInt("speech_offset", 0) ?: 0 else 0
                             first = false
                             speech.readText(element.text, start) { point ->
+                                spoke = true
                                 offset = point
                                 val end = narrationSentenceStep(element.text, point, 1)
                                 val locator = element.locator.toJSON()
@@ -178,11 +199,16 @@ class ReaderNarrationService : Service() {
                                 publish(item.id, element.locator.title ?: item.title, locator.toString())
                                 ProgressWriter.save(library, requireNotNull(writer), "epub", locator, element.locator.locations.totalProgression ?: 0.0, false)
                             }
+                            offset = element.text.length
+                            snapshot.value.locator?.let { raw ->
+                                publish(item.id, snapshot.value.title, JSONObject(raw).put("speech_offset", offset).toString())
+                            }
                         }
                         if (reachedEnd) snapshot.value.locator?.let { savedLocation ->
                             val finished = JSONObject(savedLocation)
                             finished.optJSONObject("locations")?.put("totalProgression", 1.0)
                             ProgressWriter.save(library, requireNotNull(writer), "epub", finished, 1.0, true)
+                            publish(item.id, snapshot.value.title, finished.toString())
                         }
                         break
                     }
@@ -221,16 +247,48 @@ class ReaderNarrationService : Service() {
         wakeLock.acquire(10 * 60_000L)
         snapshot.value = snapshot.value.copy(assetId = asset, locator = locator, title = title,
             voices = speech.availableVoices.map { it.name to it.locale.displayName })
-        getSharedPreferences("reader_narration", MODE_PRIVATE).edit().putString("last_asset", asset).putString(asset, locator).apply()
+        getSharedPreferences("reader_narration", MODE_PRIVATE).edit().apply {
+            putString("last_asset", asset); putString(asset, locator)
+            resumeKey?.let { putString("resume:" + it, JSONObject().put("asset", asset).put("locator", JSONObject(locator)).toString()) }
+        }.apply()
         updateNotification()
     }
     private fun step(direction: Int) {
-        val text = chapter?.text ?: epubText ?: return
         pause()
-        offset = narrationSentenceStep(text, offset, direction)
-        val location = chapter?.locator(offset) ?: epubBase?.toJSON()?.put("speech_base", epubBase?.toJSON())?.put("speech_offset", offset) ?: return
-        snapshot.value = snapshot.value.copy(locator = location.toString())
-        play()
+        fun shift() {
+            val text = chapter?.text ?: epubText ?: return
+            offset = narrationSentenceStep(text, offset, direction)
+            val location = chapter?.locator(offset) ?: epubBase?.toJSON()?.put("speech_base", epubBase?.toJSON())?.put("speech_offset", offset) ?: return
+            snapshot.value = snapshot.value.copy(locator = location.toString())
+            play()
+        }
+        if (chapter != null || epubText != null) { shift(); return }
+        val previous = job
+        job = scope.launch {
+            previous?.join()
+            try {
+                val state = snapshot.value
+                val item = state.assetId?.let { library.dao.asset(it) } ?: return@launch
+                val pub = novel.dao.publication(item.id)
+                val saved = state.locator?.let(::JSONObject)
+                if (item.format == "txt" || pub != null) {
+                    chapter = source.chapter(item, pub, saved?.optString("href"))
+                    offset = requireNotNull(chapter).restore(saved)
+                } else {
+                    val book = publication ?: ReadiumEngineAdapter(this@ReaderNarrationService).open(library.localFile(item)).also { publication = it }
+                    val initial = saved?.let { Locator.fromJSON(it.optJSONObject("speech_base") ?: it) }
+                    val content = requireNotNull(book.content(initial)).iterator()
+                    while (content.hasNext()) {
+                        val element = content.next() as? Content.TextElement ?: continue
+                        if (element.text.isBlank()) continue
+                        epubText = element.text; epubBase = element.locator; offset = saved?.optInt("speech_offset", 0) ?: 0
+                        break
+                    }
+                }
+                shift()
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { snapshot.value = snapshot.value.copy(error = e.message ?: "无法恢复朗读位置"); updateNotification() }
+        }
     }
     private fun pause() {
         job?.cancel(); speech.stop()
@@ -242,6 +300,7 @@ class ReaderNarrationService : Service() {
         idle = scope.launch { delay(5 * 60_000L); finishPlayback() }
     }
     private fun finishPlayback() {
+        snapshot.value = snapshot.value.copy(deadline = null)
         pause(); timer?.cancel(); idle?.cancel()
         media.isActive = false
         stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
@@ -279,7 +338,7 @@ class ReaderNarrationService : Service() {
         unregisterReceiver(noisy); job?.cancel(); timer?.cancel(); idle?.cancel()
         if (wakeLock.isHeld) wakeLock.release()
         speech.close(); media.release(); publication?.close(); scope.cancel()
-        snapshot.value = snapshot.value.copy(playing = false, deadline = null)
+        snapshot.value = snapshot.value.copy(playing = false, deadline = snapshot.value.deadline.takeIf { snapshot.value.assetId == null })
         activeSession = null
         super.onDestroy()
     }
@@ -312,3 +371,6 @@ internal fun narrationSentenceStep(text: String, offset: Int, direction: Int): I
     return if (direction > 0) text.indexOfAny(boundaries, point).let { if (it < 0) text.length else it + 1 }
     else if (point <= 1) 0 else text.lastIndexOfAny(boundaries, point - 2).let { if (it < 0) 0 else it + 1 }
 }
+
+internal fun narrationBookKey(assetId: String, publication: com.shadow.media.database.NovelPublicationEntity?): String =
+    publication?.let { LibraryRepository.digest(it.scope + ":" + it.workId) } ?: assetId

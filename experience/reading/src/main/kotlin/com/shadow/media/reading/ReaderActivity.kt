@@ -543,7 +543,12 @@ class ReaderActivity : FragmentActivity() {
                             TextButton(onClick = { updateSettings(readerSettings.copy(fullScreen = !readerSettings.fullScreen)); panel = null }) { Text("切换全屏") }
                             TextButton(onClick = { message = "轻点中间打开菜单，长按正文选择文字；点脚注或插图可预览。" }) { Text("手势帮助") }
                         }
-                        "听读" -> NarrationControls(onFromHere = {
+                        "听读" -> NarrationControls(onContinue = {
+                            asset?.let { item ->
+                                val saved = getSharedPreferences("reader_narration", MODE_PRIVATE).getString(item.id, null)
+                                ReaderNarrationService.command(this@ReaderActivity, ReaderNarrationService.PLAY, item.id, saved ?: locator?.toJSON()?.toString())
+                            }
+                        }, onFromHere = {
                             followNarration = true
                             asset?.let { ReaderNarrationService.command(this@ReaderActivity, ReaderNarrationService.PLAY, it.id, locator?.toJSON()?.toString()) }
                         }, onFollow = {

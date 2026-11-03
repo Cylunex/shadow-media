@@ -224,6 +224,28 @@ class NativeTextGestureTest {
             assertEquals(1, view.pageIndex); assertEquals(0, menus)
         } finally { view.dispose() }
     }
+    @Test fun selectingAtLineEndAndDraggingAcrossEmojiKeepsNonemptyCodePoints() {
+        val view = reader()
+        try {
+            val content = view.document!!.chapter.copy(text = "😀" + "甲".repeat(60))
+            view.show(content, "选区", 0, ReaderSettings(pageMode = ReaderPageMode.NONE))
+            waitLayout(view) { view.document!!.chapter.text == content.text }
+            val last = view.document!!.pages.first().lines.last()
+            val time = SystemClock.uptimeMillis()
+            event(view, MotionEvent.ACTION_DOWN, view.width - view.document!!.margin - 1, last.baseline - 4, time, 0)
+            shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(700))
+            event(view, MotionEvent.ACTION_UP, view.width - view.document!!.margin - 1, last.baseline - 4, time, 750)
+            assertEquals(content.text, view.selectedText)
+            val bitmap = android.graphics.Bitmap.createBitmap(432, 900, android.graphics.Bitmap.Config.ARGB_8888)
+            view.draw(android.graphics.Canvas(bitmap)); bitmap.recycle()
+            val handle = org.robolectric.util.ReflectionHelpers.getField<android.graphics.PointF>(view, "endHandle")
+            val start = SystemClock.uptimeMillis()
+            event(view, MotionEvent.ACTION_DOWN, handle.x, handle.y, start, 0)
+            event(view, MotionEvent.ACTION_MOVE, view.document!!.margin - 1, view.document!!.pages.first().lines.first().baseline, start, 60)
+            event(view, MotionEvent.ACTION_UP, view.document!!.margin - 1, view.document!!.pages.first().lines.first().baseline, start, 120)
+            assertEquals("😀", view.selectedText)
+        } finally { view.dispose() }
+    }
     @Test fun longPressOnThePageHeaderCannotSelectAnUnrelatedParagraph() {
         val view = reader()
         try {

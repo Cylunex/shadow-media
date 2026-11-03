@@ -7,14 +7,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 
 @Composable
-internal fun NarrationControls(onFromHere: () -> Unit, onFollow: () -> Unit) {
+internal fun NarrationControls(onFromHere: () -> Unit, onFollow: () -> Unit, onContinue: () -> Unit = onFromHere) {
     val state by ReaderNarrationService.state.collectAsState()
     val context = LocalContext.current
     fun command(action: String) = ReaderNarrationService.command(context, action)
     if (state.title.isNotBlank()) Text(state.title)
     Row {
         TextButton(onClick = { command(ReaderNarrationService.PREVIOUS) }, enabled = state.assetId != null) { Text("上一句") }
-        TextButton(onClick = { if (state.assetId == null) onFromHere() else command(if (state.playing) ReaderNarrationService.PAUSE else ReaderNarrationService.PLAY) }) { Text(if (state.playing) "暂停" else "继续听") }
+        TextButton(onClick = { if (state.playing) command(ReaderNarrationService.PAUSE) else onContinue() }) { Text(if (state.playing) "暂停" else "继续听") }
         TextButton(onClick = { command(ReaderNarrationService.NEXT) }, enabled = state.assetId != null) { Text("下一句") }
     }
     Row {

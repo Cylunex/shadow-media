@@ -19,6 +19,9 @@ import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -161,7 +164,11 @@ class ComicActivity : ComponentActivity() {
                 Column { listOf("LTR" to "从左向右", "RTL" to "从右向左", "长图" to "条漫 · 连续上下滚动", "双页" to "双页对开").forEach { (key, label) ->
                     TextButton(onClick = { initialPage = currentPage; initialOffset = currentOffset; mode = key; restoreEpoch++; save(force = true); getPreferences(MODE_PRIVATE).edit().putString("mode:" + asset?.id, key).apply(); settings = false }) { Text(label) }
                 }
-                if (asset?.format == "pdf" && android.os.Build.VERSION.SDK_INT >= 35) TextButton(onClick = { mode = "REFLOW"; settings = false }) { Text("文字重排（实验）") }
+                if (asset?.format == "pdf" && android.os.Build.VERSION.SDK_INT >= 35) TextButton(onClick = {
+                    initialPage = currentPage; initialOffset = currentOffset; mode = "REFLOW"; restoreEpoch++
+                    getPreferences(MODE_PRIVATE).edit().putString("mode:" + asset?.id, mode).apply()
+                    save(force = true); settings = false
+                }) { Text("文字重排（实验）") }
                 }
             }, confirmButton = { TextButton(onClick = { settings = false }) { Text("关闭") } })
             if (marksVisible) asset?.let { item ->
@@ -229,14 +236,18 @@ class ComicActivity : ComponentActivity() {
     @Composable private fun StripReader() {
         val list = androidx.compose.foundation.lazy.rememberLazyListState(initialFirstVisibleItemIndex = initialPage)
         val ratios = remember(asset?.revision) { mutableStateMapOf<Int, Float>() }
+        var viewportWidth by remember { mutableIntStateOf(0) }
         var restored by remember(restoreEpoch) { mutableStateOf(false) }
         LaunchedEffect(restoreEpoch, pages) {
             if (pages.isEmpty()) return@LaunchedEffect
             restored = false
             val target = initialPage.coerceIn(pages.indices)
             list.scrollToItem(target)
-            snapshotFlow { ratios[target] }.first { it != null }
-            val size = snapshotFlow { list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == target }?.size }.first { it != null && it > 0 }!!
+            val size = snapshotFlow {
+                val ratio = ratios[target]
+                val actual = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == target }?.size
+                actual?.takeIf { ratio != null && viewportWidth > 0 && abs(it - (viewportWidth * ratio.coerceAtLeast(.05f)).roundToInt()) <= 1 }
+            }.first { it != null }!!
             list.scrollToItem(target, (size * initialOffset).toInt().coerceAtMost(size - 1))
             restored = true
         }
@@ -251,7 +262,7 @@ class ComicActivity : ComponentActivity() {
                 }
             }
         }
-        androidx.compose.foundation.lazy.LazyColumn(state = list, modifier = Modifier.fillMaxSize()) {
+        androidx.compose.foundation.lazy.LazyColumn(state = list, modifier = Modifier.fillMaxSize().onSizeChanged { viewportWidth = it.width }) {
             items(pages.size, key = { pages[it] }) { index ->
                 BoxWithConstraints(Modifier.fillMaxWidth()) {
                     val height = maxWidth * (ratios[index] ?: 1.5f).coerceAtLeast(.05f)
