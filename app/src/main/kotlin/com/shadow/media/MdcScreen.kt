@@ -29,12 +29,21 @@ internal fun MdcScreen(viewModel: MainViewModel) {
     var selected by rememberSaveable { mutableStateOf<String?>(null) }
     var workId by rememberSaveable { mutableStateOf<String?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
+    var mode by rememberSaveable { mutableStateOf("works") }
+    var actor by rememberSaveable { mutableStateOf("") }
+    var people by remember { mutableStateOf(emptyList<MdcPerson>()) }
+    var year by rememberSaveable { mutableStateOf("") }
+    var studio by rememberSaveable { mutableStateOf("") }
+    var tag by rememberSaveable { mutableStateOf("") }
+    var sort by rememberSaveable { mutableStateOf("added") }
+    var facetData by remember { mutableStateOf(org.json.JSONObject()) }
     var submittedQuery by rememberSaveable { mutableStateOf("") }
     var rows by remember { mutableStateOf(emptyList<UnifiedMediaItem>()) }
     var detail by remember { mutableStateOf<UnifiedMediaItem?>(null) }
     var cursor by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf(stored.exceptionOrNull()?.message) }
     var busy by remember { mutableStateOf(false) }
+    var pendingPlan by remember { mutableStateOf<org.json.JSONObject?>(null) }
     var picking by remember { mutableStateOf(false) }
     var candidates by remember { mutableStateOf(emptyList<Pair<String, String>>()) }
     var matchQuery by remember { mutableStateOf("") }
@@ -76,7 +85,14 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                 val p = provider ?: return@launch
                 if (workId != null) detail = p.detail(com.shadow.media.model.MediaKey(p.descriptor.id, workId!!)).item
                 else {
-                    val page = p.search(ProviderSearchRequest(submittedQuery, pageToken = next))
+                    val filters = org.json.JSONObject().put("q", submittedQuery).put("sort", sort)
+                    year.toIntOrNull()?.let { filters.put("year_from", it).put("year_to", it) }
+                    if (studio.isNotBlank()) filters.put("organizations", org.json.JSONArray().put(studio))
+                    if (tag.isNotBlank()) filters.put("tags", org.json.JSONArray().put(tag))
+                    if (actor.isNotBlank()) filters.put("actors", org.json.JSONArray().put(actor))
+                    if (next != null) filters.put("cursor", next)
+                    val page = p.catalog(filters).first
+                    if (next == null) facetData = p.facets(filters)
                     ensureActive()
                     rows = if (next == null) page.items else (rows + page.items).distinctBy { it.key }
                     cursor = page.nextPageToken
@@ -121,12 +137,31 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                                 job?.cancel()
                                 job = scope.launch {
                                     busy = true; error = null
-                                    try { viewModel.playMdc(provider!!, item.key) }
+                                    try {
+                                        val plan = provider!!.plan(item.key)
+                                        if (plan.optJSONObject("emby") == null &&
+                                            (plan.optJSONArray("sources")?.length() ?: 0) > 1) {
+                                            pendingPlan = plan
+                                        } else viewModel.playMdc(provider!!, item.key, preparedPlan = plan)
+                                    }
                                     catch (e: CancellationException) { throw e }
                                     catch (e: Exception) { error = e.message }
                                     finally { busy = false }
                                 }
                             }) { Text("播放 / 继续观看") }
+                            TextButton(enabled = !busy, onClick = {
+                                job = scope.launch {
+                                    busy = true; error = null
+                                    try {
+                                        val plan = provider!!.plan(item.key, online = true)
+                                        if ((plan.optJSONArray("sources")?.length() ?: 0) == 0) {
+                                            error = "暂无已确认的在线线路"
+                                        } else pendingPlan = plan
+                                    } catch (e: CancellationException) { throw e }
+                                    catch (e: Exception) { error = e.message }
+                                    finally { busy = false }
+                                }
+                            }) { Text("在线版本与线路") }
                             TextButton(enabled = !busy, onClick = {
                                 matchQuery = item.subtitle?.substringBefore(" · ").orEmpty().ifBlank { item.title }
                                 picking = true
@@ -137,9 +172,56 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                 }
             } else {
                 item(span = { GridItemSpan(maxLineSpan) }) { Column {
+                    Row {
+                        TextButton(onClick = { mode = "works"; actor = ""; load() }) { Text("全部作品") }
+                        TextButton(enabled = !busy, onClick = {
+                            mode = "actors"
+                            job?.cancel()
+                            job = scope.launch {
+                                busy = true; error = null
+                                try { people = provider!!.people() }
+                                catch (e: CancellationException) { throw e }
+                                catch (e: Exception) { error = e.message }
+                                finally { busy = false }
+                            }
+                        }) { Text("演员库") }
+                    }
                     OutlinedTextField(query, { query = it }, label = { Text("番号、标题或演员") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(year, { year = it }, label = { Text("发行年份") }, modifier = Modifier.fillMaxWidth())
+                    val organizations = facetData.optJSONArray("organizations")
+                    if (organizations != null) androidx.compose.foundation.lazy.LazyRow {
+                        items(organizations.length()) { index ->
+                            val value = organizations.getJSONObject(index)
+                            FilterChip(studio == value.getString("id"), {
+                                studio = if (studio == value.getString("id")) "" else value.getString("id")
+                                load()
+                            }, { Text(value.getString("name")) })
+                        }
+                    }
+                    val tags = facetData.optJSONArray("tags")
+                    if (tags != null) androidx.compose.foundation.lazy.LazyRow {
+                        items(tags.length()) { index ->
+                            val value = tags.getJSONObject(index)
+                            FilterChip(tag == value.getString("id"), {
+                                tag = if (tag == value.getString("id")) "" else value.getString("id")
+                                load()
+                            }, { Text(value.getString("name")) })
+                        }
+                    }
                     TextButton(enabled = !busy, onClick = { load() }) { Text("搜索 / 刷新") }
                 } }
+                if (mode == "actors") items(people.filter {
+                    (it.name + it.aliases.joinToString()).contains(query, ignoreCase = true)
+                }, key = { it.id }) { person ->
+                    Card(onClick = { actor = person.id; mode = "works"; load() }) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(person.name)
+                            Text(person.aliases.joinToString(" / "))
+                            Text("${person.workCount} 部作品")
+                        }
+                    }
+                }
+                if (mode == "works")
                 items(rows, key = { it.key.stableId }) { item ->
                     Card(onClick = { detail = null; workId = item.key.itemId }) { Column(Modifier.padding(8.dp)) {
                         if (loader != null) AsyncImage(item.posterUrl, item.title, imageLoader = loader, modifier = Modifier.fillMaxWidth().height(180.dp))
@@ -152,6 +234,26 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                 } }
             }
         }
+    }
+    pendingPlan?.let { plan ->
+        AlertDialog(onDismissRequest = { pendingPlan = null }, title = { Text("版本与线路") },
+            text = { Column {
+                val sources = plan.getJSONArray("sources")
+                repeat(sources.length()) { index ->
+                    val source = sources.getJSONObject(index)
+                    TextButton(enabled = !busy, onClick = {
+                        job = scope.launch {
+                            busy = true; error = null
+                            try {
+                                viewModel.playMdc(provider!!, detail!!.key, plan, source)
+                                pendingPlan = null
+                            } catch (e: CancellationException) { throw e }
+                            catch (e: Exception) { error = e.message }
+                            finally { busy = false }
+                        }
+                    }) { Text(source.optString("label", "线路 ${index + 1}")) }
+                }
+            } }, confirmButton = { TextButton(onClick = { pendingPlan = null }) { Text("关闭") } })
     }
     if (picking) AlertDialog(onDismissRequest = { if (!busy) picking = false }, title = { Text("关联 Emby 影片") },
         text = { Column {

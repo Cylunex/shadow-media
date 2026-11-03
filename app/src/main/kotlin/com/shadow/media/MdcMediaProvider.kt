@@ -22,14 +22,15 @@ internal class MdcMediaProvider(
         setOf(ProviderCapability.BROWSE, ProviderCapability.SEARCH, ProviderCapability.PLAYBACK),
     )
 
-    suspend fun api(path: String, query: Map<String, String> = emptyMap(), post: Boolean = false): JSONObject =
+    suspend fun api(path: String, query: Map<String, String> = emptyMap(), post: Boolean = false, body: JSONObject? = null): JSONObject =
         withContext(Dispatchers.IO) {
             val url = connection.base().newBuilder().addPathSegments("api/media/v1/$path").apply {
                 query.forEach { (key, value) -> addQueryParameter(key, value) }
             }.build()
             val request = Request.Builder().url(url)
                 .header("Authorization", "Bearer ${connection.token}")
-                .apply { if (post) post(ByteArray(0).toRequestBody()) }.build()
+                .apply { if (body != null) post(body.toString().toRequestBody("application/json".toMediaType()))
+                    else if (post) post(ByteArray(0).toRequestBody()) }.build()
             client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 check(response.isSuccessful) {
@@ -57,6 +58,31 @@ internal class MdcMediaProvider(
         overview = row.optString("overview").takeUnless { it == "null" },
         durationMs = if (row.isNull("duration_ms")) null else row.getLong("duration_ms"),
     )
+
+    suspend fun people(): List<MdcPerson> = withContext(Dispatchers.IO) {
+        val url = connection.base().newBuilder().addPathSegments("api/media/v1/catalog/people").build()
+        client.newCall(Request.Builder().url(url).header("Authorization", "Bearer ${connection.token}").build()).execute().use {
+            check(it.isSuccessful) { "演员目录读取失败（${it.code}）" }
+            val rows = org.json.JSONArray(it.body?.string().orEmpty())
+            (0 until rows.length()).map { index ->
+                val row = rows.getJSONObject(index)
+                MdcPerson(row.getString("id"), row.getString("name"),
+                    row.getJSONArray("aliases").let { aliases ->
+                        (0 until aliases.length()).map { value -> aliases.getString(value) }
+                    }, row.getJSONArray("work_ids").length())
+            }
+        }
+    }
+
+    suspend fun catalog(filters: JSONObject): Pair<UnifiedMediaPage, Int> {
+        val result = api("catalog/works/query", body = filters)
+        val rows = result.getJSONArray("items")
+        return UnifiedMediaPage((0 until rows.length()).map { item(rows.getJSONObject(it)) },
+            nextPageToken = result.optString("next_cursor").takeUnless { it.isBlank() || it == "null" }) to result.getInt("total")
+    }
+    suspend fun facets(filters: JSONObject): JSONObject = api("catalog/facets", body = filters)
+    suspend fun plan(key: MediaKey, online: Boolean = false): JSONObject =
+        api("works/${key.itemId}/plan", query = if (online) mapOf("online" to "true") else emptyMap(), post = true)
 
     override suspend fun home() = listOf(ProviderSection("recent", "最近入库", browse(ProviderBrowseRequest()).items))
     override suspend fun browse(request: ProviderBrowseRequest) = page("", request.pageToken, request.pageSize)
@@ -100,3 +126,5 @@ internal class MdcMediaProvider(
     override suspend fun resolve(request: UnifiedPlaybackRequest): List<PlaybackCandidate> =
         error("请使用已连接的 Emby 账号播放此作品")
 }
+
+internal data class MdcPerson(val id: String, val name: String, val aliases: List<String>, val workCount: Int)

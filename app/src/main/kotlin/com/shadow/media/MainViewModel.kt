@@ -416,8 +416,37 @@ class MainViewModel(
     internal fun mdcProvider(connection: com.shadow.media.library.CatalogConnection) =
         MdcMediaProvider(connection, externalClient)
 
-    internal suspend fun playMdc(provider: MdcMediaProvider, key: MediaKey) {
-        val (serverId, itemId) = provider.embyTarget(key)
+    internal suspend fun playMdc(
+        provider: MdcMediaProvider, key: MediaKey, preparedPlan: org.json.JSONObject? = null,
+        chosenSource: org.json.JSONObject? = null,
+    ) {
+        val plan = preparedPlan ?: provider.plan(key)
+        val target = plan.optJSONObject("emby")
+        if (target == null) {
+            val sources = plan.optJSONArray("sources")
+            val source = chosenSource ?: sources?.optJSONObject(0)
+                ?: error("暂无已确认的播放线路，可在作品详情关联 Emby")
+            val sourceId = source.optString("version_id").takeUnless { it.isBlank() || it == "null" }
+                ?: error("播放线路缺少稳定版本身份")
+            val item = provider.detail(key).item
+            val playbackId = key.itemId + ":version:" + sourceId
+            val history = localMediaState.history(key.providerId + ":" + playbackId)
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            update { copy(
+                screen = Screen.EXTERNAL_PLAYER,
+                externalPlayerReturnScreen = Screen.MDC,
+                selectedExternalEntry = ExternalMediaEntry(
+                    id = playbackId,
+                    startPositionMs = history?.takeUnless { it.completed }?.positionMs ?: 0,
+                    sourceId = key.providerId, title = item.title,
+                    url = source.getString("url"), group = provider.descriptor.name,
+                ),
+                isLoading = false,
+            ) }
+            return
+        }
+        val serverId = target.getString("server_id")
+        val itemId = target.getString("item_id")
         val accounts = sessionStore.loadAll().filter { it.serverId == serverId }
         val session = accounts.singleOrNull() ?: accounts.singleOrNull { it == state.value.session }
             ?: error(if (accounts.isEmpty()) "请先在 Media 连接此 Emby 服务器" else "请先在 Emby 媒体服务中选择播放账号")
