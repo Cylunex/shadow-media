@@ -19,7 +19,7 @@ enum class CatalogKind { OPDS, KOMGA, AUDIOBOOKSHELF, JELLYFIN, OPENSUBSONIC }
 fun CatalogKind.isNativeMusic() = this == CatalogKind.JELLYFIN || this == CatalogKind.OPENSUBSONIC
 data class CatalogConnection(val id: String = UUID.randomUUID().toString(), val name: String, val kind: CatalogKind,
     val url: String, val username: String = "", val password: String = "", val token: String = "", val allowHttp: Boolean = false,
-    val oidcIssuer: String = "", val oidcSubject: String = "", val oidcClientId: String = "", val oidcAuthState: String = "") {
+    val oidcIssuer: String = "", val oidcSubject: String = "", val oidcClientId: String = "", val oidcAuthState: String = "", val includeInSearch: Boolean = false) {
     fun base(): HttpUrl = url.trim().toHttpUrl().also {
         require(it.username.isEmpty() && it.password.isEmpty() && it.query == null && it.fragment == null) { "地址不能包含内嵌密码、查询密钥或片段" }
         require(it.isHttps || allowHttp) { "请明确允许 HTTP 明文连接" }
@@ -46,15 +46,16 @@ class CatalogConnectionStore(context: Context, namespace: String = "publication_
             cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
             val array = JSONArray(cipher.doFinal(bytes.copyOfRange(12, bytes.size)).toString(Charsets.UTF_8))
             return@synchronized (0 until array.length()).map { index -> val o = array.getJSONObject(index)
-                CatalogConnection(o.getString("id"), o.getString("name"), CatalogKind.valueOf(o.getString("kind")), o.getString("url"), o.optString("username"), o.optString("password"), o.optString("token"), o.optBoolean("allowHttp"), o.optString("oidcIssuer"), o.optString("oidcSubject"), o.optString("oidcClientId"), o.optString("oidcAuthState"))
+                CatalogConnection(o.getString("id"), o.getString("name"), CatalogKind.valueOf(o.getString("kind")), o.getString("url"), o.optString("username"), o.optString("password"), o.optString("token"), o.optBoolean("allowHttp"), o.optString("oidcIssuer"), o.optString("oidcSubject"), o.optString("oidcClientId"), o.optString("oidcAuthState"), o.optBoolean("includeInSearch"))
             }
         } catch (e: Exception) { throw IllegalStateException("来源凭据无法解密，原数据已保留", e) }
     }
     fun save(connection: CatalogConnection) = synchronized(lock) { connection.base(); write(load().filterNot { it.id == connection.id } + connection) }
-    fun replace(previous: CatalogConnection?, edited: CatalogConnection) = synchronized(lock) {
+    fun replace(previous: CatalogConnection?, edited: CatalogConnection): CatalogConnection = synchronized(lock) {
         edited.base()
         val safe = if (previous != null && !edited.retainsAccountOf(previous)) edited.copy(id = UUID.randomUUID().toString()) else edited
         write(load().filterNot { it.id == previous?.id || it.id == safe.id } + safe)
+        safe
     }
     fun remove(id: String) = synchronized(lock) { write(load().filterNot { it.id == id }) }
     fun updateAuthState(id: String, expected: String, updated: String): Boolean = synchronized(lock) {
@@ -91,7 +92,7 @@ class CatalogConnectionStore(context: Context, namespace: String = "publication_
         val array = JSONArray()
         connections.forEach { c -> array.put(JSONObject().put("id", c.id).put("name", c.name).put("kind", c.kind.name).put("url", c.url)
             .put("username", c.username).put("password", c.password).put("token", c.token).put("allowHttp", c.allowHttp)
-            .put("oidcIssuer", c.oidcIssuer).put("oidcSubject", c.oidcSubject).put("oidcClientId", c.oidcClientId).put("oidcAuthState", c.oidcAuthState)) }
+            .put("oidcIssuer", c.oidcIssuer).put("oidcSubject", c.oidcSubject).put("oidcClientId", c.oidcClientId).put("oidcAuthState", c.oidcAuthState).put("includeInSearch", c.includeInSearch)) }
         check(preferences.edit().putString("encrypted", seal(array.toString())).commit())
     }
     private fun seal(value: String): String {

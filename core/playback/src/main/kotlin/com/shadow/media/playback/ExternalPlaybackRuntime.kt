@@ -74,7 +74,7 @@ class ExternalPlaybackRuntime(
         DefaultDataSource(context, RoutingDataSource(httpFactory.createDataSource(), networkStorageRepository))
     }
     private val sourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
-    private var mediaItem = MediaItem.Builder().setUri(entry.url).setMediaId(entry.id)
+    private var mediaItem = MediaItem.Builder().setUri(entry.url).setMediaId(entry.id).setMimeType(entry.mimeType)
         .setMediaMetadata(MediaMetadata.Builder().setTitle(entry.title).build())
         .setSubtitleConfigurations((entry.subtitles + listOfNotNull(preferences.subtitle(preferenceKey))).distinctBy { it.uri }.mapIndexed { index, subtitle -> subtitle.configuration(index == 0) }).build()
     private var pendingSubtitle: com.shadow.media.model.ExternalSubtitle? = null

@@ -29,6 +29,7 @@ internal class MdcMediaProvider(
             }.build()
             val request = Request.Builder().url(url)
                 .header("Authorization", "Bearer ${connection.token}")
+                .header("X-Catalog-Owner", connection.username.ifBlank { connection.id })
                 .apply { if (body != null) post(body.toString().toRequestBody("application/json".toMediaType()))
                     else if (post) post(ByteArray(0).toRequestBody()) }.build()
             client.newCall(request).execute().use { response ->
@@ -44,7 +45,13 @@ internal class MdcMediaProvider(
             }
         }
 
-    suspend fun checkConnection() { check(api("capabilities").getInt("api_version") == 1) { "MDC 接口版本不兼容" } }
+    suspend fun checkConnection() {
+        val capabilities = api("capabilities")
+        check(capabilities.getInt("api_version") == 1) { "MDC 接口版本不兼容" }
+        val values = capabilities.optJSONArray("features")
+        val features = if (values == null) emptySet() else (0 until values.length()).map { values.getString(it) }.toSet()
+        check("catalog" in features && "playback_plan" in features) { "请先更新 MDC 服务以使用统一片库" }
+    }
 
     private fun item(row: JSONObject) = UnifiedMediaItem(
         key = MediaKey(descriptor.id, row.getString("id")),
@@ -61,7 +68,8 @@ internal class MdcMediaProvider(
 
     suspend fun people(): List<MdcPerson> = withContext(Dispatchers.IO) {
         val url = connection.base().newBuilder().addPathSegments("api/media/v1/catalog/people").build()
-        client.newCall(Request.Builder().url(url).header("Authorization", "Bearer ${connection.token}").build()).execute().use {
+        client.newCall(Request.Builder().url(url).header("Authorization", "Bearer ${connection.token}")
+                .header("X-Catalog-Owner", connection.username.ifBlank { connection.id }).build()).execute().use {
             check(it.isSuccessful) { "演员目录读取失败（${it.code}）" }
             val rows = org.json.JSONArray(it.body?.string().orEmpty())
             (0 until rows.length()).map { index ->
@@ -69,8 +77,36 @@ internal class MdcMediaProvider(
                 MdcPerson(row.getString("id"), row.getString("name"),
                     row.getJSONArray("aliases").let { aliases ->
                         (0 until aliases.length()).map { value -> aliases.getString(value) }
-                    }, row.getJSONArray("work_ids").length())
+                    }, row.getJSONArray("work_ids").length(),
+                    connection.base().newBuilder().addPathSegments("api/media/v1/catalog/people/${row.getString("id")}/image")
+                        .addQueryParameter("v", row.optInt("revision", 1).toString()).build().toString())
             }
+        }
+    }
+
+    suspend fun person(id: String): JSONObject = api("catalog/people/$id")
+
+    private suspend fun array(path: String): org.json.JSONArray = withContext(Dispatchers.IO) {
+        val url = connection.base().newBuilder().addPathSegments("api/media/v1/catalog/$path").build()
+        client.newCall(Request.Builder().url(url)
+            .header("Authorization", "Bearer ${connection.token}")
+            .header("X-Catalog-Owner", connection.username.ifBlank { connection.id }).build()).execute().use {
+                check(it.isSuccessful) { "目录读取失败（${it.code}）" }
+                org.json.JSONArray(it.body?.string().orEmpty())
+            }
+    }
+    suspend fun playlists(): List<MdcPlaylist> {
+        val rows = array("playlists")
+        return (0 until rows.length()).map { index ->
+            val row = rows.getJSONObject(index)
+            MdcPlaylist(row.getString("id"), row.getString("name"), row.getJSONArray("work_ids").length())
+        }
+    }
+    suspend fun playlistWorks(id: String): List<Pair<String, String>> {
+        val rows = array("playlists/$id/works")
+        return (0 until rows.length()).map { index ->
+            val row = rows.getJSONObject(index)
+            row.getString("id") to row.getString("title")
         }
     }
 
@@ -98,7 +134,7 @@ internal class MdcMediaProvider(
     }
     override suspend fun detail(key: MediaKey): MediaDetail {
         require(key.providerId == descriptor.id)
-        return MediaDetail(item(api("works/${key.itemId}")))
+        return MediaDetail(item(api("works/${key.itemId.substringBefore(":version:")}")).copy(key = key))
     }
     suspend fun embyTarget(key: MediaKey): Pair<String, String> {
         require(key.providerId == descriptor.id)
@@ -109,7 +145,8 @@ internal class MdcMediaProvider(
         val result = withContext(Dispatchers.IO) {
             val url = connection.base().newBuilder().addPathSegments("api/media/v1/works/${key.itemId}/emby-candidates")
                 .addQueryParameter("q", query).build()
-            client.newCall(Request.Builder().url(url).header("Authorization", "Bearer ${connection.token}").build()).execute().use {
+            client.newCall(Request.Builder().url(url).header("Authorization", "Bearer ${connection.token}")
+                .header("X-Catalog-Owner", connection.username.ifBlank { connection.id }).build()).execute().use {
                 check(it.isSuccessful) { "无法读取 Emby 候选（${it.code}）" }
                 org.json.JSONArray(it.body?.string().orEmpty())
             }
@@ -119,12 +156,34 @@ internal class MdcMediaProvider(
     suspend fun bind(key: MediaKey, itemId: String) = withContext(Dispatchers.IO) {
         val url = connection.base().newBuilder().addPathSegments("api/media/v1/works/${key.itemId}/binding").build()
         val body = JSONObject().put("item_id", itemId).toString().toRequestBody("application/json".toMediaType())
-        client.newCall(Request.Builder().url(url).header("Authorization", "Bearer ${connection.token}").put(body).build()).execute().use {
+        client.newCall(Request.Builder().url(url).header("Authorization", "Bearer ${connection.token}")
+                .header("X-Catalog-Owner", connection.username.ifBlank { connection.id }).put(body).build()).execute().use {
             check(it.isSuccessful) { "无法保存 Emby 关联（${it.code}）" }
         }
     }
-    override suspend fun resolve(request: UnifiedPlaybackRequest): List<PlaybackCandidate> =
-        error("请使用已连接的 Emby 账号播放此作品")
+    override suspend fun resolve(request: UnifiedPlaybackRequest): List<PlaybackCandidate> {
+        val workId = request.key.itemId.substringBefore(":version:")
+        val versionId = request.key.itemId.substringAfter(":version:", "")
+        val resolved = plan(MediaKey(descriptor.id, workId), online = true)
+        val sources = resolved.optJSONArray("sources") ?: return emptyList()
+        return (0 until sources.length()).map { sources.getJSONObject(it) }.filter {
+            versionId.isBlank() || it.optString("version_id") == versionId
+        }.map { PlaybackCandidate(it.getString("url"), PlayMethod.DIRECT_STREAM, emptyMap()) }
+    }
+
 }
 
-internal data class MdcPerson(val id: String, val name: String, val aliases: List<String>, val workCount: Int)
+internal data class MdcPerson(val id: String, val name: String, val aliases: List<String>, val workCount: Int, val imageUrl: String? = null)
+
+
+internal fun selectMdcRecoverySource(
+    plan: JSONObject, versionId: String, sourceId: String,
+): JSONObject? {
+    val sources = plan.optJSONArray("sources") ?: return null
+    val matching = (0 until sources.length()).map { sources.getJSONObject(it) }
+        .filter { it.optString("version_id") == versionId && it.optBoolean("playable_in_app") &&
+            !it.isNull("url") && it.optString("url").isNotBlank() }
+    return matching.firstOrNull { it.optString("source_id") == sourceId } ?: matching.firstOrNull()
+}
+
+internal data class MdcPlaylist(val id: String, val name: String, val workCount: Int)

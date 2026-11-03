@@ -52,4 +52,33 @@ class MdcMediaProviderTest {
             assertEquals(0, other.requestCount)
         } }
     }
+    @Test fun `recovery refreshes only the same confirmed version`() {
+        val plan = org.json.JSONObject("""{"sources":[
+            {"version_id":"cd2","source_id":"other","url":"https://example.com/two.m3u8","playable_in_app":true},
+            {"version_id":"cd1","source_id":"original","url":"https://example.com/refreshed.m3u8","playable_in_app":true}
+        ]}""")
+        assertEquals("https://example.com/refreshed.m3u8",
+            selectMdcRecoverySource(plan, "cd1", "original")!!.getString("url"))
+        assertNull(selectMdcRecoverySource(plan, "director-cut", "original"))
+    }
+
+    @Test fun `connection preferences preserve identity and rotate it with credentials`() {
+        val store = com.shadow.media.library.CatalogConnectionStore(
+            org.robolectric.RuntimeEnvironment.getApplication(),
+            "mdc-test-" + java.util.UUID.randomUUID(), "fixture",
+            keyProvider = { javax.crypto.spec.SecretKeySpec(ByteArray(16) { 3 }, "AES") },
+        )
+        val connection = CatalogConnection(
+            id = "connection", name = "MDC", kind = CatalogKind.OPDS,
+            url = "https://example.com", token = "REPLACE_TOKEN", includeInSearch = true,
+        )
+        store.save(connection)
+        assertTrue(store.load().single().includeInSearch)
+        val edited = store.replace(connection, connection.copy(includeInSearch = false))
+        assertEquals(connection.id, edited.id)
+        assertFalse(store.load().single().includeInSearch)
+        val rotated = store.replace(edited, edited.copy(token = "REPLACE_NEW_TOKEN"))
+        assertNotEquals(edited.id, rotated.id)
+    }
+
 }

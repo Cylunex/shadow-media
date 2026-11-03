@@ -47,6 +47,8 @@ open class ShadowMediaApplication : Application(), coil3.SingletonImageLoader.Fa
 }
 
 class AppContainer(private val application: Application) {
+    val mdcConnections = com.shadow.media.library.CatalogConnectionStore(
+        application, "mdc_connections", "shadow_mdc_v1")
     val library = com.shadow.media.library.LibraryRepository(application)
     val lineHealth = com.shadow.media.library.LiveLineHealthStore(application)
     val videoPreferences = com.shadow.media.playback.VideoPreferenceStore.get(application)

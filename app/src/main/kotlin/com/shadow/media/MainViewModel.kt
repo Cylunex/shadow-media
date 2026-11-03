@@ -203,6 +203,7 @@ class MainViewModel(
     private val autoSwitchLines: () -> Boolean = { true },
     private val playbackNetwork: StateFlow<Boolean> = MutableStateFlow(true),
     private val retryLimit: () -> Int = { 2 },
+    private val mdcConnections: () -> List<com.shadow.media.library.CatalogConnection> = { emptyList() },
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     var feedPreloader: com.shadow.media.playback.FeedPreloadPool? = null
@@ -215,6 +216,7 @@ class MainViewModel(
         resolutionRecovery.setPlayWhenReady(playing)
     }
     private var playbackRequest: Job? = null
+    private var mdcPlayback: MdcPlaybackContext? = null
     private var contentRequest: Job? = null
     private var unifiedPageRequest = 0L
     private var favoriteObservation: Job? = null
@@ -432,6 +434,8 @@ class MainViewModel(
             val playbackId = key.itemId + ":version:" + sourceId
             val history = localMediaState.history(key.providerId + ":" + playbackId)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            mdcPlayback = MdcPlaybackContext(provider, key, playbackId, sourceId,
+                source.optString("source_id"))
             update { copy(
                 screen = Screen.EXTERNAL_PLAYER,
                 externalPlayerReturnScreen = Screen.MDC,
@@ -440,6 +444,7 @@ class MainViewModel(
                     startPositionMs = history?.takeUnless { it.completed }?.positionMs ?: 0,
                     sourceId = key.providerId, title = item.title,
                     url = source.getString("url"), group = provider.descriptor.name,
+                    mimeType = source.optString("mime_type").takeUnless { it.isBlank() || it == "null" },
                 ),
                 isLoading = false,
             ) }
@@ -865,7 +870,9 @@ class MainViewModel(
             localMediaState.addSearch(query)
             try {
                 aggregateSearchEngine.searchSnapshots(
-                    providerRegistry.providers.first(),
+                    providerRegistry.providers.first().filterNot {
+                        it is MdcMediaProvider && !it.connection.includeInSearch
+                    },
                     ProviderSearchRequest(query = query, pageSize = 60),
                 ).collect { result ->
                     if (generation == searchGeneration) update { copy(discoverResults = result.items, providerSearchFailures = result.failures, providerSearchNext = result.nextPageTokens, isSearchingProviders = result.pendingProviderIds.isNotEmpty()) }
@@ -967,6 +974,25 @@ class MainViewModel(
             return
         }
         val provider = providerRegistry.provider(item.key.providerId) ?: return
+        if (provider is MdcMediaProvider) {
+            contentRequest = viewModelScope.launch {
+                update { copy(isLoading = true, errorMessage = null) }
+                try {
+                    val workId = item.key.itemId.substringBefore(":version:")
+                    val versionId = item.key.itemId.substringAfter(":version:", "")
+                    val key = MediaKey(provider.descriptor.id, workId)
+                    val plan = provider.plan(key, online = versionId.isNotBlank())
+                    val source = if (versionId.isBlank()) null else requireNotNull(
+                        selectMdcRecoverySource(plan, versionId, ""),
+                    ) { "该版本已不可用，可从作品详情选择其他版本" }
+                    ensureActive()
+                    playMdc(provider, key, plan, source)
+                } catch (e: CancellationException) { throw e }
+                catch (e: Exception) { showError(e) }
+                finally { update { copy(isLoading = false) } }
+            }
+            return
+        }
         if (provider is EmbyMediaProvider) {
             if (item.type.equals("MusicAlbum", true) || item.type.equals("Series", true) || item.type.equals("BoxSet", true)) {
                 openUnifiedItem(item)
@@ -1645,6 +1671,33 @@ class MainViewModel(
     fun refreshExternalPlayback(positionMs: Long, playWhenReady: Boolean, automatic: Boolean = false) {
         val entry = state.value.selectedExternalEntry ?: return
         if (automatic && entry.refreshAttempts >= 1) return
+        val mdc = mdcPlayback?.takeIf { it.entryId == entry.id && it.provider.descriptor.id == entry.sourceId }
+        if (mdc != null) {
+            playbackRequest?.cancel()
+            playbackRequest = viewModelScope.launch {
+                try {
+                    val plan = mdc.provider.plan(mdc.key, online = true)
+                    val source = requireNotNull(selectMdcRecoverySource(plan, mdc.versionId, mdc.sourceId)) {
+                        "此版本已无可用线路"
+                    }
+                    ensureActive()
+                    if (state.value.screen == Screen.EXTERNAL_PLAYER && state.value.selectedExternalEntry == entry) {
+                        update { copy(selectedExternalEntry = entry.copy(
+                            url = source.getString("url"), startPositionMs = positionMs,
+                            mimeType = source.optString("mime_type").takeUnless { it.isBlank() || it == "null" },
+                            playWhenReady = playWhenReady, playbackRevision = entry.playbackRevision + 1,
+                            refreshAttempts = if (automatic) entry.refreshAttempts + 1 else 0,
+                        ), errorMessage = null) }
+                    }
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) {
+                    if (state.value.selectedExternalEntry == entry) update {
+                        copy(errorMessage = "此版本线路恢复失败，可返回作品选择其他版本")
+                    }
+                }
+            }
+            return
+        }
         val provider = providerRegistry.provider(entry.sourceId) ?: providerRegistry.provider("external:${entry.sourceId}") ?: return
         playbackRequest?.cancel()
         playbackRequest = viewModelScope.launch {
@@ -1693,6 +1746,7 @@ class MainViewModel(
         val storedNetworkConnections = loadNetworkStorageConnections().orEmpty()
         val providers = buildList {
             addAll(nativeProviders())
+            mdcConnections().forEach { add(MdcMediaProvider(it, externalClient)) }
             library?.let { add(com.shadow.media.library.LibraryMediaProvider(it)) }
             sessionStore.loadAll().distinctBy { it.providerId }.forEach { add(EmbyMediaProvider(it, repository)) }
             storedNetworkConnections.forEach { connection ->
@@ -1703,7 +1757,8 @@ class MainViewModel(
                 val entries = runCatching { externalSourceRepository.entries(imported) }.getOrDefault(emptyList())
                 if (entries.isNotEmpty()) add(LiveMediaProvider(summary, entries))
                 externalSourceRepository.catalogSites(imported).forEach { site ->
-                    if (count { it.descriptor.kind == com.shadow.media.model.ProviderKind.DECLARATIVE_HTTP } < MAX_HTTP_PROVIDERS) {
+                    if (count { it.descriptor.kind == com.shadow.media.model.ProviderKind.DECLARATIVE_HTTP &&
+                        it !is MdcMediaProvider } < MAX_HTTP_PROVIDERS) {
                         TvBoxHttpMediaProvider(site, externalClient).let { add(library?.cacheProvider(it) ?: it) }
                     }
                 }
@@ -2027,6 +2082,7 @@ class MainViewModel(
                         autoSwitchLines = { container.videoPreferences.settings.value.autoSwitchLines },
                         playbackNetwork = container.playbackNetwork,
                         retryLimit = { container.videoPreferences.settings.value.retries },
+                        mdcConnections = { runCatching { container.mdcConnections.load() }.getOrDefault(emptyList()) },
                     ) as T
             }
     }
@@ -2103,3 +2159,12 @@ private fun List<MediaSection>.withRecommendations(): List<MediaSection> {
         )
     ) + this
 }
+
+
+private data class MdcPlaybackContext(
+    val provider: MdcMediaProvider,
+    val key: MediaKey,
+    val entryId: String,
+    val versionId: String,
+    val sourceId: String,
+)
