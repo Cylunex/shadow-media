@@ -350,13 +350,14 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                         }
                     }
                 }
-                if (mode == "works")
+                if (mode == "works") {
                 items(rows, key = { it.key.stableId }) { item ->
                     Card(onClick = { detail = null; workId = item.key.itemId }) { Column(Modifier.padding(8.dp)) {
                         if (loader != null) AsyncImage(item.posterUrl, item.title, imageLoader = loader, modifier = Modifier.fillMaxWidth().height(180.dp))
                         Text(item.title, maxLines = 2)
                         Text(item.subtitle.orEmpty(), maxLines = 1, style = MaterialTheme.typography.bodySmall)
                     } }
+                }
                 }
                 cursor?.takeIf { mode == "works" }?.let { next -> item(span = { GridItemSpan(maxLineSpan) }) {
                     OutlinedButton(enabled = !busy, onClick = { load(next) }) { Text("加载下一页") }

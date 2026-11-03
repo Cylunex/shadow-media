@@ -331,7 +331,8 @@ class ReaderNarrationService : Service() {
             PlaybackState.ACTION_SKIP_TO_NEXT or PlaybackState.ACTION_SKIP_TO_PREVIOUS)
             .setState(if (state.playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED, 0, if (state.playing) state.speed else 0f).build())
         media.setMetadata(MediaMetadata.Builder().putString(MediaMetadata.METADATA_KEY_TITLE, state.title).build())
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notification())
+        // Update the existing foreground media notification with the same ownership.
+        startForeground(NOTIFICATION, notification())
     }
     override fun onDestroy() {
         destroying = true
