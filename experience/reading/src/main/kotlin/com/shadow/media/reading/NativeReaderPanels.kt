@@ -159,7 +159,9 @@ internal fun ColumnScope.NativeContentsBody(
 }
 
 @Composable
-internal fun ColumnScope.NativeReaderSearchPanel(asset: LibraryAssetEntity, publication: NovelPublicationEntity?, source: NativeTextSource, enabled: Boolean, onOpen: (NativeSearchHit) -> Unit) {
+internal fun ColumnScope.NativeReaderSearchPanel(asset: LibraryAssetEntity, publication: NovelPublicationEntity?, source: NativeTextSource, enabled: Boolean, before: Pair<Int, Int>? = null, onOpen: (NativeSearchHit) -> Unit) {
+    var includeFuture by remember { mutableStateOf(false) }
+    var preview by remember { mutableStateOf<NativeSearchHit?>(null) }
     var query by remember { mutableStateOf("") }
     var result by remember { mutableStateOf<NativeSearchResult?>(null) }
     var searching by remember { mutableStateOf(false) }
@@ -167,6 +169,13 @@ internal fun ColumnScope.NativeReaderSearchPanel(asset: LibraryAssetEntity, publ
     var job by remember { mutableStateOf<Job?>(null) }
     var generation by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
+    if (before != null) Row(verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(includeFuture, onCheckedChange = { includeFuture = it; generation++; job?.cancel(); result = null; searching = false })
+        Text("包括后文")
+    }
+    preview?.let { hit -> AlertDialog(onDismissRequest = { preview = null }, title = { Text(hit.title) },
+        text = { Text(hit.preview) }, confirmButton = { TextButton(onClick = { preview = null; onOpen(hit) }) { Text("到原文") } },
+        dismissButton = { TextButton(onClick = { preview = null }) { Text("返回结果") } }) }
     NativeSearchBody(query, result, searching, error, publication != null, enabled,
         onQuery = { generation++; job?.cancel(); query = it; searching = false; result = null; error = null },
         onSearch = {
@@ -174,13 +183,13 @@ internal fun ColumnScope.NativeReaderSearchPanel(asset: LibraryAssetEntity, publ
                 val request = ++generation
                 result = null; error = null; searching = true
                 job = scope.launch {
-                    try { searchNativeText(source.searchEntries(asset, publication), query).collect { if (request == generation) result = it } }
+                    try { searchNativeText(source.searchEntries(asset, publication), query, before = before.takeUnless { includeFuture }).collect { if (request == generation) result = it } }
                     catch (e: CancellationException) { throw e }
                     catch (e: Exception) { if (request == generation) error = e.message ?: "搜索失败，请重试" }
                     finally { if (request == generation) searching = false }
                 }
             }
-        }, onStop = { generation++; job?.cancel(); searching = false }, onOpen = onOpen)
+        }, onStop = { generation++; job?.cancel(); searching = false }, onOpen = { preview = it })
 }
 
 @Composable

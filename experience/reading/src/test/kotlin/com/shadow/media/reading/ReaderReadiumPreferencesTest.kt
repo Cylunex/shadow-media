@@ -51,4 +51,20 @@ class ReaderReadiumPreferencesTest {
         assertEquals(0.0, preferences.letterSpacing!!, 0.0)
         assertEquals(0.4, preferences.pageMargins!!, 0.00001)
     }
+    @org.junit.Test fun bookOverridesFollowDefaultsWithoutChangingOtherBooks() {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val global = ReaderSettingsStore(context.getSharedPreferences("scoped-global", 0))
+        val bookPrefs = context.getSharedPreferences("scoped-book", 0)
+        bookPrefs.edit().clear().commit()
+        global.save(ReaderSettings(fontSize = 120f))
+        val book = ReaderSettingsStore(bookPrefs, global)
+        book.save(book.load().copy(lineHeight = 2f, brightness = .3f))
+        global.save(global.load().copy(fontSize = 150f))
+        org.junit.Assert.assertEquals(150f, book.load().fontSize)
+        org.junit.Assert.assertEquals(2f, book.load().lineHeight)
+        org.junit.Assert.assertEquals(.3f, global.load().brightness)
+        book.followDefaults()
+        org.junit.Assert.assertEquals(global.load(), book.load())
+    }
+
 }

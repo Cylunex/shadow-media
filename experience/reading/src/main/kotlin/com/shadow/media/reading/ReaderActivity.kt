@@ -119,6 +119,9 @@ class ReaderActivity : FragmentActivity() {
                     return@launch
                 }
                 asset = item
+                settingsStore = ReaderSettingsStore(getSharedPreferences("reader_book_" + item.id, MODE_PRIVATE),
+                    ReaderSettingsStore(getSharedPreferences("reader_preferences", MODE_PRIVATE)))
+                readerSettings = settingsStore.load()
                 novelPublication = novel.dao.publication(item.id)
                 novelPublication?.let { publication ->
                     lifecycleScope.launch { novel.observe(publication.scope, publication.workId).collectLatest { state -> novelState = state } }
@@ -278,7 +281,7 @@ class ReaderActivity : FragmentActivity() {
             navigator?.submitPreferences(prefs)
         }
         applyReaderWindow()
-        if (old.paper != readerSettings.paper || old.paperTexture != readerSettings.paperTexture) applyPaper()
+        if (old.paper != readerSettings.paper || old.paperTexture != readerSettings.paperTexture || old.publisherStyles != readerSettings.publisherStyles) applyPaper()
     }
 
     private fun applyPaper() {
@@ -587,7 +590,12 @@ class ReaderActivity : FragmentActivity() {
                                     IconButton(onClick = { scope.launch { library.dao.removeAnnotation(mark.id) } }) { Icon(Icons.Rounded.DeleteOutline, "删除书签") } }
                             } }
                         }
-                        "排版" -> ReaderPreferencesPanel(readerSettings, ::updateSettings,
+                        "排版" -> {
+                            Row {
+                                TextButton(onClick = { settingsStore.followDefaults(); updateSettings(settingsStore.load()) }) { Text("跟随默认") }
+                                TextButton(onClick = { settingsStore.makeDefault(readerSettings) }) { Text("设为默认排版") }
+                            }
+                            ReaderPreferencesPanel(readerSettings, ::updateSettings,
                             encoding = if (asset?.format == "txt") ({
                                 Text("文本编码：${asset?.let { library.textEncoding(it.id) }}", style = MaterialTheme.typography.labelLarge)
                                 FlowRow {
@@ -596,6 +604,7 @@ class ReaderActivity : FragmentActivity() {
                                     }
                                 }
                             }) else null)
+                        }
                     }
                     Spacer(Modifier.height(24.dp))
                 }

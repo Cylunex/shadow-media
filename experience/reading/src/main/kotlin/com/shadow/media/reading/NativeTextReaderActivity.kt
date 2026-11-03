@@ -68,6 +68,25 @@ class NativeTextReaderActivity : ComponentActivity() {
     private var cacheStatus by mutableStateOf<String?>(null)
     private var aloud: ReadAloud? = null
     private var aloudJob: Job? = null
+    private var narrationOffset by mutableIntStateOf(0)
+    private var narrationChapter: String? = null
+    private var followNarration by mutableStateOf(true)
+    private var narrationSeeking = false
+    private var speechSpeed by mutableFloatStateOf(1f)
+    private var stopAtChapter by mutableStateOf(false)
+    private var sleepJob: Job? = null
+    private val noisy = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) { stopAloud() }
+    }
+    private fun sentenceStep(direction: Int) {
+        val text = chapter?.text ?: return
+        val point = narrationOffset.coerceIn(0, text.length)
+        val target = if (direction > 0) text.indexOfAny(charArrayOf('。', '！', '？', '\n', '.', '!', '?'), point).let { if (it < 0) text.length else it + 1 }
+            else text.lastIndexOfAny(charArrayOf('。', '！', '？', '\n', '.', '!', '?'), (point - 2).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
+        stopAloud(); narrationOffset = safeTextOffset(text, target)
+        narrationChapter = chapter?.ref?.id
+        speak()
+    }
     private var narrating by mutableStateOf(false)
     private var excerpt by mutableStateOf<Pair<String, Int>?>(null)
     private var nativeSaved: JSONObject? = null
@@ -99,6 +118,10 @@ class NativeTextReaderActivity : ComponentActivity() {
     }
     private suspend fun open(item: LibraryAssetEntity, locator: JSONObject?, lastPage: Boolean = false, savePosition: Boolean = false) {
         val pub = novel.dao.publication(item.id)
+        val settingsId = pub?.let { LibraryRepository.digest(it.scope + ":" + it.workId) } ?: item.id
+        store = ReaderSettingsStore(getSharedPreferences("reader_book_" + settingsId, MODE_PRIVATE),
+            ReaderSettingsStore(getSharedPreferences("reader_preferences", MODE_PRIVATE)))
+        style = store.load()
         require(item.format == "txt" || pub != null) { "此阅读器支持 TXT 和 Novel 正文" }
         val content = source.chapter(item, pub, locator?.optString("href"),
             if (locator?.optJSONObject("native_text") == null) locator?.optJSONObject("locations")?.optDouble("progression", 0.0)?.takeIf { it.isFinite() } else null)
@@ -106,6 +129,12 @@ class NativeTextReaderActivity : ComponentActivity() {
         if (pub != null) novel.beginReading(pub, locator ?: content.locator(restored))
         val newSession = if (asset?.id != item.id || session == null) ProgressWriter.begin(library, item) else session
         asset = item; publication = pub; chapter = content; offset = restored; session = newSession
+        if (!narrating && narrationChapter != content.ref.id) {
+            val saved = getSharedPreferences("reader_narration", MODE_PRIVATE).getString(item.id, null)
+                ?.let { runCatching { JSONObject(it) }.getOrNull() }
+            narrationOffset = if (saved?.optJSONObject("native_text")?.optString("chapter_id") == content.ref.id) content.restore(saved) else restored
+            narrationChapter = content.ref.id
+        }
         if (pub != null) {
             observer?.cancel()
             observer = lifecycleScope.launch { novel.observe(pub.scope, pub.workId).collectLatest { state = it } }
@@ -160,6 +189,7 @@ class NativeTextReaderActivity : ComponentActivity() {
     private fun positionChanged(value: Int, user: Boolean) {
         offset = value
         pageLabel = view?.let { "${it.pageIndex + 1} / ${it.document?.pages?.size ?: 1} 页" }.orEmpty()
+        if (user && narrating && !narrationSeeking) followNarration = false
         if (!user || busy) return
         val content = chapter ?: return
         val locator = content.locator(value)
@@ -278,7 +308,25 @@ class NativeTextReaderActivity : ComponentActivity() {
         if (style.haptics) view?.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
         menu = !menu; applyWindow()
     }
-    private fun mark(location: JSONObject, note: String) { lifecycleScope.launch { asset?.let { library.bookmark(it.id, location.toString(), note); message = "已保存书签" } } }
+    private var savingMark by mutableStateOf(false)
+    private var undoMark: String? = null
+    private fun mark(location: JSONObject, note: String) {
+        if (savingMark) return
+        val item = asset ?: return
+        savingMark = true
+        lifecycleScope.launch {
+            try {
+                val id = java.util.UUID.randomUUID().toString()
+                library.dao.putAnnotation(com.shadow.media.database.ContentAnnotationEntity(id, item.id,
+                    location.toString(), note, System.currentTimeMillis()))
+                undoMark = id
+                excerpt = null
+                message = "已保存书签或摘录"
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { message = "尚未保存，请重试或复制文字" }
+            finally { savingMark = false }
+        }
+    }
     private fun resolve(remote: Boolean) = navigate {
         val pub = requireNotNull(publication)
         if (remote) {
@@ -295,21 +343,34 @@ class NativeTextReaderActivity : ComponentActivity() {
         closePanel()
     }
     private fun stopAloud() { aloudJob?.cancel(); aloud?.stop(); narrating = false }
-    private fun speak() {
+    private fun speak(fromHere: Boolean = false) {
         if (narrating) { stopAloud(); return }
         val content = chapter ?: return
+        if (fromHere || narrationChapter != content.ref.id) narrationOffset = offset
+        narrationChapter = content.ref.id
+        followNarration = true
+        val previous = aloudJob
         aloudJob = lifecycleScope.launch {
+            previous?.join()
             narrating = true
             try {
                 val reader = aloud ?: ReadAloud(this@NativeTextReaderActivity).also { aloud = it }
                 while (true) {
                     val current = chapter ?: break
-                    reader.readText(current.text, offset) { view?.seek(it) }
-                    view?.seek(current.text.length)
+                    reader.speed = speechSpeed
+                    reader.readText(current.text, narrationOffset) {
+                        narrationOffset = it; narrationChapter = current.ref.id
+                        getSharedPreferences("reader_narration", MODE_PRIVATE).edit().putString(asset?.id,
+                            current.locator(it).toString()).apply()
+                        if (followNarration) { narrationSeeking = true; view?.seek(it); narrationSeeking = false }
+                    }
+                    if (stopAtChapter || !followNarration) break
+                    narrationSeeking = true; view?.seek(current.text.length); narrationSeeking = false
                     val next = adjacent(current.ref.ordinal, 1) ?: break
                     busy = true; acquiring = true
                     ProgressWriter.flush()
                     loadChapter(next)
+                    narrationOffset = 0; narrationChapter = chapter?.ref?.id
                     while (busy) delay(16)
                 }
             } catch (e: CancellationException) { throw e }
@@ -332,7 +393,10 @@ class NativeTextReaderActivity : ComponentActivity() {
             }
             LaunchedEffect(message) {
                 val text = message ?: return@LaunchedEffect
-                snackbar.showSnackbar(text)
+                val undo = undoMark
+                undoMark = null
+                val result = snackbar.showSnackbar(text, actionLabel = if (undo != null) "撤销" else null)
+                if (result == SnackbarResult.ActionPerformed && undo != null) library.dao.removeAnnotation(undo)
                 if (message == text) message = null
             }
             var bookmarkAssets by remember { mutableStateOf(emptyList<String>()) }
@@ -394,18 +458,56 @@ class NativeTextReaderActivity : ComponentActivity() {
                                 view?.seek(((chapter?.text?.length ?: 0) * ratio).toInt())
                                 jumpHistory = jumpHistory.remember(origin, location())
                             }, onPrevious = { skipChapter(-1) }, onNext = { skipChapter(1) },
-                            onSpeak = ::speak, onPanel = { if (it == "书源") sourceState.selectedVersion = null; panel = it; applyWindow() }, compact = compactControls, sources = publication != null)
+                            onSpeak = { speak() }, onPanel = { if (it == "书源") sourceState.selectedVersion = null; panel = it; applyWindow() }, compact = compactControls, sources = publication != null)
                     }
+                if (menu) TextButton(onClick = { panel = "听读" }, modifier = Modifier.align(Alignment.CenterEnd)) { Text("听读控制") }
                 if (panel == null) SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp))
             }
             if (panel != null) ModalBottomSheet(sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), onDismissRequest = { panel = null; applyWindow() }) {
-                Column(Modifier.fillMaxWidth().fillMaxHeight(if (panel == "排版") .76f else .92f).padding(horizontal = 20.dp).navigationBarsPadding().imePadding()) {
+                Column(Modifier.fillMaxWidth().fillMaxHeight(if (panel == "排版") .58f else .92f).padding(horizontal = 20.dp).navigationBarsPadding().imePadding()) {
                     Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(panel.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                         IconButton(onClick = { panel = null; applyWindow() }) { Icon(Icons.Rounded.Close, "关闭面板") }
                     }
                     when (panel) {
-                        "排版" -> Column(Modifier.weight(1f)) { ReaderPreferencesPanel(style, ::update, nativeText = true,
+                        "听读" -> {
+                            Row {
+                                TextButton(onClick = { sentenceStep(-1) }) { Text("上一句") }
+                                TextButton(onClick = { speak() }) { Text(if (narrating) "暂停" else "继续听") }
+                                TextButton(onClick = { sentenceStep(1) }) { Text("下一句") }
+                            }
+                            Row {
+                                TextButton(onClick = { stopAloud(); speak(true) }) { Text("从这里听") }
+                                TextButton(onClick = { narrationSeeking = true; view?.seek(narrationOffset); narrationSeeking = false; followNarration = true; closePanel() }) { Text("回到正在听") }
+                            }
+                            Row {
+                                TextButton(onClick = { speechSpeed = (speechSpeed - .25f).coerceAtLeast(.5f); aloud?.speed = speechSpeed }) { Text("慢一点") }
+                                Text("${speechSpeed}×")
+                                TextButton(onClick = { speechSpeed = (speechSpeed + .25f).coerceAtMost(3f); aloud?.speed = speechSpeed }) { Text("快一点") }
+                            }
+                            Row {
+                                Checkbox(stopAtChapter, onCheckedChange = { stopAtChapter = it })
+                                Text("本章结束停止")
+                            }
+                            FlowRow {
+                                listOf(15, 30, 60).forEach { minutes -> TextButton(onClick = {
+                                    sleepJob?.cancel()
+                                    sleepJob = lifecycleScope.launch { delay(minutes * 60_000L); stopAloud(); message = "定时已停止" }
+                                    message = "${minutes} 分钟后停止"
+                                }) { Text("${minutes} 分钟") } }
+                                TextButton(onClick = { sleepJob?.cancel(); message = "已取消定时" }) { Text("取消定时") }
+                            }
+                            TextButton(onClick = {
+                                try { startActivity(android.content.Intent("com.android.settings.TTS_SETTINGS")) }
+                                catch (_: android.content.ActivityNotFoundException) { message = "请在系统设置中打开文字转语音" }
+                            }) { Text("系统语音设置") }
+                        }
+                        "排版" -> Column(Modifier.weight(1f)) {
+                            Row {
+                                TextButton(onClick = { store.followDefaults(); style = store.load(); view?.configure(style); applyWindow() }) { Text("跟随默认") }
+                                TextButton(onClick = { store.makeDefault(style) }) { Text("设为默认排版") }
+                            }
+                            ReaderPreferencesPanel(style, ::update, nativeText = true,
                             importFont = { fontPicker.launch(arrayOf("font/*", "application/x-font-ttf", "application/vnd.ms-opentype", "application/octet-stream")) }, encoding = if (asset?.format == "txt") ({
                             Text("文本编码：${asset?.let { library.textEncoding(it.id) }}")
                             FlowRow { listOf("自动", "UTF-8", "GB18030", "Big5", "UTF-16LE", "UTF-16BE").forEach { encoding -> TextButton(onClick = {
@@ -419,7 +521,7 @@ class NativeTextReaderActivity : ComponentActivity() {
                             NovelReaderSourcesPanel(novel, pub, asset?.title.orEmpty(), content.ref.title, !busy, sourceState, ::switchSource)
                         } }
                         "搜索" -> asset?.let { item ->
-                            NativeReaderSearchPanel(item, publication, source, !busy) { hit -> jumpTo(NativeReaderLocation(hit.assetId, hit.locator)) }
+                            NativeReaderSearchPanel(item, publication, source, !busy, chapter?.let { it.ref.ordinal to offset }) { hit -> jumpTo(NativeReaderLocation(hit.assetId, hit.locator)) }
                         }
                         "书签" -> asset?.let {
                             val marks by library.dao.annotationsForAssets(bookmarkAssets).collectAsState(emptyList())
@@ -434,8 +536,8 @@ class NativeTextReaderActivity : ComponentActivity() {
                     SnackbarHost(snackbar)
                 }
             }
-            excerpt?.let { (text, position) -> AlertDialog(onDismissRequest = { excerpt = null }, title = { Text("段落") }, text = { Text(text.take(1500)) },
-                confirmButton = { TextButton(onClick = { chapter?.let { mark(it.locator(position), text.take(1000)) }; excerpt = null }) { Text("保存摘录") } },
+            excerpt?.let { (text, position) -> AlertDialog(onDismissRequest = { excerpt = null }, title = { Text("摘录") }, text = { androidx.compose.foundation.text.selection.SelectionContainer { Text(if (text.length > 1000) "最多保存 1000 字，请返回缩短选区。\n\n$text" else text) } },
+                confirmButton = { TextButton(enabled = !savingMark && text.length <= 1000, onClick = { chapter?.let { mark(it.locator(position).put("selection_end", position + text.length), text) } }) { Text("保存摘录") } },
                 dismissButton = { TextButton(onClick = { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("正文", text)); message = "已复制正文"; excerpt = null }) { Text("复制") } }) }
         }
     }
@@ -445,7 +547,11 @@ class NativeTextReaderActivity : ComponentActivity() {
         return super.onKeyDown(keyCode, event)
     }
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean = if (style.volumeToTurn && !menu && panel == null && excerpt == null && !narrating && keyCode in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) true else super.onKeyUp(keyCode, event)
-    override fun onStart() { super.onStart(); chapter?.let { prefetchFollowing(publication, it.ref.ordinal) } }
-    override fun onStop() { prefetch?.cancel(); stopAloud(); view?.pause(); if (publication != null) lifecycleScope.launch { ProgressWriter.flush(); NovelRepository.schedule(this@NativeTextReaderActivity) }; super.onStop() }
+    override fun onStart() { super.onStart()
+        val filter = android.content.IntentFilter(android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(noisy, filter, RECEIVER_NOT_EXPORTED)
+        else { @Suppress("DEPRECATION") registerReceiver(noisy, filter) }
+         chapter?.let { prefetchFollowing(publication, it.ref.ordinal) } }
+    override fun onStop() { unregisterReceiver(noisy); prefetch?.cancel(); stopAloud(); view?.pause(); if (publication != null) lifecycleScope.launch { ProgressWriter.flush(); NovelRepository.schedule(this@NativeTextReaderActivity) }; super.onStop() }
     override fun onDestroy() { view?.dispose(); view = null; aloud?.close(); super.onDestroy() }
 }

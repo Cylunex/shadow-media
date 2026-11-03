@@ -58,4 +58,12 @@ class NovelReadingTest {
         native.put("chapter_id", "c1").put("version_id", "v2")
         assertFalse(map.locator(map.position(locator)!!)!!.has("native_text"))
     }
+    @Test fun webTextAnchorRestoresAnAndroidCharacterPosition() {
+        val position = JSONObject().put("version_id", "v1").put("chapter_id", "c1").put("ratio", .2)
+            .put("anchor", JSONObject().put("text_v1", JSONObject().put("text_hash", "b".repeat(64)).put("offset", 57)))
+        val restored = mapping().locator(position)!!
+        assertEquals(57, restored.getJSONObject("native_text").getInt("offset"))
+        assertEquals(57, mapping().position(restored)!!.getJSONObject("anchor").getJSONObject("text_v1").getInt("offset"))
+    }
+
 }

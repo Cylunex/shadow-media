@@ -238,7 +238,10 @@ class NativeTextGestureTest {
             event(view, MotionEvent.ACTION_DOWN, 216f, line.baseline - 4, next, 0)
             shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(700))
             event(view, MotionEvent.ACTION_UP, 216f, line.baseline - 4, next, 750)
-            assertEquals(1, excerpts)
+            assertEquals(0, excerpts)
+            assertTrue(view.selectedText.isNotBlank())
+            assertTrue(view.clearSelection())
+            assertEquals("", view.selectedText)
         } finally { view.dispose() }
     }
 }

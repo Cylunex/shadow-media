@@ -33,6 +33,12 @@ class NovelPublicationMap(val json: JSONObject) {
         if (!fragment.isNullOrBlank() && fragment.length <= 2048 && remoteLocator.getJSONObject("locations").optJSONArray("fragments") == null)
             remoteLocator.getJSONObject("locations").put("fragments", org.json.JSONArray().put(fragment))
         var anchor = JSONObject().put("media_locator", remoteLocator)
+        remoteLocator.optJSONObject("native_text")?.takeIf {
+            it.optInt("schema") == 1 && it.optString("chapter_id") == chapter.getString("id") &&
+                it.optString("version_id") == versionId && it.optString("text_hash").matches(Regex("[a-f0-9]{64}")) && it.optInt("offset", -1) >= 0
+        }?.let {
+            anchor.put("text_v1", JSONObject().put("text_hash", it.optString("text_hash")).put("offset", it.optInt("offset", -1)))
+        }
         if (anchor.toString().toByteArray(Charsets.UTF_8).size > 8192) anchor = JSONObject().put("media_locator", JSONObject()
             .put("href", chapter.getString("href")).put("type", "application/xhtml+xml")
             .put("locations", JSONObject().put("progression", ratio)))
@@ -56,6 +62,12 @@ class NovelPublicationMap(val json: JSONObject) {
                     it.optInt("offset", -1) >= 0
             }?.let { result.put("native_text", JSONObject(it.toString())) }
             prior.optJSONObject("locations")?.optJSONArray("fragments")?.let { result.getJSONObject("locations").put("fragments", it) }
+        }
+        position.optJSONObject("anchor")?.optJSONObject("text_v1")?.takeIf {
+            it.optString("text_hash").matches(Regex("[a-f0-9]{64}")) && it.optInt("offset", -1) >= 0
+        }?.let { anchor ->
+            result.put("native_text", JSONObject().put("schema", 1).put("chapter_id", chapter.getString("id"))
+                .put("version_id", versionId).put("text_hash", anchor.getString("text_hash")).put("offset", anchor.getInt("offset")))
         }
         return result
     }

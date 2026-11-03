@@ -21,6 +21,18 @@ import java.util.zip.ZipOutputStream
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class NativeSearchCacheTest {
+    @Test fun searchBeforeCurrentPositionHidesLaterSentencesAndSortsNearestFirst() = runBlocking {
+        val entries = (0..2).map { ordinal ->
+            NativeSearchEntry("asset", NativeChapterRef("c$ordinal", "章$ordinal", ordinal, "c$ordinal.xhtml")) {
+                NativeTextChapter(NativeChapterRef("c$ordinal", "章$ordinal", ordinal, "c$ordinal.xhtml"),
+                    "星光一。星光二。", "v", 3)
+            }
+        }
+        val result = searchNativeText(entries, "星光", before = 1 to 4).last()
+        assertEquals(listOf("章1", "章0", "章0"), result.hits.map { it.title })
+        assertEquals(4, JSONObject(result.hits[1].locator).getJSONObject("native_text").getInt("offset"))
+        assertEquals(0, JSONObject(result.hits[2].locator).getJSONObject("native_text").getInt("offset"))
+    }
     @Test fun overlappingWindowsAreSearchedOnceInChapterOrderWithWorkVersionAndAccountIsolation() = runBlocking {
         val context = RuntimeEnvironment.getApplication()
         val library = LibraryRepository(context)

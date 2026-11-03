@@ -39,6 +39,8 @@ internal fun ColumnScope.ReaderPreferencesPanel(value: ReaderSettings, update: (
         }
     }
     Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(scrolls[tab]), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (tab == 0 && !nativeText) ReaderSwitch("使用原书排版", value.publisherStyles) { update(value.copy(publisherStyles = it)) }
+        if (tab == 3) ReaderSwitch("左手点击翻页（中央仍打开菜单）", value.leftHanded) { update(value.copy(leftHanded = it)) }
         when (tab) {
             0 -> {
                 ReaderTypographyPreview(value)

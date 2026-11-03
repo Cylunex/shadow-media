@@ -34,6 +34,97 @@ internal class NativeTextView(context: Context) : View(context) {
     var onSettings: (ReaderSettings) -> Unit = {}
     var onExcerpt: (String, Int) -> Unit = { _, _ -> }
     var onBrightnessPreview: (Float?) -> Unit = {}
+    internal val selectedText get() = document?.chapter?.text?.let { if (selectionStart >= 0) it.substring(selectionStart, selectionEnd) else "" }.orEmpty()
+    private var selectionStart = -1
+    private var selectionEnd = -1
+    private var selectionMode: android.view.ActionMode? = null
+    private var movingStart = false
+    private var movingSelection = false
+    private var selectionEdge = 0
+    private val advanceSelection = object : Runnable {
+        override fun run() {
+            val doc = document ?: return
+            val target = pageIndex + selectionEdge
+            if (!movingSelection || selectionEdge == 0 || target !in doc.pages.indices) return
+            pageIndex = target
+            val point = if (selectionEdge > 0) doc.pages[target].end else doc.pages[target].start
+            if (movingStart) selectionStart = point.coerceAtMost(selectionEnd - 1) else selectionEnd = point.coerceAtLeast(selectionStart + 1)
+            invalidate()
+            postDelayed(this, 500)
+        }
+    }
+    fun clearSelection(): Boolean {
+        if (selectionStart < 0) return false
+        selectionMode?.finish()
+        selectionStart = -1; selectionEnd = -1; movingSelection = false
+        removeCallbacks(advanceSelection); invalidate()
+        return true
+    }
+    private fun offsetAtTouch(x: Float, y: Float): Int? {
+        val doc = document ?: return null
+        val index = if (settings.pageMode == ReaderPageMode.SCROLL) (pageIndex + ((y + scrollOffset - doc.topInset) / scrollStride).toInt()).coerceIn(doc.pages.indices) else pageIndex
+        val localY = y + (if (settings.pageMode == ReaderPageMode.SCROLL) scrollOffset - (index - pageIndex) * scrollStride else 0f)
+        val line = doc.pages[index].lines.minByOrNull { abs(it.baseline - localY) } ?: return null
+        var offset = line.start
+        for ((i, glyph) in line.glyphs.withIndex()) {
+            val nextX = line.glyphs.getOrNull(i + 1)?.x ?: (glyph.x + 24 * resources.displayMetrics.scaledDensity)
+            if (x - doc.margin < (glyph.x + nextX) / 2) return safeTextOffset(doc.chapter.text, offset)
+            offset += glyph.text.length
+        }
+        return safeTextOffset(doc.chapter.text, line.end)
+    }
+    private fun startSelectionMenu() {
+        selectionMode?.finish()
+        selectionMode = startActionMode(object : android.view.ActionMode.Callback {
+            override fun onCreateActionMode(mode: android.view.ActionMode, menu: android.view.Menu): Boolean {
+                menu.add(0, 1, 0, "复制")
+                menu.add(0, 2, 1, "摘录")
+                return true
+            }
+            override fun onPrepareActionMode(mode: android.view.ActionMode, menu: android.view.Menu) = false
+            override fun onActionItemClicked(mode: android.view.ActionMode, item: android.view.MenuItem): Boolean {
+                val text = document?.chapter?.text ?: return false
+                val selected = text.substring(selectionStart, selectionEnd)
+                if (item.itemId == 1) {
+                    (context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                        .setPrimaryClip(android.content.ClipData.newPlainText("正文", selected))
+                    showNotice("已复制")
+                } else onExcerpt(selected, selectionStart)
+                mode.finish()
+                return true
+            }
+            override fun onDestroyActionMode(mode: android.view.ActionMode) {
+                selectionMode = null; selectionStart = -1; selectionEnd = -1
+                movingSelection = false; removeCallbacks(advanceSelection); invalidate()
+            }
+        }, android.view.ActionMode.TYPE_FLOATING)
+    }
+    private fun drawSelection(canvas: Canvas) {
+        val doc = document ?: return
+        if (selectionStart < 0) return
+        feedbackPaint.color = settings.paper.foreground
+        val radius = 7 * resources.displayMetrics.density
+        for (index in (pageIndex - 1)..(pageIndex + 1)) {
+            if (index !in doc.pages.indices || settings.pageMode != ReaderPageMode.SCROLL && index != pageIndex) continue
+            val shift = if (settings.pageMode == ReaderPageMode.SCROLL) (index - pageIndex) * scrollStride - scrollOffset else 0f
+            for (line in doc.pages[index].lines) {
+                var offset = line.start
+                for ((i, glyph) in line.glyphs.withIndex()) {
+                    val end = offset + glyph.text.length
+                    val x = doc.margin + glyph.x
+                    val right = doc.margin + (line.glyphs.getOrNull(i + 1)?.x ?: (glyph.x + 22 * resources.displayMetrics.scaledDensity))
+                    if (end > selectionStart && offset < selectionEnd) {
+                        feedbackPaint.alpha = 45
+                        canvas.drawRect(x, line.baseline + shift - 22 * resources.displayMetrics.scaledDensity, right, line.baseline + shift + 4, feedbackPaint)
+                    }
+                    feedbackPaint.alpha = 255
+                    if (offset == selectionStart) canvas.drawCircle(x, line.baseline + shift + radius, radius, feedbackPaint)
+                    if (end == selectionEnd) canvas.drawCircle(right, line.baseline + shift + radius, radius, feedbackPaint)
+                    offset = end
+                }
+            }
+        }
+    }
     private var touchActive = false
     private var gestureCancelled = false
     private var boundaryPending = false
@@ -87,6 +178,7 @@ internal class NativeTextView(context: Context) : View(context) {
     private var multiTouch = false
     private var longPress = false
     private var systemEdge = false
+    private var stoppedInertia = false
     private var velocity: VelocityTracker? = null
     private var brightnessDrag = false
     private var gestureBrightness = .5f
@@ -102,8 +194,8 @@ internal class NativeTextView(context: Context) : View(context) {
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent) = true
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            if (!touchActive || !gesturesEnabled || systemEdge || multiTouch || longPress || scaling || dragging || brightnessDrag) return true
-            val direction = readerTap(e.x / width.coerceAtLeast(1), settings.tapToTurn, settings.pageMode == ReaderPageMode.SCROLL, false)
+            if (!touchActive || stoppedInertia || !gesturesEnabled || systemEdge || multiTouch || longPress || scaling || dragging || brightnessDrag) return true
+            val direction = readerTap(if (settings.leftHanded) 1f - e.x / width.coerceAtLeast(1) else e.x / width.coerceAtLeast(1), settings.tapToTurn, settings.pageMode == ReaderPageMode.SCROLL, false)
             if (direction == 0) onMenu() else turn(direction)
             return true
         }
@@ -118,9 +210,16 @@ internal class NativeTextView(context: Context) : View(context) {
             val line = doc.pages[index].lines.minByOrNull { abs(it.baseline - localY) } ?: return
             if (settings.haptics) performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
             val text = doc.chapter.text
-            val start = text.lastIndexOf('\n', (line.start - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
-            val end = text.indexOf('\n', line.end).let { if (it < 0) text.length else it }
-            onExcerpt(text.substring(start, end).trim(), line.start)
+            val hit = offsetAtTouch(e.x, e.y) ?: return
+            var start = hit
+            var end = hit
+            while (start > 0 && text[start - 1] !in "。！？\n.!?") start--
+            while (end < text.length && text[end] !in "。！？\n.!?") end++
+            if (end < text.length) end++
+            selectionStart = safeTextOffset(text, start)
+            selectionEnd = safeTextOffset(text, end)
+            startSelectionMenu()
+            invalidate()
         }
         override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
             if (!touchActive || overScroll != 0f || settings.pageMode != ReaderPageMode.SCROLL || systemEdge || multiTouch || longPress || scaling || brightnessDrag) return false
@@ -132,6 +231,7 @@ internal class NativeTextView(context: Context) : View(context) {
     init { isFocusable = true; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES }
 
     fun show(chapter: NativeTextChapter, title: String, offset: Int, value: ReaderSettings) {
+        clearSelection()
         cancelTurn(); boundaryPending = false
         this.chapter = chapter; bookTitle = title; readingOffset = safeTextOffset(chapter.text, offset)
         settings = value
@@ -306,12 +406,34 @@ internal class NativeTextView(context: Context) : View(context) {
                 }
             }
         } else canvas.drawBitmap(current, edgeDragX, 0f, null)
+        drawSelection(canvas)
         drawNotice(canvas)
     }
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!isEnabled || !gesturesEnabled || document == null || layoutJob?.isActive == true || boundaryPending) return true
+        if (selectionStart >= 0) {
+            val hit = offsetAtTouch(event.x, event.y) ?: selectionStart
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    movingStart = abs(hit - selectionStart) < abs(hit - selectionEnd)
+                    movingSelection = true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (movingStart) selectionStart = hit.coerceAtMost(selectionEnd - 1) else selectionEnd = hit.coerceAtLeast(selectionStart + 1)
+                    selectionEdge = when { event.y < height * .1f -> -1; event.y > height * .9f -> 1; else -> 0 }
+                    removeCallbacks(advanceSelection)
+                    if (selectionEdge != 0) postDelayed(advanceSelection, 500)
+                    invalidate()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    movingSelection = false; removeCallbacks(advanceSelection)
+                }
+            }
+            return true
+        }
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             if (animation != null) { touchActive = false; return true }
+            stoppedInertia = !scroller.isFinished
             stopMotion(); touchActive = true; gestureCancelled = false
             downX = event.x; downY = event.y; lastY = event.y
             dragging = false; scaling = false; brightnessDrag = false; multiTouch = false; longPress = false
@@ -384,7 +506,7 @@ internal class NativeTextView(context: Context) : View(context) {
                 velocity?.recycle(); velocity = null; touchActive = false
                 performClick()
             }
-            MotionEvent.ACTION_CANCEL -> { pause(); rebound() }
+            MotionEvent.ACTION_CANCEL -> { onBrightnessPreview(null); pause(); rebound() }
         }
         return true
     }
@@ -434,5 +556,5 @@ internal class NativeTextView(context: Context) : View(context) {
         AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> { turn(-1); true }
         else -> super.performAccessibilityAction(action, args)
     }
-    fun dispose() { removeCallbacks(clearNotice); cancelTurn(); velocity?.recycle(); velocity = null; scope.cancel(); clearBitmaps(); layouts.evictAll(); document = null }
+    fun dispose() { clearSelection(); removeCallbacks(clearNotice); cancelTurn(); velocity?.recycle(); velocity = null; scope.cancel(); clearBitmaps(); layouts.evictAll(); document = null }
 }

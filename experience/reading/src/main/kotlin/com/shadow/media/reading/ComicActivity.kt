@@ -60,11 +60,12 @@ class ComicActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         library = LibraryRepository(this)
-        mode = savedInstanceState?.getString("mode") ?: getPreferences(MODE_PRIVATE).getString("mode", "LTR") ?: "LTR"
+        mode = savedInstanceState?.getString("mode") ?: "LTR"
         lifecycleScope.launch {
             try {
                 val item = requireNotNull(intent.getStringExtra("assetId")?.let { library.dao.asset(it) }) { "文件已移除" }
                 if (mode == "REFLOW" && (item.format != "pdf" || android.os.Build.VERSION.SDK_INT < 35)) mode = "LTR"
+                if (savedInstanceState == null) mode = getPreferences(MODE_PRIVATE).getString("mode:" + item.id, "LTR") ?: "LTR"
                 val source = LibraryComicSource(item, library)
                 val manifest = withContext(Dispatchers.IO) { source.pages() }
                 require(manifest.isNotEmpty()) { "未找到可显示的页面" }
@@ -100,14 +101,16 @@ class ComicActivity : ComponentActivity() {
             val scope = rememberCoroutineScope()
             var settings by remember { mutableStateOf(false) }
             var marksVisible by remember { mutableStateOf(false) }
+            fun spreadFor(page: Int) = if (mode == "双页") (page + 1) / 2 else page
+            fun firstInSpread(spread: Int) = if (mode == "双页") (spread * 2 - 1).coerceAtLeast(0) else spread
             val perSpread = if (mode == "双页") 2 else 1
-            val pager = rememberPagerState(initialPage = initialPage / perSpread) { ((pages.size + perSpread - 1) / perSpread).coerceAtLeast(1) }
+            val pager = rememberPagerState(initialPage = spreadFor(initialPage)) { (if (mode == "双页") 1 + pages.size / 2 else pages.size).coerceAtLeast(1) }
             LaunchedEffect(pager, pages, perSpread) {
                 if (pages.isEmpty()) return@LaunchedEffect
-                pager.scrollToPage((currentPage / perSpread).coerceAtMost(pager.pageCount - 1))
+                pager.scrollToPage(spreadFor(currentPage).coerceAtMost(pager.pageCount - 1))
                 snapshotFlow { pager.settledPage }.distinctUntilChanged().collect { page ->
-                    val index = page * perSpread
-                    if (currentPage / perSpread != page) { currentPage = index; currentOffset = 0f; reflowBlock = 0; reflowReachedEnd = false; save() }
+                    val index = firstInSpread(page)
+                    if (spreadFor(currentPage) != page) { currentPage = index; currentOffset = 0f; reflowBlock = 0; reflowReachedEnd = false; save() }
                 }
             }
             LaunchedEffect(currentPage, perSpread, mode, pages) {
@@ -126,7 +129,7 @@ class ComicActivity : ComponentActivity() {
                 IconButton(onClick = { settings = true }) { Icon(Icons.Rounded.Tune, "阅读方向与模式") }
             }) }, bottomBar = {
                 Column(Modifier.navigationBarsPadding().padding(horizontal = 20.dp)) {
-                    if (pages.isNotEmpty()) Slider(value = currentPage.toFloat(), onValueChange = { scope.launch { pager.scrollToPage(it.toInt() / perSpread) } }, valueRange = 0f..(pages.size - 1).coerceAtLeast(1).toFloat())
+                    if (pages.isNotEmpty()) Slider(value = currentPage.toFloat(), onValueChange = { scope.launch { pager.scrollToPage(spreadFor(it.toInt())) } }, valueRange = 0f..(pages.size - 1).coerceAtLeast(1).toFloat())
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("${if (pages.isEmpty()) 0 else currentPage + 1} / ${pages.size}")
                         TextButton(onClick = { scope.launch { asset?.let { library.bookmark(it.id, JSONObject().put("pageIndex", currentPage).put("offset", currentOffset).put("reflowBlock", reflowBlock).toString(), "第 ${currentPage + 1} 页") } } }) { Text("添加书签") }
@@ -139,8 +142,8 @@ class ComicActivity : ComponentActivity() {
                     else HorizontalPager(pager, reverseLayout = mode == "RTL", beyondViewportPageCount = 0, modifier = Modifier.fillMaxSize()) { spread ->
                         Row(Modifier.fillMaxSize()) {
                             repeat(perSpread) { offset ->
-                                val index = spread * perSpread + offset
-                                if (index in pages.indices) {
+                                val index = firstInSpread(spread) + offset
+                                if ((spread != 0 || perSpread == 1 || offset == 0) && index in pages.indices) {
                                     if (mode == "REFLOW") ReflowPage(index, Modifier.weight(1f).fillMaxHeight())
                                     else PageImage(index, Modifier.weight(1f).fillMaxHeight())
                                 }
@@ -151,7 +154,7 @@ class ComicActivity : ComponentActivity() {
             }
             if (settings) AlertDialog(onDismissRequest = { settings = false }, title = { Text("阅读模式") }, text = {
                 Column { listOf("LTR" to "从左向右", "RTL" to "从右向左", "长图" to "长图 · 宽度适配，可上下拖动", "双页" to "双页对开").forEach { (key, label) ->
-                    TextButton(onClick = { initialPage = currentPage; initialOffset = currentOffset; mode = key; getPreferences(MODE_PRIVATE).edit().putString("mode", key).apply(); settings = false }) { Text(label) }
+                    TextButton(onClick = { initialPage = currentPage; initialOffset = currentOffset; mode = key; getPreferences(MODE_PRIVATE).edit().putString("mode:" + asset?.id, key).apply(); settings = false }) { Text(label) }
                 }
                 if (asset?.format == "pdf" && android.os.Build.VERSION.SDK_INT >= 35) TextButton(onClick = { mode = "REFLOW"; settings = false }) { Text("文字重排（实验）") }
                 }
@@ -169,7 +172,7 @@ class ComicActivity : ComponentActivity() {
                                     initialPage = target; initialOffset = (value?.optDouble("offset", 0.0)?.toFloat() ?: 0f).coerceIn(0f, 1f)
                                     reflowBlock = value?.optInt("reflowBlock", 0)?.coerceAtLeast(0) ?: 0
                                     currentPage = target; currentOffset = initialOffset; restoreEpoch++
-                                    pager.scrollToPage(target / perSpread); save(force = true); marksVisible = false
+                                    pager.scrollToPage(spreadFor(target)); save(force = true); marksVisible = false
                                 } }, Modifier.weight(1f)) { Text(mark.note) }
                                 IconButton(onClick = { scope.launch { library.dao.removeAnnotation(mark.id) } }) { Icon(Icons.Rounded.DeleteOutline, "删除书签") }
                             }
@@ -221,7 +224,9 @@ class ComicActivity : ComponentActivity() {
     @Composable private fun PageImage(index: Int, modifier: Modifier) {
         var local by remember(index, asset?.revision) { mutableStateOf<File?>(null) }
         var failure by remember(index) { mutableStateOf<String?>(null) }
-        LaunchedEffect(index, asset?.revision) {
+        var retry by remember(index) { mutableIntStateOf(0) }
+        LaunchedEffect(index, asset?.revision, retry) {
+            failure = null
             var prepared: File? = null
             try { withContext(Dispatchers.IO) { prepared = adjacentCache.take(index) }; local = prepared; prepared = null }
             catch (e: CancellationException) { throw e }
@@ -258,7 +263,10 @@ class ComicActivity : ComponentActivity() {
                     setImage(ImageSource.uri(Uri.fromFile(image)))
                 } }, modifier = Modifier.fillMaxSize(), onRelease = { it.recycle() })
             }
-            if (failure != null) Text(failure!!, Modifier.padding(16.dp))
+            if (failure != null) Column(Modifier.padding(16.dp)) {
+                Text(failure!!)
+                TextButton(onClick = { local = null; retry++ }) { Text("重试本页") }
+            }
             else if (image == null) CircularProgressIndicator(Modifier.padding(16.dp))
         }
         DisposableEffect(local) { val ownedFile = local; onDispose { ownedFile?.delete() } }

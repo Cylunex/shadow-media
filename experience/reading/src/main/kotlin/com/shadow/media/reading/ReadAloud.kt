@@ -26,6 +26,12 @@ internal class ReadAloud(private val context: Context) : AutoCloseable {
     }
     private val audio = context.getSystemService(AudioManager::class.java)
     private var speaking: Job? = null
+    var speed: Float = 1f
+        set(value) { field = value.coerceIn(.5f, 3f) }
+    var stopAt: Long? = null
+    var voiceName: String? = null
+    val availableVoices get() = engine.voices.orEmpty().filter { !it.isNetworkConnectionRequired }.sortedBy { it.name }
+
     private val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
         .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
         .setOnAudioFocusChangeListener { if (it < 0) stop() }.build()
@@ -46,6 +52,8 @@ internal class ReadAloud(private val context: Context) : AutoCloseable {
         var start = safeTextOffset(text, offset)
         while (start < text.length) {
             currentCoroutineContext().ensureActive()
+            if (stopAt?.let { android.os.SystemClock.elapsedRealtime() >= it } == true) throw CancellationException("定时停止")
+            engine.setSpeechRate(speed)
             val maximum = (start + 1000).coerceAtMost(text.length)
             val sentence = text.indexOfAny(charArrayOf('。', '！', '？', '\n', '.', '!', '?'), start)
             val end = safeTextOffset(text, if (sentence in start until maximum) sentence + 1 else maximum)
@@ -60,7 +68,8 @@ internal class ReadAloud(private val context: Context) : AutoCloseable {
         try {
             initialized.await()
             currentCoroutineContext().ensureActive()
-            val voice = engine.voices.orEmpty().firstOrNull { !it.isNetworkConnectionRequired && it.locale.language == language }
+            val voice = engine.voices.orEmpty().firstOrNull { it.name == voiceName && !it.isNetworkConnectionRequired && it.locale.language == language }
+                ?: engine.voices.orEmpty().firstOrNull { !it.isNetworkConnectionRequired && it.locale.language == language }
                 ?: throw IllegalStateException("请先在系统文字转语音设置中安装当前语言的离线语音")
             engine.voice = voice
             check(audio.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) { "其他应用正在占用音频" }

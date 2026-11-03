@@ -54,6 +54,8 @@ internal data class ReaderSettings(
     val customFontId: String = "",
     val customFontName: String = "",
     val haptics: Boolean = true,
+    val leftHanded: Boolean = false,
+    val publisherStyles: Boolean = false,
 ) {
     fun normalized() = copy(
         fontSize = fontSize.bounded(80f, 220f, 115f),
