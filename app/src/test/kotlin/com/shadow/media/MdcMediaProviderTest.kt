@@ -52,6 +52,14 @@ class MdcMediaProviderTest {
             assertEquals(0, other.requestCount)
         } }
     }
+    @Test fun `online resume uses the key already saved for this connection and version`() {
+        val key = externalHistoryKey("mdc:library-a", "work-a:version:disc-one")
+        assertEquals("external:mdc:library-a:work-a:version:disc-one", key.stableId)
+        assertNotEquals(key, externalHistoryKey("mdc:library-a", "work-a:version:disc-two"))
+        assertNotEquals(key, externalHistoryKey("mdc:library-b", key.itemId))
+        assertEquals("emby:owner:film", externalHistoryKey("emby:owner", "film").stableId)
+    }
+
     @Test fun `recovery refreshes only the same confirmed version`() {
         val plan = org.json.JSONObject("""{"sources":[
             {"version_id":"cd2","source_id":"other","url":"https://example.com/two.m3u8","playable_in_app":true},

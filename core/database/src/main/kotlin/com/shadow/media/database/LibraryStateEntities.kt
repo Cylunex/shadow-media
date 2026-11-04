@@ -22,6 +22,26 @@ data class RemoteUserStateEntity(val providerId: String, val itemId: String, val
 data class ContinueRow(val rowId: String, val assetId: String?, val providerId: String, val itemId: String, val title: String,
     val kind: String, val positionMs: Long?, val durationMs: Long?, val progression: Double?, val updatedAt: Long)
 
+private const val CONTINUE_ROWS = LOGICAL_LIBRARY_PROGRESS + """
+, continue_rows AS (
+ SELECT 'library:' || a.id AS rowId, a.id AS assetId, a.providerId, a.itemId, a.title, a.kind,
+        NULL AS positionMs, NULL AS durationMs, a.progression, a.updatedAt
+ FROM shelf_rows a WHERE a.completed = 0 AND a.kind != 'MUSIC'
+ UNION ALL
+ SELECT 'history:' || h.stableKey, NULL, h.providerId, h.itemId, h.title, 'MOVIE', h.positionMs, h.durationMs,
+        CASE WHEN h.durationMs > 0 THEN 1.0 * h.positionMs / h.durationMs ELSE NULL END, h.lastPlayedAtEpochMs
+ FROM media_history h WHERE h.completed = 0 AND h.positionMs > 0
+   AND h.providerId NOT LIKE 'external:mdc:%' AND h.providerId NOT LIKE 'mdc:%'
+   AND NOT EXISTS (
+   SELECT 1 FROM library_assets a JOIN progress_records p ON p.assetId = a.id
+   WHERE a.providerId = h.providerId AND a.itemId = h.itemId)
+ UNION ALL
+ SELECT 'music:' || a.id, a.id, a.providerId, a.itemId, a.title, a.kind, NULL, t.durationMs, NULL, s.lastPlayedAt
+ FROM music_listening s JOIN library_assets a ON a.id = s.assetId JOIN music_tracks t ON t.assetId = a.id
+ WHERE a.kind = 'MUSIC' AND s.lastPlayedAt > 0
+)
+"""
+
 @Dao interface LibraryStateDao {
     @Query("SELECT a.* FROM library_assets a JOIN remote_user_states s ON s.providerId = a.providerId AND s.itemId = a.itemId WHERE a.providerId = :provider AND s.favorite = 1 ORDER BY s.updatedAt DESC LIMIT 200") suspend fun favoriteAssets(provider: String): List<LibraryAssetEntity>
     @Query("SELECT * FROM remote_user_states WHERE providerId = :provider") fun userStates(provider: String): Flow<List<RemoteUserStateEntity>>
@@ -49,8 +69,11 @@ data class ContinueRow(val rowId: String, val assetId: String?, val providerId: 
         val workId = rendition(target)?.workId ?: java.util.UUID.randomUUID().toString().also { putWork(WorkEntity(it, title)) }
         putRendition(RenditionEntity(target, workId)); putRendition(RenditionEntity(source, workId)); cleanEmptyWorks()
     }
-    @Query(LOGICAL_LIBRARY_PROGRESS + "SELECT 'library:' || a.id AS rowId, a.id AS assetId, a.providerId, a.itemId, a.title, a.kind, NULL AS positionMs, NULL AS durationMs, a.progression, a.updatedAt FROM shelf_rows a WHERE a.completed = 0 AND a.kind != 'MUSIC' UNION ALL SELECT 'history:' || h.stableKey AS rowId, NULL AS assetId, h.providerId, h.itemId, h.title, 'MOVIE' AS kind, h.positionMs, h.durationMs, CASE WHEN h.durationMs > 0 THEN 1.0 * h.positionMs / h.durationMs ELSE NULL END AS progression, h.lastPlayedAtEpochMs AS updatedAt FROM media_history h WHERE h.completed = 0 AND h.positionMs > 0 AND NOT EXISTS(SELECT 1 FROM library_assets a JOIN progress_records p ON p.assetId = a.id WHERE a.providerId = h.providerId AND a.itemId = h.itemId) UNION ALL SELECT 'music:' || a.id AS rowId, a.id AS assetId, a.providerId, a.itemId, a.title, a.kind, NULL AS positionMs, t.durationMs, NULL AS progression, s.lastPlayedAt AS updatedAt FROM music_listening s JOIN library_assets a ON a.id = s.assetId JOIN music_tracks t ON t.assetId = a.id WHERE a.kind = 'MUSIC' AND s.lastPlayedAt > 0 ORDER BY updatedAt DESC")
+    @Query(CONTINUE_ROWS + "SELECT * FROM continue_rows ORDER BY updatedAt DESC, rowId")
     fun continuing(): PagingSource<Int, ContinueRow>
+
+    @Query(CONTINUE_ROWS + "SELECT * FROM continue_rows WHERE providerId IN (:providers) ORDER BY updatedAt DESC, rowId LIMIT 1")
+    fun latestContinuing(providers: List<String>): Flow<ContinueRow?>
     @Query("SELECT * FROM playlist_exports WHERE providerId = :provider AND playlistId = :playlist") suspend fun export(provider: String, playlist: String): PlaylistExportEntity?
     @Query("SELECT * FROM playlist_exports WHERE playlistId = :playlist ORDER BY updatedAt DESC") fun exports(playlist: String): Flow<List<PlaylistExportEntity>>
     @Upsert suspend fun putExport(value: PlaylistExportEntity)

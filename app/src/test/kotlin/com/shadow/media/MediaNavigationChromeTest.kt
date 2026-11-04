@@ -12,6 +12,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import com.shadow.media.database.ContinueRow
 import com.shadow.media.library.NovelQuery
 import com.shadow.media.ui.theme.ShadowMediaTheme
 import org.json.JSONArray
@@ -57,6 +58,18 @@ class MediaNavigationChromeTest {
                 }
             }
         } }
+    }
+    @Test fun homeContinuationOpensTheShownRowAndAllUsesItsOwnAction() {
+        var resumed: ContinueRow? = null
+        var openedAll = false
+        val row = ContinueRow("library:book", "book", "local", "edition", "春日手记", "BOOK", null, null, .3, 10)
+        compose.setContent { ShadowMediaTheme { HomeContinueRow(row, { resumed = it }, { openedAll = true }) } }
+        compose.onNodeWithText("继续上次 · 阅读").assertIsDisplayed()
+        compose.onNodeWithText("春日手记").performClick()
+        assertEquals(row, resumed)
+        assertFalse(openedAll)
+        compose.onNodeWithText("查看全部").performClick()
+        assertTrue(openedAll)
     }
     @Test fun darkShelfUsesNativeContentInsideModuleChrome() {
         showShelf("深色")

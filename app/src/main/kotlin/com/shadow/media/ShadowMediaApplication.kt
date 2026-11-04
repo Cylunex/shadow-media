@@ -1,6 +1,7 @@
 package com.shadow.media
 import com.shadow.media.network.ResourceScheduler
 import com.shadow.media.network.ResourcePriority
+import com.shadow.media.model.MediaKey
 
 import android.app.Application
 import android.content.Context
@@ -208,13 +209,12 @@ class AppContainer(private val application: Application) {
 
     fun recordExternalHistory(entry: ExternalMediaEntry, positionMs: Long, durationMs: Long?, fromCast: Boolean = false) {
         applicationScope.launch {
-            val providerId = entry.sourceId.takeIf { entry.url.startsWith("shadow-cached:") || it == "local-video" || it.startsWith("catalog:") || it.startsWith("emby:") || it.startsWith("storage:") || it.startsWith("live:") }
-                ?: "external:${entry.sourceId}"
-            val effectivePosition = (if (fromCast) null else castPlayback.returnedPosition(providerId, entry.id)) ?: positionMs
+            val key = externalHistoryKey(entry.sourceId, entry.id, cached = entry.url.startsWith("shadow-cached:"))
+            val effectivePosition = (if (fromCast) null else castPlayback.returnedPosition(key.providerId, key.itemId)) ?: positionMs
             localMediaState.recordHistory(
                 MediaHistoryEntity(
-                    stableKey = "$providerId:${entry.id}",
-                    providerId = providerId,
+                    stableKey = key.stableId,
+                    providerId = key.providerId,
                     itemId = entry.id,
                     title = entry.title,
                     subtitle = entry.group,
@@ -234,4 +234,11 @@ class AppContainer(private val application: Application) {
             preferences.edit { putString("device_id", it) }
         }
     }
+}
+
+/** Shared with resume so historical external-provider keys remain usable after an update. */
+internal fun externalHistoryKey(sourceId: String, itemId: String, cached: Boolean = false): MediaKey {
+    val nativeScope = cached || sourceId == "local-video" || sourceId.startsWith("catalog:") ||
+        sourceId.startsWith("emby:") || sourceId.startsWith("storage:") || sourceId.startsWith("live:")
+    return MediaKey(if (nativeScope) sourceId else "external:$sourceId", itemId)
 }

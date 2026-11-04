@@ -2,6 +2,8 @@ package com.shadow.media.library
 
 import android.content.Context
 import javax.crypto.KeyGenerator
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -36,6 +38,15 @@ class NovelSessionStoreTest {
         assertFalse(store.updateAuthState("account", "private-refresh-token", "late-refresh"))
         try { store.finishLogin("login", account()); fail("late callback cannot restore login") } catch (_: IllegalStateException) {}
         assertEquals("account", store.load().single().id); assertEquals("", store.load().single().oidcAuthState)
+    }
+    @Test fun `home only offers currently connected scopes`() = runBlocking {
+        val store = store()
+        store.save(account())
+        assertEquals(listOf("novel:account"), store.connectedProviderIds(::novelScope).first())
+        store.signOut("account")
+        assertTrue(store.connectedProviderIds(::novelScope).first().isEmpty())
+        store.remove("account")
+        assertTrue(store.connectedProviderIds(::novelScope).first().isEmpty())
     }
     @Test fun `pending callbacks are one-time time-bounded and generation-bound`() {
         val store = store(); store.save(account()); store.beginLogin(attempt("one"))

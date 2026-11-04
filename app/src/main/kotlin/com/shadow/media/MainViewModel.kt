@@ -432,7 +432,7 @@ class MainViewModel(
                 ?: error("播放线路缺少稳定版本身份")
             val item = provider.detail(key).item
             val playbackId = key.itemId + ":version:" + sourceId
-            val history = localMediaState.history(key.providerId + ":" + playbackId)
+            val history = localMediaState.history(externalHistoryKey(key.providerId, playbackId).stableId)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             mdcPlayback = MdcPlaybackContext(provider, key, playbackId, sourceId,
                 source.optString("source_id"))

@@ -45,7 +45,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
 @Composable internal fun NovelScreen(repository: NovelRepository, onBack: () -> Unit,
     rootSection: MediaDestination? = null, onLocalShelf: (() -> Unit)? = null,
     onModule: ((MediaModule) -> Unit)? = null, onModuleTools: (() -> Unit)? = null,
-    onGeneralSettings: (() -> Unit)? = null) {
+    onGeneralSettings: (() -> Unit)? = null, homeContinue: @Composable () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var connections by remember { mutableStateOf<List<CatalogConnection>>(emptyList()) }
@@ -291,6 +291,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
                 }
             }
         })
+        if (rootSection != null && stack.isEmpty() && route == novelRootRoute(rootSection)) homeContinue()
         Box(Modifier.fillMaxWidth().height(2.dp)) {
             if (busy || refreshing) LinearProgressIndicator(Modifier.fillMaxSize())
         }

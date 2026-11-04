@@ -38,6 +38,9 @@ class NovelShelfIdentityTest {
         assertEquals(1, db.libraryDao().searchCount("BOOK", "%"))
         assertEquals(listOf("first"), db.libraryDao().searchPage("BOOK", "%", 0, 20).map { it.id })
         assertEquals(1, rows(db.libraryStateDao().continuing()).size)
+        val latest = db.libraryStateDao().latestContinuing(listOf("novel:account")).first()!!
+        assertEquals("first", latest.assetId)
+        assertEquals(20L, latest.updatedAt)
         assertEquals(20L, db.libraryDao().continuing(listOf("BOOK")).first()!!.updatedAt)
         assertEquals(3, db.novelDao().publications("novel:account").size)
         assertEquals("current", db.libraryDao().progress("next")!!.locatorJson)
@@ -50,6 +53,30 @@ class NovelShelfIdentityTest {
         assertEquals(4, db.libraryDao().searchCount("BOOK", "%"))
         assertEquals(2, db.novelDao().publications("novel:account").map { it.workId }.distinct().size)
     }
+    @Test fun homeContinuationUsesNewestEligibleAccountOrMediumAndSkipsFinishedItems() = runBlocking {
+        val state = db.libraryStateDao()
+        val visible = listOf("novel:account", "emby:active", "local")
+        window("novel")
+        db.libraryDao().putProgress(ContentProgressEntity("novel", locatorType = "text", locatorJson = "p", updatedAt = 10))
+        suspend fun video(provider: String, time: Long, completed: Boolean = false) {
+            db.dao().upsertHistory(MediaHistoryEntity("$provider:film", provider, "film", "电影", positionMs = 5,
+                durationMs = 10, completed = completed, lastPlayedAtEpochMs = time))
+        }
+        video("emby:active", 20)
+        video("emby:other", 30)
+        video("external:mdc:private", 40)
+        assertFalse(rows(state.continuing()).any { it.providerId == "external:mdc:private" })
+        assertEquals("emby:active", state.latestContinuing(visible).first()?.providerId)
+        video("emby:active", 50, completed = true)
+        assertEquals("novel", state.latestContinuing(visible).first()?.assetId)
+
+        db.libraryDao().putAsset(LibraryAssetEntity("song", "local", "track", "歌曲", kind = "MUSIC", format = "mp3", addedAt = 1))
+        db.musicDao().putTrack(MusicTrackEntity("song"))
+        db.musicDao().putListening(MusicListeningEntity("song", lastPlayedAt = 60))
+        assertEquals("song", state.latestContinuing(visible).first()?.assetId)
+        assertNull(state.latestContinuing(emptyList()).first())
+    }
+
     @Test fun favoritesAndRemovalApplyToOneWorkWithoutResurfacingSiblingWindows() = runBlocking {
         window("first"); window("next", version = "v2"); window("unrelated", work = "other")
         val dao = db.libraryDao()

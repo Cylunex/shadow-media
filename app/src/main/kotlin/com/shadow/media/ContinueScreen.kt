@@ -7,7 +7,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -15,11 +17,62 @@ import androidx.paging.*
 import androidx.paging.compose.collectAsLazyPagingItems
 import androidx.paging.compose.itemKey
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import com.shadow.media.library.novelScope
 import com.shadow.media.database.*
 import com.shadow.media.model.*
 
-@Composable internal fun ContinueScreen(container: AppContainer, onBack: () -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onLegacy: (ContinueRow) -> Unit) {
+@OptIn(ExperimentalCoroutinesApi::class)
+@Composable internal fun HomeContinue(
+    container: AppContainer, state: MainUiState, onContinue: (ContinueRow) -> Unit, onAll: () -> Unit,
+) {
+    val context = LocalContext.current
+    val activeAccount = state.session?.providerId
+    val visible = remember(state.providerDescriptors, activeAccount) {
+        state.providerDescriptors.map { it.id }.filterNot {
+            it.startsWith("mdc:") || it.startsWith("emby:") && it != activeAccount
+        } + "local"
+    }
+    key(visible) {
+        val latest = remember(container, visible) {
+            val dao = ShadowMediaDatabase.create(context).libraryStateDao()
+            combine(container.novel.store.connectedProviderIds(::novelScope),
+                container.catalogs.store.connectedProviderIds(container.catalogs::providerId)) { books, catalogs ->
+                (visible + books + catalogs).distinct()
+            }.distinctUntilChanged().flatMapLatest(dao::latestContinuing).distinctUntilChanged()
+        }.collectAsStateWithLifecycle(initialValue = null)
+        latest.value?.let { HomeContinueRow(it, onContinue, onAll) }
+    }
+}
+
+@Composable internal fun HomeContinueRow(row: ContinueRow, onContinue: (ContinueRow) -> Unit, onAll: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { onContinue(row) }, modifier = Modifier.weight(1f)) {
+                Column(Modifier.fillMaxWidth()) {
+                    Text(if (row.kind == "MUSIC") "最近收听" else "继续上次 · ${continueKind(row.kind)}",
+                        style = MaterialTheme.typography.labelMedium)
+                    Text(row.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            TextButton(onClick = onAll) { Text("查看全部") }
+        }
+    }
+}
+
+private fun continueKind(kind: String) = when (kind) {
+    "BOOK" -> "阅读"
+    "COMIC" -> "漫画"
+    "AUDIOBOOK" -> "听书"
+    "MUSIC" -> "最近收听"
+    "PODCAST" -> "播客"
+    else -> "影视"
+}
+
+@Composable internal fun ContinueScreen(container: AppContainer, onBack: () -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onContinue: (ContinueRow) -> Unit) {
     BackHandler(onBack = onBack)
     val context = LocalContext.current
     val dao = remember { ShadowMediaDatabase.create(context).libraryStateDao() }
@@ -47,10 +100,8 @@ import com.shadow.media.model.*
     }
     LaunchedEffect(Unit) { loadFollowing() }
     var association by remember { mutableStateOf<LibraryAssetEntity?>(null) }
-    var message by remember { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 20.dp)) {
         Row { TextButton(onClick = onBack) { Text("返回") }; Text("继续播放与阅读", Modifier.padding(12.dp), style = MaterialTheme.typography.headlineSmall) }
-        message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
             item {
                 Text("下一集", style = MaterialTheme.typography.titleMedium)
@@ -62,7 +113,7 @@ import com.shadow.media.model.*
                     Text(item.name, style = MaterialTheme.typography.titleMedium)
                     Text("${item.seriesName.orEmpty()} · S${item.seasonNumber ?: 0}E${item.episodeNumber ?: 0}")
                     Text("Emby · ${account.userName}", style = MaterialTheme.typography.bodySmall)
-                    TextButton(onClick = { onLegacy(ContinueRow("next:${account.providerId}:${item.id}", null, account.providerId, item.id, item.name, "EPISODE", 0, item.runTimeTicks?.div(10000), 0.0, 0)) }) { Text("播放下一集") }
+                    TextButton(onClick = { onContinue(ContinueRow("next:${account.providerId}:${item.id}", null, account.providerId, item.id, item.name, "EPISODE", 0, item.runTimeTicks?.div(10000), 0.0, 0)) }) { Text("播放下一集") }
                 } }
             }
             if (rows.itemCount == 0 && nextEpisodes.isEmpty() && !nextLoading) item { Text("打开内容后，继续位置会显示在这里。") }
@@ -72,7 +123,7 @@ import com.shadow.media.model.*
                 val assetId = row.assetId
                 Card { Column(Modifier.fillMaxWidth().padding(16.dp)) {
                     Text(row.title, style = MaterialTheme.typography.titleMedium)
-                    Text(when (row.kind) { "BOOK" -> "阅读"; "COMIC" -> "漫画"; "AUDIOBOOK" -> "听书"; "MUSIC" -> "最近收听"; "PODCAST" -> "播客"; else -> "影视" }, style = MaterialTheme.typography.labelMedium)
+                    Text(continueKind(row.kind), style = MaterialTheme.typography.labelMedium)
                     val source = container.providerRegistry.provider(row.providerId)?.descriptor?.name
                         ?: if (row.providerId == "local") "本机" else "已保存来源"
                     Text(source, style = MaterialTheme.typography.bodySmall)
@@ -81,13 +132,7 @@ import com.shadow.media.model.*
                         Text("${(fraction.coerceIn(0.0, 1.0) * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
                     } else if (row.kind != "MUSIC") Text("总进度未知 · 可恢复已保存位置", style = MaterialTheme.typography.bodySmall)
                     FlowRow {
-                        TextButton(onClick = {
-                            if (assetId == null) onLegacy(row)
-                            else scope.launch {
-                                val asset = container.library.dao.asset(assetId)
-                                if (asset != null) onOpen(asset) else message = "条目已移除"
-                            }
-                        }) { Text(if (row.kind == "MUSIC") "播放" else "继续") }
+                        TextButton(onClick = { onContinue(row) }) { Text(if (row.kind == "MUSIC") "播放" else "继续") }
                         if (assetId != null) TextButton(onClick = { scope.launch { association = container.library.dao.asset(assetId) } }) { Text("作品与其他版本") }
                     }
                 } }

@@ -1,6 +1,15 @@
 package com.shadow.media.library
 
 import android.content.Context
+import android.content.SharedPreferences
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.security.KeyStore
@@ -50,6 +59,20 @@ class CatalogConnectionStore(context: Context, namespace: String = "publication_
             }
         } catch (e: Exception) { throw IllegalStateException("来源凭据无法解密，原数据已保留", e) }
     }
+    fun connectedProviderIds(idOf: (CatalogConnection) -> String): Flow<List<String>> = callbackFlow {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "encrypted" || key == null) trySend(Unit)
+        }
+        preferences.registerOnSharedPreferenceChangeListener(listener)
+        trySend(Unit)
+        awaitClose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.conflate().map {
+        // An unreadable vault must not surface an old account on the home screen.
+        try {
+            load().filter { it.oidcIssuer.isBlank() || it.oidcAuthState.isNotBlank() }.map(idOf)
+        } catch (_: IllegalStateException) { emptyList() }
+    }.distinctUntilChanged().flowOn(Dispatchers.IO)
+
     fun save(connection: CatalogConnection) = synchronized(lock) { connection.base(); write(load().filterNot { it.id == connection.id } + connection) }
     fun replace(previous: CatalogConnection?, edited: CatalogConnection): CatalogConnection = synchronized(lock) {
         edited.base()

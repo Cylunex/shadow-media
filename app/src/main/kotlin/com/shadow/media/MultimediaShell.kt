@@ -211,6 +211,18 @@ import com.shadow.media.reading.ReaderActivity
         navigationPreferences.edit().putString("tab:${module.name}", value.name).apply()
         viewModel.showHome()
     }
+    fun resumeRow(row: ContinueRow) {
+        val assetId = row.assetId
+        if (assetId == null) viewModel.continueLegacy(row) else scope.launch {
+            val asset = container.library.dao.asset(assetId)
+            if (asset == null) message = "条目已移除" else open(asset)
+        }
+    }
+    val moduleRoot = state.screen == Screen.HOME && !audioExpanded && !localVideoScreen &&
+        !continueScreen && !offlineScreen && !catalogScreen && !generalSettings && !localShelf
+    val resumeCard: @Composable () -> Unit = {
+        HomeContinue(container, state, ::resumeRow) { resetUtility(); continueScreen = true }
+    }
     fun returnToModule() { resetUtility(); viewModel.showHome() }
     if (playerScreen) { LegacyMediaRoot(viewModel, container); return }
     BackHandler(enabled = audioExpanded) { audioExpanded = false }
@@ -236,11 +248,12 @@ import com.shadow.media.reading.ReaderActivity
             }
             Column(Modifier.weight(1f)) {
                 CastPlaybackBar(container)
+                if (moduleRoot && module != MediaModule.NOVEL) resumeCard()
                 pageStates.SaveableStateProvider(module.name) {
                 when {
                     audioExpanded -> AudioNowPlaying(controller, container.library, onBack = { audioExpanded = false })
                     localVideoScreen && !continueScreen -> LocalVideosScreen(container, viewModel, onBack = ::returnToModule, onContinue = { continueScreen = true })
-                    continueScreen -> ContinueScreen(container, onBack = ::returnToModule, onOpen = ::open, onLegacy = viewModel::continueLegacy)
+                    continueScreen -> ContinueScreen(container, onBack = ::returnToModule, onOpen = ::open, onContinue = ::resumeRow)
                     offlineScreen -> OfflineScreen(container, onBack = ::returnToModule, onOpen = { asset ->
                         if (asset.kind in setOf("MOVIE", "EPISODE")) viewModel.playOfflineAsset(asset) else open(asset)
                     })
@@ -265,7 +278,7 @@ import com.shadow.media.reading.ReaderActivity
                         onCatalogs = { generalSettings = false; catalogScreen = true; allCatalogs = true }, onNovel = { selectModule(MediaModule.NOVEL); generalSettings = false },
                         onOffline = { offlineScreen = true }, onContinue = { continueScreen = true }, onVideos = { localVideoScreen = true })
                     module == MediaModule.NOVEL && !localShelf -> NovelScreen(container.novel, onBack = ::returnToModule,
-                        rootSection = destination, onLocalShelf = { localShelf = true }, onModule = ::selectModule,
+                        rootSection = destination, homeContinue = resumeCard, onLocalShelf = { localShelf = true }, onModule = ::selectModule,
                         onModuleTools = { toolsExpanded = true }, onGeneralSettings = { resetUtility(); generalSettings = true; viewModel.showHome() })
                     module == MediaModule.MUSIC -> MusicScreen(container, controller, onPlaying = { audioExpanded = true },
                         rootSection = if (destination == MediaDestination.PLAYLISTS) "歌单" else "音乐库")
