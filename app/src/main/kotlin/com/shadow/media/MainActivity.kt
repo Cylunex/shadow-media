@@ -28,7 +28,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val container = (application as ShadowMediaApplication).container
-        container.handoffInbox.offer(intent?.data)
+        if (savedInstanceState == null || intent?.data?.localMediaLink() == null) container.handoffInbox.offer(intent?.data)
         setContent {
             ShadowMediaTheme {
                 val viewModel: MainViewModel = viewModel(factory = MainViewModel.factory(container))

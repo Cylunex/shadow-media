@@ -30,8 +30,9 @@ internal class LibraryAudioDataSource(private val context: Context, private val 
             delegate = cached; listeners.forEach(cached::addTransferListener)
             return cached.open(dataSpec)
         }
-        if (asset.localUri.isNotBlank()) return DefaultDataSource.Factory(context).createDataSource().also { delegate = it; listeners.forEach(it::addTransferListener) }.open(dataSpec.buildUpon().setUri(asset.localUri).build())
-        if (LibraryResources.offlineOnly) throw IOException("仅离线模式：此音频没有完整离线副本")
+        val offlineEntry = entryId.startsWith("offline-")
+        if (asset.localUri.isNotBlank() && (!offlineEntry || asset.providerId == "local" && localAudioUri(Uri.parse(asset.localUri)))) return DefaultDataSource.Factory(context).createDataSource().also { delegate = it; listeners.forEach(it::addTransferListener) }.open(dataSpec.buildUpon().setUri(asset.localUri).build())
+        if (offlineEntry || LibraryResources.offlineOnly) throw IOException("仅离线模式：此音频没有完整离线副本")
         var lastError: IOException? = null
         for (attempt in 0 until 18) {
             val candidate = runBlocking(Dispatchers.IO) { candidates.current(asset, entryId) }
@@ -64,4 +65,12 @@ internal class LibraryAudioDataSource(private val context: Context, private val 
     override fun getResponseHeaders(): Map<String, List<String>> = delegate?.responseHeaders.orEmpty()
     override fun close() { delegate?.close(); delegate = null }
     companion object { private val baseClient = OkHttpClient.Builder().addInterceptor(com.shadow.media.network.OfflineModeInterceptor()).build() }
+}
+
+/** Cloud document providers can grant a URI while the bytes still require a network. */
+fun localAudioUri(uri: Uri): Boolean = when (uri.scheme) {
+    "file" -> uri.authority.isNullOrEmpty()
+    "content" -> uri.authority in setOf("com.android.externalstorage.documents", "com.android.providers.media.documents") ||
+        uri.authority == "media" && uri.pathSegments.getOrNull(1) == "audio"
+    else -> false
 }

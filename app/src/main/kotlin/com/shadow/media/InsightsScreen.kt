@@ -114,7 +114,7 @@ internal fun InsightsScreen(viewModel: MainViewModel) {
             item { EmptyInsight("播放时使用“保存时刻”，这里会形成可继续观看的私人索引。") }
         } else {
             items(moments, key = MediaMomentEntity::id) { moment ->
-                MomentCard(moment, { viewModel.playMoment(moment) }, { viewModel.removeMoment(moment.id) })
+                MomentCard(moment, moment.providerId == state.session?.providerId, { viewModel.playMoment(moment) }, { viewModel.removeMoment(moment.id) })
             }
         }
         if (state.mediaSegments.isNotEmpty()) {
@@ -192,7 +192,8 @@ private fun InsightLabel(kicker: String, title: String) {
 }
 
 @Composable
-private fun MomentCard(moment: MediaMomentEntity, onPlay: () -> Unit, onDelete: () -> Unit) {
+private fun MomentCard(moment: MediaMomentEntity, activeProvider: Boolean, onPlay: () -> Unit, onDelete: () -> Unit) {
+    val context = LocalContext.current
     ShadowGlassPanel(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
         cornerRadius = 22.dp,
@@ -212,6 +213,9 @@ private fun MomentCard(moment: MediaMomentEntity, onPlay: () -> Unit, onDelete: 
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
+            IconButton(enabled = activeProvider, onClick = { shareSaved(context, "moment", moment.id, moment.mediaTitle, "影视时刻 " + formatInsightDuration(moment.positionMs)) }) {
+                Icon(Icons.Rounded.Share, contentDescription = "分享这个时刻")
             }
             IconButton(onClick = onDelete) {
                 Icon(Icons.Rounded.DeleteOutline, contentDescription = "删除时刻")

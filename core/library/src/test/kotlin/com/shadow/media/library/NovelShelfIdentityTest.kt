@@ -27,6 +27,30 @@ class NovelShelfIdentityTest {
         (result as PagingSource.LoadResult.Page).data
     } finally { source.invalidate() }
 
+    @Test fun commuteUsesVisibleCollectedAudioAndCompletedDownloadsOfTheCurrentRevision() = runBlocking {
+        val dao = db.libraryDao()
+        fun asset(id: String, provider: String = "catalog:mine") = LibraryAssetEntity(id, provider, id, id,
+            kind = "AUDIOBOOK", format = "mp3", revision = "v2", addedAt = 1)
+        for ((id, revision, state) in listOf(Triple("ready", "v2", "OFFLINE_AVAILABLE"),
+            Triple("stale", "v1", "OFFLINE_AVAILABLE"), Triple("pending", "v2", "OFFLINE_PENDING"),
+            Triple("other", "v2", "OFFLINE_AVAILABLE"), Triple("done", "v2", "OFFLINE_AVAILABLE"))) {
+            dao.putAsset(asset(id, if (id == "other") "catalog:other" else "catalog:mine"))
+            db.resourceTaskDao().put(ResourceTaskEntity(id, "op-$id", revision, state, "MEDIA3", updatedAt = 1))
+        }
+        dao.putAsset(asset("local", "local").copy(localUri = "file:///example.mp3"))
+        dao.putAsset(asset("hidden", "local").copy(localUri = "file:///another.mp3"))
+        db.libraryStateDao().seedCollection(UserCollectionEntity(assetId = "hidden", collected = false, favorite = false, addedAt = 1))
+        dao.putProgress(ContentProgressEntity("done", locatorType = "time", locatorJson = "{}", completed = true, updatedAt = 2))
+        assertEquals(setOf("local", "ready"), dao.commuteAudio(listOf("catalog:mine","local")).first().map { it.asset.id }.toSet())
+
+        window("excerpt-window", scope = "novel:reader")
+        dao.putAnnotation(ContentAnnotationEntity("note", "excerpt-window", "{}", "选定的原文", 1))
+        assertNull(dao.savedNovelNote("note", listOf("novel:other")).first())
+        assertEquals("选定的原文", dao.savedNovelNote("note", listOf("novel:reader")).first()?.note)
+        dao.removeAnnotation("note")
+        assertNull(dao.savedNovelNote("note", listOf("novel:reader")).first())
+    }
+
     @Test fun legacyWindowsAndNewSourcesAreOneBookAndUseLatestHiddenProgress() = runBlocking {
         window("first"); window("next", time = 2); window("other-source", version = "v2", time = 3)
         db.libraryDao().seedPersonalState("next"); db.libraryDao().hideCacheWindow("next")

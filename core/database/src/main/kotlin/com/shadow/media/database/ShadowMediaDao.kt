@@ -92,6 +92,8 @@ interface ShadowMediaDao {
 
     @Upsert
     suspend fun upsertMoment(moment: MediaMomentEntity)
+    @Query("SELECT * FROM media_moments WHERE id = :id AND providerId = :provider")
+    fun savedMoment(id: String, provider: String): Flow<MediaMomentEntity?>
 
     @Query("DELETE FROM media_moments WHERE id = :id")
     suspend fun removeMoment(id: String)

@@ -57,6 +57,8 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="shadowmedia" android:host="play" />
+                <data android:scheme="shadowmedia" android:host="commute" />
+                <data android:scheme="shadowmedia" android:host="saved" />
             </intent-filter>
         </activity>
     </application>

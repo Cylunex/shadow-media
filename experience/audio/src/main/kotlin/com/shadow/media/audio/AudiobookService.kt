@@ -298,7 +298,11 @@ class AudiobookService : MediaLibraryService() {
 
     private suspend fun resolveItems(items: List<MediaItem>): List<MediaItem> {
         val assets = assetMap(items.map { it.mediaId })
-        val resolved = items.map { resolveItem(it, assets[it.mediaId]) }
+        val resolved = items.map { item ->
+            val offlineRevision = item.mediaMetadata.extras?.getString(COMMUTE_REVISION)
+            if (offlineRevision == null) resolveItem(item, assets[item.mediaId])
+            else resolveItem(item, assets[item.mediaId], "offline-" + UUID.randomUUID(), offlineRevision)
+        }
         require(resolved.map { it.audioMode() }.distinct().size <= 1) { "音乐与听书分别保存队列，请先切换模式" }
         return resolved
     }
@@ -555,7 +559,18 @@ object AudioSleep {
     val remainingMs = remaining.asStateFlow()
 }
 
+private const val COMMUTE_REVISION = "shadow.audio.commuteRevision"
+
 object AudiobookController {
+    fun playOffline(controller: MediaController, asset: LibraryAssetEntity) {
+        val extras = Bundle().apply { putString(COMMUTE_REVISION, asset.revision) }
+        val item = MediaItem.Builder().setMediaId(asset.id)
+            .setMediaMetadata(MediaMetadata.Builder().setExtras(extras).build()).build()
+        controller.setMediaItems(listOf(item), 0, C.TIME_UNSET)
+        controller.prepare()
+        controller.play()
+    }
+
     fun connect(context: Context): ListenableFuture<MediaController> = MediaController.Builder(context,
         SessionToken(context, ComponentName(context, AudiobookService::class.java))).buildAsync()
 

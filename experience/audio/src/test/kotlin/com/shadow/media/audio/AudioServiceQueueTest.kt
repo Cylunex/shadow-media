@@ -69,6 +69,20 @@ class AudioServiceQueueTest {
         runBlocking { AudioQueuePersistence.flush() }
     }
 
+    @Test fun `commute request persists a cache-only entry and retains it across mode restoration`() {
+        val dao = ShadowMediaDatabase.create(RuntimeEnvironment.getApplication()).libraryDao()
+        val book = runBlocking { requireNotNull(dao.asset("book")) }
+        AudiobookController.playOffline(controller, book)
+        pumpUntil { player.currentMediaItem?.mediaId == book.id }
+        val entry = requireNotNull(player.currentMediaItem?.entryId())
+        assertTrue(entry.startsWith("offline-"))
+        assertEquals(entry, player.currentMediaItem?.localConfiguration?.uri?.getQueryParameter("entry"))
+        select("song")
+        switchMode("AUDIOBOOK")
+        assertEquals(entry, player.currentMediaItem?.entryId())
+        assertEquals(entry, player.currentMediaItem?.localConfiguration?.uri?.getQueryParameter("entry"))
+    }
+
     @Test fun `new audiobook queue does not inherit music shuffle or repeat`() {
         select("song")
         controller.shuffleModeEnabled = true

@@ -8,9 +8,12 @@ import com.shadow.media.model.MediaKey
 class HandoffInbox {
     private val channel = Channel<Uri>(Channel.BUFFERED)
     val intents = channel.receiveAsFlow()
+    private val local = Channel<Uri>(Channel.CONFLATED)
+    val localIntents = local.receiveAsFlow()
 
     fun offer(uri: Uri?) {
         if (uri?.scheme == SCHEME && uri.host == HOST) channel.trySend(uri)
+        else if (uri != null && uri.localMediaLink() != null) local.trySend(uri)
     }
 }
 

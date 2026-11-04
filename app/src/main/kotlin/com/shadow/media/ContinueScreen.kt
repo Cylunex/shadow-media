@@ -25,24 +25,29 @@ import com.shadow.media.library.novelScope
 import com.shadow.media.database.*
 import com.shadow.media.model.*
 
+@Composable internal fun rememberContinueProviders(container: AppContainer, state: MainUiState): kotlinx.coroutines.flow.Flow<List<String>> {
+    val activeAccount = state.session?.providerId
+    return remember(container, state.providerDescriptors, activeAccount) {
+        val visible = state.providerDescriptors.map { it.id }.filterNot {
+            it.startsWith("mdc:") || it.startsWith("emby:") && it != activeAccount
+        } + "local"
+        combine(container.novel.store.connectedProviderIds(::novelScope),
+            container.catalogs.store.connectedProviderIds(container.catalogs::providerId)) { books, catalogs ->
+            (visible + books + catalogs).distinct()
+        }.distinctUntilChanged()
+    }
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 @Composable internal fun HomeContinue(
     container: AppContainer, state: MainUiState, onContinue: (ContinueRow) -> Unit, onAll: () -> Unit,
 ) {
     val context = LocalContext.current
-    val activeAccount = state.session?.providerId
-    val visible = remember(state.providerDescriptors, activeAccount) {
-        state.providerDescriptors.map { it.id }.filterNot {
-            it.startsWith("mdc:") || it.startsWith("emby:") && it != activeAccount
-        } + "local"
-    }
-    key(visible) {
-        val latest = remember(container, visible) {
+    val providers = rememberContinueProviders(container, state)
+    key(providers) {
+        val latest = remember(container, providers) {
             val dao = ShadowMediaDatabase.create(context).libraryStateDao()
-            combine(container.novel.store.connectedProviderIds(::novelScope),
-                container.catalogs.store.connectedProviderIds(container.catalogs::providerId)) { books, catalogs ->
-                (visible + books + catalogs).distinct()
-            }.distinctUntilChanged().flatMapLatest(dao::latestContinuing).distinctUntilChanged()
+            providers.flatMapLatest(dao::latestContinuing).distinctUntilChanged()
         }.collectAsStateWithLifecycle(initialValue = null)
         latest.value?.let { HomeContinueRow(it, onContinue, onAll) }
     }

@@ -66,6 +66,9 @@ data class ProgressSessionEntity(
             sessionId == incoming.sessionId && incoming.sequence > sequence
 }
 
+data class CommuteAudioRow(@Embedded val asset: LibraryAssetEntity, val locatorJson: String?, val durationMs: Long?,
+    val updatedAt: Long?, val downloaded: Boolean)
+
 data class AssetAvailability(val localCopy: Boolean, val state: String, val currentRevision: Boolean)
 
 data class LibraryShelfRow(@Embedded val asset: LibraryAssetEntity, val progression: Double?, val completed: Boolean?, val updatedAt: Long?)
@@ -101,6 +104,22 @@ internal const val LOGICAL_LIBRARY_PROGRESS = LOGICAL_LIBRARY_ASSETS + """
 
 @Dao
 interface LibraryDao {
+    @Query("""SELECT a.*, p.locatorJson, music.durationMs, p.updatedAt,
+        (t.assetId IS NOT NULL) AS downloaded FROM library_assets a
+        LEFT JOIN progress_records p ON p.assetId = a.id AND p.locatorType = 'time'
+        LEFT JOIN music_tracks music ON music.assetId = a.id
+        LEFT JOIN resource_tasks t ON t.assetId = a.id AND t.transport = 'MEDIA3'
+            AND t.state = 'OFFLINE_AVAILABLE' AND t.revision = a.revision
+        WHERE a.providerId IN (:providers) AND a.kind IN ('MUSIC','PODCAST','AUDIOBOOK')
+            AND (a.kind = 'MUSIC' OR COALESCE(p.completed, 0) = 0)
+            AND ((a.providerId = 'local' AND a.localUri != '') OR t.assetId IS NOT NULL)
+            AND COALESCE((SELECT collected FROM user_collection WHERE assetId = a.id AND profileId = 'default'), 1) = 1
+        ORDER BY COALESCE(p.updatedAt, a.addedAt) DESC, a.id""")
+    fun commuteAudio(providers: List<String>): Flow<List<CommuteAudioRow>>
+
+    @Query("SELECT a.* FROM content_annotations a JOIN novel_publications p ON p.assetId = a.assetId WHERE a.id = :id AND p.scope IN (:scopes)")
+    fun savedNovelNote(id: String, scopes: List<String>): Flow<ContentAnnotationEntity?>
+
     @Query("SELECT a.localUri != '' AS localCopy, COALESCE(t.state, '') AS state, COALESCE(t.revision = a.revision, 0) AS currentRevision FROM library_assets a LEFT JOIN resource_tasks t ON t.assetId = a.id WHERE a.providerId = :provider AND a.itemId = :item LIMIT 1")
     fun availability(provider: String, item: String): Flow<AssetAvailability?>
     @Query(LOGICAL_LIBRARY_PROGRESS + "SELECT s.* FROM shelf_rows s LEFT JOIN local_shelf_metadata m ON m.assetId = s.id WHERE s.kind IN (:kinds) AND (:favorite = 0 OR s.favorite = 1) AND (:unfinished = 0 OR ((s.completed IS NULL OR s.completed = 0) AND COALESCE(m.readingStatus, 'want') != 'read')) AND (:groupName = '' OR m.groupName = :groupName) AND (:tagNeedle = '' OR instr(COALESCE(m.tagsJson, '[]'), :tagNeedle) > 0) AND (s.title LIKE :query ESCAPE '\\' OR s.author LIKE :query ESCAPE '\\') ORDER BY COALESCE(m.pinned, 0) DESC, CASE WHEN :byName THEN s.title END COLLATE NOCASE, s.addedAt DESC, s.id")

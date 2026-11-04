@@ -100,6 +100,8 @@ import com.shadow.media.reading.ReaderActivity
         }
     }
     var localVideoScreen by rememberSaveable { mutableStateOf(false) }
+    var localLinkUri by rememberSaveable { mutableStateOf<String?>(null) }
+    val localLink = remember(localLinkUri) { localLinkUri?.let { android.net.Uri.parse(it).localMediaLink() } }
     var continueScreen by rememberSaveable { mutableStateOf(false) }
     var workAsset by remember { mutableStateOf<LibraryAssetEntity?>(null) }
     var offlineScreen by rememberSaveable { mutableStateOf(false) }
@@ -197,6 +199,7 @@ import com.shadow.media.reading.ReaderActivity
         }
     }
     fun resetUtility() {
+        localLinkUri = null
         localVideoScreen = false; catalogScreen = false; offlineScreen = false; continueScreen = false
         generalSettings = false; localShelf = false; audioExpanded = false; toolsExpanded = false; allCatalogs = false
     }
@@ -218,7 +221,12 @@ import com.shadow.media.reading.ReaderActivity
             if (asset == null) message = "条目已移除" else open(asset)
         }
     }
-    val moduleRoot = state.screen == Screen.HOME && !audioExpanded && !localVideoScreen &&
+    LaunchedEffect(container) {
+        container.handoffInbox.localIntents.collect {
+            resetUtility(); viewModel.showHome(); localLinkUri = it.toString()
+        }
+    }
+    val moduleRoot = localLink == null && state.screen == Screen.HOME && !audioExpanded && !localVideoScreen &&
         !continueScreen && !offlineScreen && !catalogScreen && !generalSettings && !localShelf
     val resumeCard: @Composable () -> Unit = {
         HomeContinue(container, state, ::resumeRow) { resetUtility(); continueScreen = true }
@@ -230,7 +238,7 @@ import com.shadow.media.reading.ReaderActivity
     Scaffold(
         topBar = {
             if (!audioExpanded && !(module == MediaModule.NOVEL && !localShelf && !generalSettings &&
-                    !catalogScreen && !offlineScreen && !continueScreen && !localVideoScreen && state.screen == Screen.HOME)) MediaModuleHeader(module, ::selectModule, { toolsExpanded = true }, {
+                    !catalogScreen && !offlineScreen && !continueScreen && !localVideoScreen && localLink == null && state.screen == Screen.HOME)) MediaModuleHeader(module, ::selectModule, { toolsExpanded = true }, {
                 resetUtility(); generalSettings = true; viewModel.showHome()
             })
         },
@@ -252,6 +260,14 @@ import com.shadow.media.reading.ReaderActivity
                 pageStates.SaveableStateProvider(module.name) {
                 when {
                     audioExpanded -> AudioNowPlaying(controller, container.library, onBack = { audioExpanded = false })
+                    localLink is LocalMediaLink.Commute -> CommuteScreen(container, state, localLink.minutes,
+                        onMinutes = { localLinkUri = "shadowmedia://commute?minutes=$it" }, onBack = ::returnToModule,
+                        onPlay = { asset ->
+                            val control = controller
+                            if (control == null) message = "音频服务正在连接，请稍后重试"
+                            else { AudiobookController.playOffline(control, asset); audioExpanded = true }
+                        })
+                    localLink is LocalMediaLink.Saved -> SavedMediaScreen(container, state, localLink, onMoment = { viewModel.playMoment(it) }, onBack = ::returnToModule)
                     localVideoScreen && !continueScreen -> LocalVideosScreen(container, viewModel, onBack = ::returnToModule, onContinue = { continueScreen = true })
                     continueScreen -> ContinueScreen(container, onBack = ::returnToModule, onOpen = ::open, onContinue = ::resumeRow)
                     offlineScreen -> OfflineScreen(container, onBack = ::returnToModule, onOpen = { asset ->
@@ -310,6 +326,7 @@ import com.shadow.media.reading.ReaderActivity
     if (toolsExpanded) ModalBottomSheet(onDismissRequest = { toolsExpanded = false }) {
         Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("${module.title}工具", style = MaterialTheme.typography.titleLarge)
+            TextButton(onClick = { resetUtility(); viewModel.showHome(); localLinkUri = "shadowmedia://commute?minutes=20" }) { Text("通勤听 · 已下载") }
             TextButton(onClick = { resetUtility(); offlineScreen = true }) { Text("下载与离线 · 所有模块") }
             TextButton(onClick = { resetUtility(); continueScreen = true }) { Text("继续播放与阅读 · 所有模块") }
             when (module) {

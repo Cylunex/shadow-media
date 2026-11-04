@@ -42,7 +42,8 @@ import kotlinx.coroutines.CancellationException
             item(key = "work:$work") { Text(titles[group.first().assetId].orEmpty(), style = MaterialTheme.typography.titleMedium) }
             items(group, key = { it.id }) { note -> Card(onClick = {
                 context.startActivity(Intent(context, ReaderActivity::class.java).putExtra("assetId", note.assetId).putExtra("novelLocator", note.locatorJson))
-            }) { Column(Modifier.padding(16.dp)) { Text(note.note.ifBlank { "书签" }); Text("点击回到原文", style = MaterialTheme.typography.labelSmall) } } }
+            }) { Column(Modifier.padding(16.dp)) { Text(note.note.ifBlank { "书签" }); Text("点击回到原文", style = MaterialTheme.typography.labelSmall)
+                TextButton(onClick = { shareSaved(context, "quote", note.id, titles[note.assetId].orEmpty(), note.note) }) { Text("分享这条摘录") } } } }
         }
         if (visible.isEmpty()) item { Text("这里汇集本机保存的书签与摘录，可从阅读页长按正文添加。") }
     }
