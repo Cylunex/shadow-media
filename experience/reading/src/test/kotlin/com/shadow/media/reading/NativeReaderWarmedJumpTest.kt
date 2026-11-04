@@ -23,7 +23,7 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [28], qualifiers = "w360dp-h640dp-mdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class NativeReaderWarmedJumpTest {
-    @Test fun warmedChapterJumpSavesBeforeAnyFurtherPageTurn() = runBlocking {
+    @Test fun warmedChapterJumpSavesImmediatelyAndTurningPastTheLastPageCompletesTheBook() = runBlocking {
         val context = RuntimeEnvironment.getApplication()
         val file = File(context.cacheDir, "native-warm-jump.txt").apply {
             writeText("第一章 山海来信\n" + "少年提灯前行。\n".repeat(30) + "第二章 山外\n" + "远处的灯光亮了。\n".repeat(30))
@@ -49,6 +49,15 @@ class NativeReaderWarmedJumpTest {
             com.shadow.media.library.ProgressWriter.flush()
             val saved = requireNotNull(library.dao.progress(item.id))
             assertEquals(next.ref.href, org.json.JSONObject(saved.locatorJson).getString("href"))
+            assertFalse(saved.completed)
+
+            reader.seek(reader.document!!.pages.last().start)
+            reader.turn(1)
+            repeat(300) { if (!reader.isEnabled) pump() }
+            com.shadow.media.library.ProgressWriter.flush()
+            val finished = requireNotNull(library.dao.progress(item.id))
+            assertTrue(finished.completed)
+            assertEquals(next.text.length, next.restore(org.json.JSONObject(finished.locatorJson)))
         } finally { controller.pause().stop().destroy(); file.delete() }
     }
 

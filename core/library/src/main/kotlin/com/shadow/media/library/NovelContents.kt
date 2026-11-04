@@ -23,11 +23,13 @@ fun novelContentsNext(page: JSONObject): Int? {
 }
 
 /** Offline fallback searches all downloaded titles, never represents them as a complete directory. */
-fun novelOfflineContents(chapters: List<JSONObject>, query: NovelContentsQuery): JSONObject {
+fun novelOfflineContents(chapters: List<JSONObject>, query: NovelContentsQuery, anchorId: String? = null): JSONObject {
     val ordered = chapters.distinctBy { it.getString("id") }.sortedBy { it.getInt("ordinal") }
     val filtered = ordered.filter { query.q.isBlank() || it.optString("title").contains(query.q.trim(), ignoreCase = true) }
         .let { if (query.descending) it.reversed() else it }
-    val start = query.offset.coerceAtMost(((filtered.size - 1).coerceAtLeast(0) / query.limit) * query.limit)
+    val anchor = anchorId?.let { id -> filtered.indexOfFirst { it.getString("id") == id } }
+    val start = if (anchor != null && anchor >= 0) anchor / query.limit * query.limit
+        else query.offset.coerceAtMost(((filtered.size - 1).coerceAtLeast(0) / query.limit) * query.limit)
     val rows = filtered.drop(start).take(query.limit)
     return JSONObject().put("version_id", query.versionId).put("offset", start).put("limit", query.limit)
         .put("total", filtered.size).put("items", JSONArray(rows)).put("_downloaded_only", true)

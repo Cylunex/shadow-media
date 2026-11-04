@@ -144,7 +144,10 @@ internal class NativeTextLayout(
                                 val punctuation = paragraph.lastIndexOfAny(charArrayOf('。', '！', '？', '；'), chunkEnd - 1)
                                 if (punctuation >= chunkEnd - 200 && punctuation >= chunkStart) chunkEnd = punctuation + 1
                                 val boundary = BreakIterator.getCharacterInstance(Locale.CHINA).apply { setText(paragraph) }
-                                if (!boundary.isBoundary(chunkEnd)) chunkEnd = boundary.preceding(chunkEnd)
+                                if (!boundary.isBoundary(chunkEnd)) {
+                                    val previous = boundary.preceding(chunkEnd)
+                                    chunkEnd = if (previous > chunkStart) previous else boundary.following(chunkEnd).coerceAtMost(end)
+                                }
                             }
                             val indent = if (chunkStart == leading && settings.indent) "　".repeat(settings.indentSize) else ""
                             val display = indent + paragraph.substring(chunkStart, chunkEnd)

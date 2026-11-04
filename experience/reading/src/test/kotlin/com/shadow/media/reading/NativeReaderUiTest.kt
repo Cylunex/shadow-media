@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.test.*
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.semantics.SemanticsActions
@@ -118,6 +119,40 @@ class NativeReaderUiTest {
         compose.onNodeWithText("目录序号").performImeAction()
         compose.runOnIdle { assertEquals(320, requested) }
         compose.onNodeWithText("目录序号").assertDoesNotExist()
+    }
+
+    @Test fun directoryFilterStartsAtFirstMatchAcrossPagesAndKeepsMatchesReachable() {
+        val allChapters = (0 until 300).map { NativeChapterRef("c$it", "目录条目 $it", it, "c$it.xhtml") }
+        var opened: NativeChapterRef? = null
+        compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize()) {
+            NativeContentsBody(allChapters.subList(100, 200), emptySet(), "c145", 145, 145, 300, 100, false, null, true,
+                onRequest = {}, onRetry = {}, onOpen = { opened = it }, allEntries = allChapters)
+        } } } }
+        compose.onNodeWithText("目录条目 145").assertIsDisplayed()
+        compose.onNodeWithText("搜索全书章节标题").performTextInput("目录条目")
+        compose.onNodeWithText("找到 300 节").assertIsDisplayed()
+        compose.onNodeWithText("目录条目 0").assertIsDisplayed()
+        compose.onNodeWithContentDescription("下一页目录").assertDoesNotExist()
+        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(299)
+        compose.onNodeWithText("目录条目 299").assertIsDisplayed().performClick()
+        assertEquals("c299", opened?.id)
+        compose.onNodeWithContentDescription("清除目录筛选").performClick()
+        compose.onNodeWithText("目录条目 145").assertIsDisplayed()
+        compose.onNodeWithContentDescription("下一页目录").assertIsEnabled()
+    }
+
+    @Test fun restoredDirectoryKeepsBrowsedPositionUntilExplicitlyLocatingCurrentChapter() {
+        val restoration = StateRestorationTester(compose)
+        restoration.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize()) {
+            NativeContentsBody(chapters, emptySet(), "c145", 145, 145, 5000, 100, false, null, true,
+                onRequest = {}, onRetry = {}, onOpen = {})
+        } } } }
+        compose.onNodeWithText(chapters[45].title).assertIsDisplayed()
+        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(chapters.lastIndex)
+        restoration.emulateSavedInstanceStateRestore()
+        compose.onNodeWithText(chapters.last().title).assertIsDisplayed()
+        compose.onNodeWithText("当前章").performClick()
+        compose.onNodeWithText(chapters[45].title).assertIsDisplayed()
     }
 
     @Test fun searchSupportsImeClearAndClickingWholeResult() {

@@ -134,6 +134,16 @@ class NativeTextLayoutTest {
         assertEquals(text.trim(), result.pages.flatMap { it.lines }.flatMap { it.glyphs }.joinToString("") { it.text }.replace("　", ""))
         assertTrue(result.pages.all { it.lines.isNotEmpty() })
     }
+    @Test fun aSingleGraphemeLargerThanTheLayoutChunkIsKeptIntact() = runBlocking {
+        val cluster = "a" + "\u0301".repeat(4200)
+        val body = cluster + "后续正文"
+        val result = kotlinx.coroutines.withTimeout(5_000) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { layout(chapter(body)) }
+        }
+        val glyphs = result.pages.flatMap { it.lines }.flatMap { it.glyphs }.map { it.text }
+        assertTrue(cluster in glyphs)
+        assertEquals(body, glyphs.joinToString("").replace("　", ""))
+    }
     @Test fun nativePagesAndLegadoCurlRenderActualAdjacentContent(): Unit = runBlocking {
         val text = ("　　山间的雾气渐渐散去，石阶旁的竹叶还挂着露珠。少年收起书卷，望向远处的灯火。\n" +
             "“今日便出发吗？”她轻声问道。\n" + "　　他点了点头：“路虽远，总要一步一步走。”\n").repeat(24)

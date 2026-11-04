@@ -31,6 +31,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
+internal enum class ContentsPosition { CURRENT_CHAPTER, PAGE_START }
+
 /** Shared by book details and the native reader. Browsing never opens or writes reading progress. */
 @Composable
 fun NovelContentsPanel(
@@ -44,11 +46,12 @@ fun NovelContentsPanel(
         var term by rememberSaveable { mutableStateOf("") }
         var descending by rememberSaveable { mutableStateOf(false) }
         var offset by rememberSaveable { mutableIntStateOf((currentOrdinal ?: 0).coerceAtLeast(0) / 100 * 100) }
+        var anchorId by rememberSaveable { mutableStateOf(currentId) }
         val query = NovelContentsQuery(versionId, term, descending, offset)
-        var page by remember(query) { mutableStateOf<JSONObject?>(null) }
+        var page by remember(query, anchorId) { mutableStateOf<JSONObject?>(null) }
         var downloaded by remember { mutableStateOf<Set<String>>(emptySet()) }
-        var loading by remember(query) { mutableStateOf(true) }
-        var error by remember(query) { mutableStateOf<String?>(null) }
+        var loading by remember(query, anchorId) { mutableStateOf(true) }
+        var error by remember(query, anchorId) { mutableStateOf<String?>(null) }
         var retry by remember { mutableIntStateOf(0) }
         var showDownloads by rememberSaveable { mutableStateOf(false) }
         val cacheUpdates by repository.cache.changes.collectAsState()
@@ -57,11 +60,8 @@ fun NovelContentsPanel(
                 if (contentScope != null) repository.cache.chapters(contentScope, workId, versionId) else downloadedChapters()
             }
             downloaded = cached.map { it.getString("id") }.toSet()
-            if (page?.optBoolean("_downloaded_only") == true && contentScope != null) {
-                repository.cache.savedDirectory(contentScope, workId, versionId)?.let { page = novelSavedDirectoryContents(it, query) }
-            }
         }
-        LaunchedEffect(query, retry) {
+        LaunchedEffect(query, retry, anchorId) {
             loading = true; error = null
             try {
                 val cached = withContext(Dispatchers.IO) {
@@ -76,7 +76,9 @@ fun NovelContentsPanel(
                 catch (e: Exception) {
                     val saved = contentScope?.let { repository.cache.savedDirectory(it, workId, versionId) }
                     if (saved == null && cached.isEmpty()) throw e
-                    page = saved?.let { novelSavedDirectoryContents(it, query) } ?: novelOfflineContents(cached, query)
+                    page = withContext(Dispatchers.Default) {
+                        saved?.let { novelSavedDirectoryContents(it, query) } ?: novelOfflineContents(cached, query, anchorId)
+                    }
                     error = if (e is NovelApiException && e.status in setOf(401, 403)) "登录已失效，当前显示本机目录" else if (saved == null) "暂时无法获取完整目录，当前仅显示本机已下载目录" else null
                 }
             } catch (e: CancellationException) { throw e }
@@ -97,7 +99,10 @@ fun NovelContentsPanel(
                 }
             }
             NovelContentsBody(query, page, loading, error, downloaded, currentId, currentOrdinal, enabled,
-                onQuery = { term = it.q; descending = it.descending; offset = it.offset }, onRetry = { retry++ }, onOpen = { id ->
+                onQuery = { next, position ->
+                    term = next.q; descending = next.descending; offset = next.offset
+                    anchorId = currentId.takeIf { position == ContentsPosition.CURRENT_CHAPTER }
+                }, onRetry = { retry++ }, onOpen = { id ->
                     val chapter = page?.novelObjects("items")?.firstOrNull { it.optString("id") == id }
                         ?: page?.optJSONObject("latest")?.takeIf { it.optString("id") == id }
                     chapter?.let(onOpen)
@@ -110,13 +115,13 @@ fun NovelContentsPanel(
 internal fun ColumnScope.NovelContentsBody(
     query: NovelContentsQuery, page: JSONObject?, loading: Boolean, error: String?, downloaded: Set<String>,
     currentId: String?, currentOrdinal: Int?, enabled: Boolean,
-    onQuery: (NovelContentsQuery) -> Unit, onRetry: () -> Unit, onOpen: (String) -> Unit,
+    onQuery: (NovelContentsQuery, ContentsPosition) -> Unit, onRetry: () -> Unit, onOpen: (String) -> Unit,
 ) {
     var draft by rememberSaveable(query.q) { mutableStateOf(query.q) }
     var jump by rememberSaveable { mutableStateOf(false) }
     var number by rememberSaveable { mutableStateOf("") }
     var more by remember { mutableStateOf(false) }
-    var locateRequest by remember { mutableIntStateOf(0) }
+    var pendingPosition by rememberSaveable { mutableStateOf<ContentsPosition?>(ContentsPosition.CURRENT_CHAPTER) }
     val focus = LocalFocusManager.current
     val list = rememberLazyListState()
     val entries = page?.novelObjects("items").orEmpty()
@@ -126,26 +131,31 @@ internal fun ColumnScope.NovelContentsBody(
     val target = number.toIntOrNull()?.takeIf { it in 1..pages }
     val next = page?.let(::novelContentsNext)
     val localOnly = page?.optBoolean("_downloaded_only") == true
-    fun search() { focus.clearFocus(); onQuery(query.search(draft)) }
-    fun go() { target?.let { focus.clearFocus(); onQuery(query.copy(offset = (it - 1) * query.limit)); jump = false } }
-    var positionedFor by remember { mutableStateOf<Pair<NovelContentsQuery, Int>?>(null) }
-    LaunchedEffect(query, loading, locateRequest) {
-        if (loading || page == null || positionedFor == (query to locateRequest)) return@LaunchedEffect
-        positionedFor = query to locateRequest
-        val active = if (query.q.isBlank() && !query.descending) entries.indexOfFirst { it.optString("id") == currentId } else -1
-        list.scrollToItem(active.coerceAtLeast(0))
+    fun navigate(to: NovelContentsQuery, position: ContentsPosition = ContentsPosition.PAGE_START) {
+        focus.clearFocus()
+        pendingPosition = position
+        onQuery(to, position)
+    }
+    fun search() { navigate(query.search(draft)) }
+    fun go() { target?.let { navigate(query.copy(offset = (it - 1) * query.limit)); jump = false } }
+    LaunchedEffect(query, loading, page != null, pendingPosition) {
+        val position = pendingPosition ?: return@LaunchedEffect
+        if (loading || page == null) return@LaunchedEffect
+        val index = if (position == ContentsPosition.CURRENT_CHAPTER) entries.indexOfFirst { it.optString("id") == currentId } else 0
+        list.scrollToItem(index.coerceAtLeast(0))
+        pendingPosition = null
     }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(if (localOnly) "已下载 · $total 节" else if (query.q.isNotBlank()) "找到 $total 节" else "共 $total 节",
             Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (currentOrdinal != null) TextButton(onClick = { draft = ""; focus.clearFocus(); onQuery(query.locate(currentOrdinal)); locateRequest++ }) { Text("当前章") }
-        TextButton(onClick = { focus.clearFocus(); onQuery(query.reverse()) }) { Text(if (query.descending) "倒序" else "正序") }
+        if (currentOrdinal != null) TextButton(onClick = { draft = ""; navigate(query.locate(currentOrdinal), ContentsPosition.CURRENT_CHAPTER) }) { Text("当前章") }
+        TextButton(onClick = { navigate(query.reverse()) }) { Text(if (query.descending) "倒序" else "正序") }
         Box {
             IconButton(onClick = { more = true }) { Icon(Icons.Rounded.MoreVert, "更多目录操作") }
             DropdownMenu(more, onDismissRequest = { more = false }) {
                 DropdownMenuItem(text = { Text("跳转页码") }, onClick = { more = false; jump = true })
-                DropdownMenuItem(text = { Text("目录首页") }, onClick = { more = false; onQuery(query.copy(offset = 0)) })
-                DropdownMenuItem(text = { Text("目录末页") }, enabled = total > 0, onClick = { more = false; onQuery(query.copy(offset = (pages - 1) * query.limit)) })
+                DropdownMenuItem(text = { Text("目录首页") }, onClick = { more = false; navigate(query.copy(offset = 0)) })
+                DropdownMenuItem(text = { Text("目录末页") }, enabled = total > 0, onClick = { more = false; navigate(query.copy(offset = (pages - 1) * query.limit)) })
                 DropdownMenuItem(text = { Text("刷新目录") }, enabled = !loading, onClick = { more = false; onRetry() })
             }
         }
@@ -159,7 +169,7 @@ internal fun ColumnScope.NovelContentsBody(
     } else Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         OutlinedTextField(draft, { draft = it.take(200) }, Modifier.weight(1f), singleLine = true,
             leadingIcon = { Icon(Icons.Rounded.Search, null) }, placeholder = { Text(if (localOnly) "搜索已下载章节标题" else "搜索全书章节标题") },
-            trailingIcon = { if (draft.isNotEmpty() || query.q.isNotEmpty()) IconButton(onClick = { draft = ""; onQuery(query.search("")) }) { Icon(Icons.Rounded.Close, "清除章节搜索") } },
+            trailingIcon = { if (draft.isNotEmpty() || query.q.isNotEmpty()) IconButton(onClick = { draft = ""; navigate(query.search("")) }) { Icon(Icons.Rounded.Close, "清除章节搜索") } },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { search() }))
         TextButton(onClick = { search() }) { Text("查找") }
     }
@@ -169,7 +179,8 @@ internal fun ColumnScope.NovelContentsBody(
         TextButton(enabled = !loading, onClick = onRetry) { Text("重试") }
     } else if (page?.has("_directory_cached") == true) Text("完整目录已缓存 · 未下载章节需联网获取", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     else if (page?.has("_cached_at") == true) Text("缓存目录 · 联网后可刷新", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, overscrollEffect = null,
+        contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (!loading && page != null && entries.isEmpty()) item {
             ReaderEmptyState(Icons.Rounded.SearchOff, "没有匹配的章节", if (query.q.isBlank()) "此版本暂无目录，可返回选择其他版本。" else "试试更短的章节名，或清除关键词。")
         }
@@ -177,7 +188,8 @@ internal fun ColumnScope.NovelContentsBody(
             val id = entry.getString("id")
             val active = id == currentId
             val readable = entry.optBoolean("readable")
-            Surface(onClick = { focus.clearFocus(); onOpen(id) }, enabled = enabled && !loading && readable,
+            val missingDownload = localOnly && readable && id !in downloaded
+            Surface(onClick = { focus.clearFocus(); onOpen(id) }, enabled = enabled && !loading && readable && !missingDownload,
                 modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp),
                 color = if (active) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface) {
                 Row(Modifier.heightIn(min = 60.dp).padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -187,7 +199,8 @@ internal fun ColumnScope.NovelContentsBody(
                             if (meta.optBoolean("vip")) Text(if (meta.optBoolean("paid")) "VIP · 已购" else "VIP · 正文可用性待获取", style = MaterialTheme.typography.labelSmall)
                         }
                         Text(entry.optString("title"), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
-                        if (active || !readable) Text(if (active) "正在阅读" else "卷标题", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        if (missingDownload) Text("本机缓存已移除", style = MaterialTheme.typography.labelSmall)
+                        else if (active || !readable) Text(if (active) "正在阅读" else "卷标题", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                     }
                     if (id in downloaded) Icon(Icons.Rounded.OfflinePin, "已下载", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -196,11 +209,11 @@ internal fun ColumnScope.NovelContentsBody(
     }
     HorizontalDivider()
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-        IconButton(enabled = !loading && start > 0, onClick = { onQuery(query.copy(offset = (start - query.limit).coerceAtLeast(0))) }) { Icon(Icons.Rounded.ChevronLeft, "上一页目录") }
+        IconButton(enabled = !loading && start > 0, onClick = { navigate(query.copy(offset = (start - query.limit).coerceAtLeast(0))) }) { Icon(Icons.Rounded.ChevronLeft, "上一页目录") }
         TextButton(enabled = page != null, onClick = { jump = !jump }) { Text("${if (total == 0) 0 else start / query.limit + 1} / ${if (total == 0) 0 else pages} 页") }
         page?.optJSONObject("latest")?.let { latest ->
             TextButton(enabled = enabled && !loading && latest.optBoolean("readable"), onClick = { focus.clearFocus(); onOpen(latest.getString("id")) }) { Text("读末章") }
         }
-        IconButton(enabled = !loading && next != null, onClick = { next?.let { onQuery(query.copy(offset = it)) } }) { Icon(Icons.Rounded.ChevronRight, "下一页目录") }
+        IconButton(enabled = !loading && next != null, onClick = { next?.let { navigate(query.copy(offset = it)) } }) { Icon(Icons.Rounded.ChevronRight, "下一页目录") }
     }
 }

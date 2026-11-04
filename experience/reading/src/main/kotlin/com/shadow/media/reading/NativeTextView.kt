@@ -258,7 +258,7 @@ internal class NativeTextView(context: Context) : View(context) {
             invalidate()
         }
         override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
-            if (!touchActive || overScroll != 0f || settings.pageMode != ReaderPageMode.SCROLL || systemEdge || multiTouch || longPress || scaling || brightnessDrag) return false
+            if (!touchActive || !dragging || overScroll != 0f || settings.pageMode != ReaderPageMode.SCROLL || systemEdge || multiTouch || longPress || scaling || brightnessDrag) return false
             scrollLastY = 0
             scroller.fling(0, 0, 0, -velocityY.toInt(), 0, 0, -height * 4, height * 4)
             postInvalidateOnAnimation(); return true
@@ -531,8 +531,7 @@ internal class NativeTextView(context: Context) : View(context) {
                     brightnessDrag = false
                 } else if (dragging && !multiTouch && !longPress && !scaling) {
                     if (settings.pageMode == ReaderPageMode.SCROLL) {
-                        if (abs(overScroll) > height * .15f) requestBoundary(if (overScroll > 0) 1 else -1)
-                        else if (overScroll != 0f) rebound()
+                        if (overScroll != 0f) rebound()
                     } else {
                         velocity?.computeCurrentVelocity(1000)
                         val commit = readerCommitSwipe(event.x - downX, velocity?.xVelocity ?: 0f, width, slop.toFloat(),
@@ -553,23 +552,19 @@ internal class NativeTextView(context: Context) : View(context) {
     }
     private fun scrollByPixels(delta: Float, fromTouch: Boolean = false) {
         val doc = document ?: return
-        var dy = delta
-        if (fromTouch && overScroll != 0f) {
-            val combined = overScroll + dy
-            if ((combined > 0) == (overScroll > 0)) { overScroll = combined; invalidate(); return }
-            dy = combined; overScroll = 0f
-        }
-        scrollOffset += dy
+        scrollOffset += delta + overScroll
+        overScroll = 0f
         while (scrollOffset >= scrollStride && pageIndex < doc.pages.lastIndex) { scrollOffset -= scrollStride; changePage(pageIndex + 1) }
         while (scrollOffset < 0 && pageIndex > 0) { scrollOffset += scrollStride; changePage(pageIndex - 1) }
         if (pageIndex == 0 && scrollOffset < 0 || pageIndex == doc.pages.lastIndex && scrollOffset > 0) {
-            if (fromTouch) {
-                overScroll += scrollOffset
-                showNotice(if (overScroll > 0) "继续上拉，松手进入下一章" else "继续下拉，松手进入上一章")
-            } else scroller.abortAnimation()
-            val next = if (overScroll != 0f) overScroll else scrollOffset
+            val distance = scrollOffset
             scrollOffset = 0f
-            if (!fromTouch || abs(overScroll) > slop * 2) requestBoundary(if (next > 0) 1 else -1)
+            if (!fromTouch || abs(distance) > slop * 2) {
+                requestBoundary(if (distance > 0) 1 else -1)
+            } else {
+                overScroll = distance
+                showNotice(if (overScroll > 0) "继续上拉进入下一章" else "继续下拉进入上一章")
+            }
             invalidate(); return
         }
         val newOffset = doc.offsetAt(pageIndex, scrollOffset)

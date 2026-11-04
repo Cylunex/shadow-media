@@ -179,6 +179,42 @@ class NativeTextGestureTest {
             assertEquals(1, boundaries)
         } finally { view.dispose() }
     }
+    @Test fun sidewaysSwipeAtTheBottomCannotFlingIntoTheNextChapter() {
+        val view = reader()
+        try {
+            view.configure(ReaderSettings(pageMode = ReaderPageMode.SCROLL))
+            view.seek(view.document!!.pages.last().start)
+            var boundaries = 0
+            view.onBoundary = { boundaries++ }
+            val time = SystemClock.uptimeMillis()
+            event(view, MotionEvent.ACTION_DOWN, 360f, 500f, time, 0)
+            event(view, MotionEvent.ACTION_MOVE, 150f, 470f, time, 20)
+            event(view, MotionEvent.ACTION_UP, 90f, 460f, time, 40)
+            repeat(30) { shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(16)); view.computeScroll() }
+            assertEquals(0, boundaries)
+        } finally { view.dispose() }
+    }
+    @Test fun slowPullsAccumulateAtEitherChapterBoundary() {
+        val view = reader()
+        try {
+            view.configure(ReaderSettings(pageMode = ReaderPageMode.SCROLL))
+            val slop = android.view.ViewConfiguration.get(view.context).scaledTouchSlop.toFloat()
+            val boundaries = mutableListOf<Int>()
+            view.onBoundary = { boundaries.add(it) }
+            for (direction in listOf(1, -1)) {
+                view.seek(if (direction > 0) view.document!!.chapter.text.length else 0)
+                val time = SystemClock.uptimeMillis()
+                event(view, MotionEvent.ACTION_DOWN, 216f, 450f, time, 0)
+                event(view, MotionEvent.ACTION_MOVE, 216f, 450f - direction * slop * 1.5f, time, 60)
+                assertFalse(direction in boundaries)
+                event(view, MotionEvent.ACTION_MOVE, 216f, 450f - direction * slop * 2.5f, time, 120)
+                assertEquals(direction, boundaries.lastOrNull())
+                event(view, MotionEvent.ACTION_UP, 216f, 450f - direction * slop * 2.5f, time, 180)
+                view.boundaryResolved()
+            }
+            assertEquals(listOf(1, -1), boundaries)
+        } finally { view.dispose() }
+    }
     @Test fun brightnessDragPreviewsImmediatelyButCommitsOnlyOnReleaseAndCancelRestores() {
         val view = reader()
         try {

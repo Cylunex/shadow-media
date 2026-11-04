@@ -8,9 +8,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.*
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import com.shadow.media.library.NovelContentsQuery
+import com.shadow.media.library.NovelRepository
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -37,7 +39,7 @@ class NovelContentsUiTest {
         compose.setContent { MaterialTheme(colorScheme = readerColorScheme(ReaderPaper.IVORY)) { Surface { Column(Modifier.fillMaxSize().padding(20.dp)) {
             Text("章节目录", style = MaterialTheme.typography.titleLarge)
             NovelContentsBody(query, data, false, null, setOf("c145"), "c145", 145, true,
-                onQuery = { query = it }, onRetry = {}, onOpen = { opened = it })
+                onQuery = { next, _ -> query = next }, onRetry = {}, onOpen = { opened = it })
         } } } }
         compose.onNodeWithText("正在阅读").assertIsDisplayed()
         System.getenv("NATIVE_READER_SCREENSHOTS")?.let { folder ->
@@ -64,7 +66,7 @@ class NovelContentsUiTest {
         var downloaded by mutableStateOf(emptySet<String>())
         compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize().padding(20.dp)) {
             NovelContentsBody(NovelContentsQuery("v", offset = 100), data, false, null, downloaded,
-                "c145", 145, true, {}, {}, {})
+                "c145", 145, true, { _, _ -> }, {}, {})
         } } } }
         compose.onNode(hasScrollToIndexAction()).performScrollToIndex(99)
         compose.onNodeWithText("第199 节 山海来信").assertIsDisplayed()
@@ -78,11 +80,54 @@ class NovelContentsUiTest {
         compose.onNodeWithText("第145 节 山海来信").assertIsDisplayed()
     }
 
+    @Test fun directoryAtEndStaysThereAfterStateRestorationAndRepeatedSwipes() {
+        val restoration = StateRestorationTester(compose)
+        val data = page()
+        lateinit var loading: MutableState<Boolean>
+        restoration.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize()) {
+            loading = remember { mutableStateOf(true) }
+            NovelContentsBody(NovelContentsQuery("v", offset = 100), data.takeUnless { loading.value }, loading.value, null,
+                emptySet(), "c145", 145, true, { _, _ -> }, {}, {})
+        } } } }
+        val list = compose.onNode(hasScrollToIndexAction())
+        compose.runOnIdle { loading.value = false }
+        compose.onNodeWithText("正在阅读").assertIsDisplayed()
+        list.performScrollToIndex(99)
+        compose.onNodeWithText("第199 节 山海来信").assertIsDisplayed()
+        restoration.emulateSavedInstanceStateRestore()
+        compose.runOnIdle { loading.value = false }
+        compose.onNodeWithText("第199 节 山海来信").assertIsDisplayed()
+        repeat(3) { list.performTouchInput { swipeUp() } }
+        compose.onNodeWithText("第199 节 山海来信").assertIsDisplayed()
+        compose.onNodeWithText("当前章").performClick()
+        compose.onNodeWithText("正在阅读").assertIsDisplayed()
+    }
+
+    @Test fun pageNavigationStartsAtTheFirstRowEvenOnTheCurrentChaptersPage() {
+        var query by mutableStateOf(NovelContentsQuery("v", offset = 100))
+        compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize()) {
+            val data = remember(query) {
+                page().put("offset", query.offset)
+                    .put("items", JSONArray((query.offset until query.offset + query.limit).map { chapter(it) }))
+            }
+            NovelContentsBody(query, data, false, null, emptySet(), "c145", 145, true, { next, _ -> query = next }, {}, {})
+        } } } }
+        compose.onNodeWithText("正在阅读").assertIsDisplayed()
+        compose.onNodeWithContentDescription("下一页目录").performClick()
+        compose.onNodeWithContentDescription("上一页目录").performClick()
+        compose.onNodeWithText("第100 节 山海来信").assertIsDisplayed()
+        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(99)
+        compose.onNodeWithText("2 / 24 页").performClick()
+        compose.onNodeWithText("页码（1–24）").performTextInput("2")
+        compose.onNodeWithText("跳转").performClick()
+        compose.onNodeWithText("第100 节 山海来信").assertIsDisplayed()
+    }
+
     @Test fun jumpUsesFilteredPagesAndExplicitEndDisablesNext() {
         var query by mutableStateOf(NovelContentsQuery("v", "山海"))
         val data = page().put("total", 124).put("next_offset", JSONObject.NULL)
         compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize().padding(20.dp)) {
-            NovelContentsBody(query, data, false, null, emptySet(), null, null, true, { query = it }, {}, {})
+            NovelContentsBody(query, data, false, null, emptySet(), null, null, true, { next, _ -> query = next }, {}, {})
         } } } }
         compose.onNodeWithContentDescription("下一页目录").assertIsNotEnabled()
         compose.onNodeWithText("2 / 2 页").performClick()
@@ -98,16 +143,51 @@ class NovelContentsUiTest {
         val data = page().put("_downloaded_only", true).put("latest", JSONObject.NULL).put("offset", 0)
             .put("items", JSONArray().put(chapter(101, false)))
         compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize().padding(20.dp)) {
-            NovelContentsBody(NovelContentsQuery("v"), data, false, null, emptySet(), null, null, true, {}, {}, { fail("Volume cannot open") })
+            NovelContentsBody(NovelContentsQuery("v"), data, false, null, emptySet(), null, null, true, { _, _ -> }, {}, { fail("Volume cannot open") })
         } } } }
         compose.onNodeWithText("搜索已下载章节标题").assertIsDisplayed()
         compose.onNodeWithText("第101 节 山海来信").assertIsNotEnabled()
         compose.onNodeWithText("读末章").assertDoesNotExist()
     }
 
+    @Test fun sparseOfflineDirectoryLocatesTheCurrentChapterBeforeAndAfterPaging() {
+        val repo = NovelRepository(compose.activity)
+        val cached = (0 until 230).map { chapter(it * 10) }
+        compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize()) {
+            NovelContentsPanel(repo, null, "book", "v", true, {}, Modifier.weight(1f),
+                currentId = "c1450", currentOrdinal = 1450, downloadedChapters = { cached })
+        } } } }
+        fun awaitTitle(title: String) = compose.waitUntil(5_000) {
+            compose.onAllNodesWithText(title).fetchSemanticsNodes().isNotEmpty()
+        }
+        awaitTitle("正在阅读")
+        compose.onNodeWithText("2 / 3 页").assertIsDisplayed()
+        compose.onNodeWithContentDescription("下一页目录").performClick()
+        awaitTitle("第2000 节 山海来信")
+        compose.onNodeWithText("3 / 3 页").assertIsDisplayed()
+        compose.onNodeWithText("当前章").performClick()
+        awaitTitle("正在阅读")
+        compose.onNodeWithText("第1450 节 山海来信").assertIsDisplayed()
+    }
+
+    @Test fun removedOfflineChapterStaysInPlaceAndCannotBeOpened() {
+        val data = page().put("_downloaded_only", true)
+        var downloaded by mutableStateOf((100..199).map { "c$it" }.toSet())
+        compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize()) {
+            NovelContentsBody(NovelContentsQuery("v", offset = 100), data, false, null,
+                downloaded, "c145", 145, true, { _, _ -> }, {}, { fail("Missing download cannot open") })
+        } } } }
+        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(99)
+        val last = compose.onNodeWithText("第199 节 山海来信")
+        last.assertIsDisplayed().assertIsEnabled()
+        compose.runOnIdle { downloaded -= "c199" }
+        last.assertIsDisplayed().assertIsNotEnabled()
+        compose.onNodeWithText("本机缓存已移除").assertIsDisplayed()
+    }
+
     @Test @Config(qualifiers = "w640dp-h360dp-mdpi") fun landscapeAndKeyboardHeightKeepPagingAndJumpReachable() {
         compose.setContent { MaterialTheme(colorScheme = readerColorScheme(ReaderPaper.NIGHT)) { Surface { Column(Modifier.fillMaxWidth().height(240.dp).padding(horizontal = 20.dp)) {
-            NovelContentsBody(NovelContentsQuery("v"), page(), false, null, emptySet(), "c145", 145, true, {}, {}, {})
+            NovelContentsBody(NovelContentsQuery("v"), page(), false, null, emptySet(), "c145", 145, true, { _, _ -> }, {}, {})
         } } } }
         compose.onNodeWithContentDescription("下一页目录").assertIsDisplayed()
         compose.onNodeWithText("2 / 24 页").performClick()

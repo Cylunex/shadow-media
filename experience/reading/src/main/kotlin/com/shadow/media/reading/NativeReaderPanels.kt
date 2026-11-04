@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.input.KeyboardType
@@ -51,7 +52,7 @@ internal fun ColumnScope.NativeReaderContentsPanel(
             downloadedChapters = { novel.cachedContents(publication) }, contentScope = publication.scope)
         return
     }
-    var requested by remember { mutableIntStateOf(current.ref.ordinal) }
+    var requested by rememberSaveable(asset.id, asset.revision) { mutableIntStateOf(current.ref.ordinal) }
     var total by remember { mutableIntStateOf(current.total) }
     val start = nativeContentsOffset(requested, total)
     var allEntries by remember { mutableStateOf<List<NativeChapterRef>>(emptyList()) }
@@ -83,23 +84,22 @@ internal fun ColumnScope.NativeContentsBody(
     total: Int, start: Int, loading: Boolean, notice: String?, enabled: Boolean,
     onRequest: (Int) -> Unit, onRetry: () -> Unit, onOpen: (NativeChapterRef) -> Unit, allEntries: List<NativeChapterRef> = entries,
 ) {
-    var filter by remember { mutableStateOf("") }
-    var number by remember { mutableStateOf("") }
-    var showJump by remember { mutableStateOf(false) }
+    var filter by rememberSaveable { mutableStateOf("") }
+    var number by rememberSaveable { mutableStateOf("") }
+    var showJump by rememberSaveable { mutableStateOf(false) }
     var more by remember { mutableStateOf(false) }
-    var scrollRequest by remember { mutableIntStateOf(0) }
     val focus = LocalFocusManager.current
     val listState = rememberLazyListState()
     val visible = remember(entries, allEntries, filter) { if (filter.isBlank()) entries else allEntries.filter { it.title.contains(filter.trim(), ignoreCase = true) } }
     val target = number.toIntOrNull()?.takeIf { it in 1..total }
-    fun locate(ordinal: Int) { filter = ""; focus.clearFocus(); onRequest(ordinal); scrollRequest++ }
+    var needsPosition by rememberSaveable(requested, filter) { mutableStateOf(true) }
+    fun locate(ordinal: Int) { filter = ""; focus.clearFocus(); onRequest(ordinal); needsPosition = true }
     fun jump() { target?.let { locate(it - 1); showJump = false } }
-    var positionedFor by remember { mutableStateOf<Triple<Int, String, Int>?>(null) }
-    LaunchedEffect(requested, filter, scrollRequest, loading) {
-        val targetPosition = Triple(requested, filter, scrollRequest)
-        if (loading || positionedFor == targetPosition) return@LaunchedEffect
-        positionedFor = targetPosition
-        listState.scrollToItem(visible.indexOfFirst { it.ordinal == requested }.coerceAtLeast(0))
+    LaunchedEffect(requested, filter, needsPosition, loading) {
+        if (loading || !needsPosition || visible.isEmpty()) return@LaunchedEffect
+        val index = if (filter.isBlank()) visible.indexOfFirst { it.ordinal == requested }.coerceAtLeast(0) else 0
+        listState.scrollToItem(index)
+        needsPosition = false
     }
     if (!showJump) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text("共 $total 节", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -130,7 +130,7 @@ internal fun ColumnScope.NativeContentsBody(
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }))
     notice?.let { Text(it, Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
-    LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, overscrollEffect = null, contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (!loading && visible.isEmpty()) item {
             ReaderEmptyState(Icons.Rounded.SearchOff, if (filter.isBlank()) "本页暂无章节" else "没有匹配的标题", if (filter.isBlank()) "试试其他分页，或刷新目录。" else "全书没有匹配章节，清除关键词可返回当前分页。")
         }
@@ -151,7 +151,9 @@ internal fun ColumnScope.NativeContentsBody(
         }
     }
     HorizontalDivider()
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+    if (filter.isNotBlank()) Box(Modifier.fillMaxWidth().heightIn(min = 48.dp), contentAlignment = Alignment.Center) {
+        Text("找到 ${visible.size} 节", style = MaterialTheme.typography.labelMedium)
+    } else Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
         IconButton(enabled = !loading && start > 0, onClick = { locate(start - NATIVE_CONTENTS_PAGE_SIZE) }) { Icon(Icons.Rounded.ChevronLeft, "上一页目录") }
         Text("${if (total == 0) 0 else start + 1}–${(start + NATIVE_CONTENTS_PAGE_SIZE).coerceAtMost(total)} / $total", style = MaterialTheme.typography.labelMedium)
         IconButton(enabled = !loading && start + NATIVE_CONTENTS_PAGE_SIZE < total, onClick = { locate(start + NATIVE_CONTENTS_PAGE_SIZE) }) { Icon(Icons.Rounded.ChevronRight, "下一页目录") }

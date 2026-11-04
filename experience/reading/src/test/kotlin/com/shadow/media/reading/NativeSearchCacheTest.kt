@@ -30,6 +30,8 @@ class NativeSearchCacheTest {
         }
         val result = searchNativeText(entries, "星光", before = 1 to 4).last()
         assertEquals(listOf("章1", "章0", "章0"), result.hits.map { it.title })
+        assertEquals("星光一。", result.hits.first().preview)
+        assertEquals("星光一。星光二。", result.hits[1].preview)
         assertEquals(4, JSONObject(result.hits[1].locator).getJSONObject("native_text").getInt("offset"))
         assertEquals(0, JSONObject(result.hits[2].locator).getJSONObject("native_text").getInt("offset"))
     }

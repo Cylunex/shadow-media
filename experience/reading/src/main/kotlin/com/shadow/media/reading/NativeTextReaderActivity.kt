@@ -84,6 +84,10 @@ class NativeTextReaderActivity : ComponentActivity() {
         }
         library = LibraryRepository(this); novel = NovelRepository(this, library); source = NativeTextSource(library, novel)
         store = ReaderSettingsStore(getSharedPreferences("reader_preferences", MODE_PRIVATE)); style = store.load()
+        if (savedInstanceState?.getBoolean("contents_open") == true) {
+            menu = true
+            panel = "目录"
+        }
         readerSearch = NativeSearchSession(savedInstanceState?.getInt("search_index") ?: 0, savedInstanceState?.getInt("search_pixels") ?: 0)
         readerSearch.executed = savedInstanceState?.getBoolean("search_executed") ?: false
         readerSearch.query.value = savedInstanceState?.getString("search_query").orEmpty()
@@ -263,6 +267,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         val next = adjacent(current.ref.ordinal, direction)
         if (next == null) {
             busy = false; view?.isEnabled = true
+            if (direction > 0 && publication == null) view?.seek(current.text.length)
             view?.boundaryResolved(if (direction > 0) "已到本书末尾" else "已到本书开头")
         } else loadChapter(next, direction < 0)
     }
@@ -478,59 +483,70 @@ class NativeTextReaderActivity : ComponentActivity() {
                             }, onPrevious = { skipChapter(-1) }, onNext = { skipChapter(1) },
                             onSpeak = { speak() }, onPanel = { if (it == "书源") sourceState.selectedVersion = null; panel = it; applyWindow() }, compact = compactControls, sources = publication != null)
                     }
-                if (panel == null) SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp))
+                if (panel == null) SnackbarHost(snackbar, Modifier.align(if (menu) Alignment.Center else Alignment.BottomCenter)
+                    .navigationBarsPadding().padding(12.dp))
             }
-            if (panel != null) ModalBottomSheet(sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), onDismissRequest = { panel = null; applyWindow() }) {
-                Column(Modifier.fillMaxWidth().fillMaxHeight(if (panel == "排版") .58f else .92f).padding(horizontal = 20.dp).navigationBarsPadding().imePadding()) {
-                    Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(panel.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                        IconButton(onClick = { panel = null; applyWindow() }) { Icon(Icons.Rounded.Close, "关闭面板") }
-                    }
-                    when (panel) {
-                        "听读" -> NarrationControls(onFromHere = { speak(true) }, onFollow = ::followSpeech, onContinue = { speak() })
-                        "排版" -> Column(Modifier.weight(1f)) {
-                            Row {
-                                TextButton(onClick = { store.followDefaults(); style = store.load(); view?.configure(style); applyWindow() }) { Text("跟随默认") }
-                                TextButton(onClick = { store.makeDefault(style) }) { Text("设为默认排版") }
-                            }
-                            ReaderPreferencesPanel(style, ::update, nativeText = true,
-                            importFont = { fontPicker.launch(arrayOf("font/*", "application/x-font-ttf", "application/vnd.ms-opentype", "application/octet-stream")) }, encoding = if (asset?.format == "txt") ({
-                            Text("文本编码：${asset?.let { library.textEncoding(it.id) }}")
-                            FlowRow { listOf("自动", "UTF-8", "GB18030", "Big5", "UTF-16LE", "UTF-16BE").forEach { encoding -> TextButton(onClick = {
-                                navigate { val item = requireNotNull(asset); val locator = chapter?.locator(offset); library.setTextEncoding(item.id, encoding); source.invalidate(); session = null; open(item, locator) }
-                            }) { Text(encoding) } } }
-                        }) else null) }
-                        "更多" -> {
-                            TextButton(onClick = { panel = "搜索" }) { Text("搜正文") }
-                            TextButton(onClick = { panel = "书签" }) { Text("书签与摘录") }
-                            if (publication != null) TextButton(onClick = { panel = "书源" }) { Text("切换阅读书源") }
-                            TextButton(onClick = { message = "轻点中间打开菜单，左右两侧翻页。长按正文选字，拖动两端手柄调整范围。" }) { Text("手势帮助") }
+            val browsingContents = panel == "目录" || (panel == "书源" && sourceState.selectedVersion != null)
+            if (panel != null) ModalBottomSheet(
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                sheetGesturesEnabled = !browsingContents,
+                dragHandle = if (browsingContents) null else ({ BottomSheetDefaults.DragHandle() }),
+                onDismissRequest = { panel = null; applyWindow() },
+            ) {
+                Box {
+                    Column(Modifier.fillMaxWidth().fillMaxHeight(if (panel == "排版") .58f else .92f).padding(horizontal = 20.dp).navigationBarsPadding().imePadding()) {
+                        Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(panel.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                            IconButton(onClick = { panel = null; applyWindow() }) { Icon(Icons.Rounded.Close, "关闭面板") }
                         }
-                        "目录" -> asset?.let { item -> chapter?.let { content ->
-                            Row {
-                                TextButton(onClick = { panel = "目录" }) { Text("目录") }
+                        when (panel) {
+                            "听读" -> NarrationControls(onFromHere = { speak(true) }, onFollow = ::followSpeech, onContinue = { speak() })
+                            "排版" -> Column(Modifier.weight(1f)) {
+                                Row {
+                                    TextButton(onClick = { store.followDefaults(); style = store.load(); view?.configure(style); applyWindow() }) { Text("跟随默认") }
+                                    TextButton(onClick = { store.makeDefault(style) }) { Text("设为默认排版") }
+                                }
+                                ReaderPreferencesPanel(style, ::update, nativeText = true,
+                                importFont = { fontPicker.launch(arrayOf("font/*", "application/x-font-ttf", "application/vnd.ms-opentype", "application/octet-stream")) }, encoding = if (asset?.format == "txt") ({
+                                Text("文本编码：${asset?.let { library.textEncoding(it.id) }}")
+                                FlowRow { listOf("自动", "UTF-8", "GB18030", "Big5", "UTF-16LE", "UTF-16BE").forEach { encoding -> TextButton(onClick = {
+                                    navigate { val item = requireNotNull(asset); val locator = chapter?.locator(offset); library.setTextEncoding(item.id, encoding); source.invalidate(); session = null; open(item, locator) }
+                                }) { Text(encoding) } } }
+                            }) else null) }
+                            "更多" -> {
+                                TextButton(onClick = { panel = "搜索" }) { Text("搜正文") }
                                 TextButton(onClick = { panel = "书签" }) { Text("书签与摘录") }
+                                if (publication != null) TextButton(onClick = { panel = "书源" }) { Text("切换阅读书源") }
+                                TextButton(onClick = { message = "轻点中间打开菜单，左右两侧翻页。长按正文选字，拖动两端手柄调整范围。" }) { Text("手势帮助") }
                             }
-                            NativeReaderContentsPanel(item, publication, content, source, novel, !busy, ::openChapter)
-                        } }
-                        "书源" -> publication?.let { pub -> chapter?.let { content ->
-                            NovelReaderSourcesPanel(novel, pub, asset?.title.orEmpty(), content.ref.title, !busy, sourceState, ::switchSource)
-                        } }
-                        "搜索" -> asset?.let { item ->
-                            NativeReaderSearchPanel(item, publication, source, !busy, chapter?.let { it.ref.ordinal to offset }, session = readerSearch) { hit -> jumpTo(NativeReaderLocation(hit.assetId, hit.locator)) }
+                            "目录" -> asset?.let { item -> chapter?.let { content ->
+                                Row {
+                                    TextButton(onClick = { panel = "目录" }) { Text("目录") }
+                                    TextButton(onClick = { panel = "书签" }) { Text("书签与摘录") }
+                                }
+                                NativeReaderContentsPanel(item, publication, content, source, novel, !busy, ::openChapter)
+                            } }
+                            "书源" -> publication?.let { pub -> chapter?.let { content ->
+                                NovelReaderSourcesPanel(novel, pub, asset?.title.orEmpty(), content.ref.title, !busy, sourceState, ::switchSource)
+                            } }
+                            "搜索" -> asset?.let { item ->
+                                NativeReaderSearchPanel(item, publication, source, !busy, chapter?.let { it.ref.ordinal to offset }, session = readerSearch) { hit -> jumpTo(NativeReaderLocation(hit.assetId, hit.locator)) }
+                            }
+                            "书签" -> asset?.let {
+                                TextButton(onClick = { panel = "目录" }) { Text("返回目录") }
+                                val marks by library.dao.annotationsForAssets(bookmarkAssets).collectAsState(emptyList())
+                                NativeReaderBookmarks(marks, !busy, onOpen = { mark ->
+                                    jumpTo(NativeReaderLocation(mark.assetId, mark.locatorJson))
+                                }, onDelete = { mark -> lifecycleScope.launch {
+                                    deleteReaderBookmark(library, mark, snackbar)
+                                } })
+                            }
                         }
-                        "书签" -> asset?.let {
-                            TextButton(onClick = { panel = "目录" }) { Text("返回目录") }
-                            val marks by library.dao.annotationsForAssets(bookmarkAssets).collectAsState(emptyList())
-                            NativeReaderBookmarks(marks, !busy, onOpen = { mark ->
-                                jumpTo(NativeReaderLocation(mark.assetId, mark.locatorJson))
-                            }, onDelete = { mark -> lifecycleScope.launch {
-                                deleteReaderBookmark(library, mark, snackbar)
-                            } })
-                        }
+                        Spacer(Modifier.height(8.dp))
+                        if (!browsingContents) SnackbarHost(snackbar)
                     }
-                    Spacer(Modifier.height(8.dp))
-                    SnackbarHost(snackbar)
+                    // Transient feedback must not resize the chapter list under the reader’s finger.
+                    if (browsingContents) SnackbarHost(snackbar, Modifier.align(Alignment.TopStart).padding(start = 12.dp, end = 72.dp))
                 }
             }
             excerpt?.let { (text, position) -> AlertDialog(onDismissRequest = { excerpt = null }, title = { Text("摘录") }, text = { androidx.compose.foundation.text.selection.SelectionContainer { Text(if (text.length > 1000) "最多保存 1000 字，请返回缩短选区。\n\n$text" else text) } },
@@ -539,6 +555,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         }
     }
     override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("contents_open", panel == "目录")
         outState.putInt("search_index", readerSearch.list.firstVisibleItemIndex)
         outState.putInt("search_pixels", readerSearch.list.firstVisibleItemScrollOffset)
         outState.putBoolean("search_executed", readerSearch.executed)

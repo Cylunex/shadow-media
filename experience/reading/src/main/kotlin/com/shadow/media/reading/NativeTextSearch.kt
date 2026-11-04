@@ -42,9 +42,9 @@ internal fun searchNativeText(entries: List<NativeSearchEntry>, query: String, l
             var index = if (before == null) searchable.indexOf(term, ignoreCase = true) else searchable.lastIndexOf(term, ignoreCase = true)
             while (index >= 0) {
                 currentCoroutineContext().ensureActive()
-                val start = safeTextOffset(content.text, (index - 20).coerceAtLeast(0))
-                val end = safeTextOffset(content.text, (start + 120).coerceAtMost(content.text.length))
-                hits += NativeSearchHit(entry.assetId, entry.ref.title, content.locator(index).toString(), content.text.substring(start, end))
+                val start = safeTextOffset(searchable, (index - 20).coerceAtLeast(0))
+                val end = safeTextOffset(searchable, (start + 120).coerceAtMost(searchable.length))
+                hits += NativeSearchHit(entry.assetId, entry.ref.title, content.locator(index).toString(), searchable.substring(start, end))
                 if (hits.size == limit) {
                     emit(NativeSearchResult(hits.toList(), scanned + 1, selected.size, skipped, complete = true, limited = true))
                     return@flow
