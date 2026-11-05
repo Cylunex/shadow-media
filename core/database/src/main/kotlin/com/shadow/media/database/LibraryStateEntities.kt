@@ -74,6 +74,12 @@ private const val CONTINUE_ROWS = LOGICAL_LIBRARY_PROGRESS + """
 
     @Query(CONTINUE_ROWS + "SELECT * FROM continue_rows WHERE providerId IN (:providers) ORDER BY updatedAt DESC, rowId LIMIT 1")
     fun latestContinuing(providers: List<String>): Flow<ContinueRow?>
+    @Query(CONTINUE_ROWS + "SELECT * FROM continue_rows WHERE providerId IN (:providers) AND kind IN (:kinds) ORDER BY updatedAt DESC, rowId LIMIT 1")
+    fun latestContinuing(providers: List<String>, kinds: List<String>): Flow<ContinueRow?>
+
+    @Query(CONTINUE_ROWS + "SELECT * FROM continue_rows WHERE providerId IN (:providers) AND kind IN (:kinds) ORDER BY updatedAt DESC, rowId")
+    fun continuing(providers: List<String>, kinds: List<String>): PagingSource<Int, ContinueRow>
+
     @Query("SELECT * FROM playlist_exports WHERE providerId = :provider AND playlistId = :playlist") suspend fun export(provider: String, playlist: String): PlaylistExportEntity?
     @Query("SELECT * FROM playlist_exports WHERE playlistId = :playlist ORDER BY updatedAt DESC") fun exports(playlist: String): Flow<List<PlaylistExportEntity>>
     @Upsert suspend fun putExport(value: PlaylistExportEntity)

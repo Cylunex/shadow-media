@@ -42,6 +42,29 @@ class MediaNavigationChromeTest {
             bitmap.recycle()
         }
     }
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun switcherIsAtTheRightAndSettingsAreScopedToEachModule() {
+        var module by mutableStateOf(MediaModule.NOVEL)
+        var clicked: ModuleSettingAction? = null
+        compose.setContent { ShadowMediaTheme {
+            Scaffold(topBar = { MediaModuleHeader(module, { module = it }, {}, settingsPage = true) },
+                bottomBar = { MediaModuleNavigation(module, MediaDestination.SETTINGS, {}) }) { padding ->
+                Box(Modifier.padding(padding)) { ModuleSettingsScreen(module, true, {}, { clicked = it }) }
+            }
+        } }
+        for (value in MediaModule.entries) {
+            compose.runOnIdle { module = value }
+            compose.onNodeWithTag("settings-${value.name}").assertIsDisplayed()
+            compose.onNodeWithTag("destination-SETTINGS").assertIsDisplayed()
+            val bounds = compose.onNodeWithTag("module-switch").fetchSemanticsNode().boundsInRoot
+            val screen = compose.onRoot().fetchSemanticsNode().boundsInRoot
+            assertTrue(bounds.center.x > screen.right - 60f)
+            if (value != MediaModule.VIDEO) compose.onNodeWithTag("setting-MDC").assertDoesNotExist()
+        }
+        compose.runOnIdle { module = MediaModule.NOVEL }
+        compose.onNodeWithTag("setting-NOVEL_ACCOUNT").performClick()
+        assertEquals(ModuleSettingAction.NOVEL_ACCOUNT, clicked)
+        screenshot("novel-settings-320")
+    }
     private fun showShelf(theme: String) {
         compose.activity.getSharedPreferences("appearance", 0).edit().putString("theme", theme).commit()
         val books = JSONArray()
@@ -50,7 +73,7 @@ class MediaNavigationChromeTest {
         }
         val data = JSONObject().put("total", books.length()).put("items", books)
         compose.setContent { ShadowMediaTheme {
-            Scaffold(topBar = { MediaModuleHeader(MediaModule.NOVEL, {}, {}, {}) },
+            Scaffold(topBar = { MediaModuleHeader(MediaModule.NOVEL, {}, {}) },
                 bottomBar = { MediaModuleNavigation(MediaModule.NOVEL, MediaDestination.SHELF, {}) }) { padding ->
                 Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
                     NovelWorksPage("shelf", NovelQuery(view = "shelf"), "", JSONObject(), data, false,
@@ -74,7 +97,7 @@ class MediaNavigationChromeTest {
     @Test fun darkShelfUsesNativeContentInsideModuleChrome() {
         showShelf("深色")
         compose.onNodeWithText("山海来信").assertIsDisplayed()
-        compose.onAllNodes(tabs).assertCountEquals(4)
+        compose.onAllNodes(tabs).assertCountEquals(5)
         screenshot("media-novel-dark-393")
         compose.onNodeWithTag("module-switch").performClick()
         compose.onNodeWithTag("module-COMIC").assertIsDisplayed()
@@ -85,12 +108,12 @@ class MediaNavigationChromeTest {
         compose.onNodeWithTag("destination-BOOK_SOURCES").assertIsDisplayed()
         screenshot("media-novel-light-320")
     }
-    @Test fun switchingModuleReplacesMenusAndRemovesSinglePageNavigation() {
+    @Test fun switchingModuleKeepsDedicatedSettingsForEveryModule() {
         var module by mutableStateOf(MediaModule.NOVEL)
         var destination by mutableStateOf(MediaDestination.SHELF)
         var settings = false
         compose.setContent { ShadowMediaTheme {
-            Scaffold(topBar = { MediaModuleHeader(module, { module = it; destination = it.destinations.first() }, {}, { settings = true }) },
+            Scaffold(topBar = { MediaModuleHeader(module, { module = it; destination = it.destinations.first() }, { settings = true }) },
                 bottomBar = { MediaModuleNavigation(module, destination, { destination = it }) }) { padding ->
                 Text("当前内容：${destination.title}", Modifier.padding(padding))
             }
@@ -99,16 +122,16 @@ class MediaNavigationChromeTest {
         compose.onNodeWithTag("destination-BOOK_SOURCES").assertIsSelected()
         compose.onNodeWithTag("module-switch").performClick()
         compose.onNodeWithTag("module-MUSIC").performClick()
-        compose.onAllNodes(tabs).assertCountEquals(2)
+        compose.onAllNodes(tabs).assertCountEquals(3)
         compose.onNodeWithTag("destination-BOOK_SOURCES").assertDoesNotExist()
         compose.onNodeWithTag("destination-PLAYLISTS").performClick()
         compose.onNodeWithText("当前内容：歌单").assertIsDisplayed()
         compose.onNodeWithTag("module-switch").performClick()
         compose.onNodeWithTag("module-LIVE").performClick()
-        compose.onNodeWithTag("module-navigation").assertDoesNotExist()
+        compose.onNodeWithTag("module-navigation").assertIsDisplayed()
+        compose.onAllNodes(tabs).assertCountEquals(2)
         compose.onNodeWithText("当前内容：频道").assertIsDisplayed()
-        compose.onNodeWithTag("module-switch").performClick()
-        compose.onNodeWithText("通用设置").performClick()
+        compose.onNodeWithTag("module-settings").performClick()
         assertTrue(settings)
     }
 }

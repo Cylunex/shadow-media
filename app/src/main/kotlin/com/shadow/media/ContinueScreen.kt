@@ -40,14 +40,14 @@ import com.shadow.media.model.*
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @Composable internal fun HomeContinue(
-    container: AppContainer, state: MainUiState, onContinue: (ContinueRow) -> Unit, onAll: () -> Unit,
+    container: AppContainer, state: MainUiState, module: MediaModule, onContinue: (ContinueRow) -> Unit, onAll: () -> Unit,
 ) {
     val context = LocalContext.current
     val providers = rememberContinueProviders(container, state)
-    key(providers) {
-        val latest = remember(container, providers) {
+    key(providers, module) {
+        val latest = remember(container, providers, module) {
             val dao = ShadowMediaDatabase.create(context).libraryStateDao()
-            providers.flatMapLatest(dao::latestContinuing).distinctUntilChanged()
+            providers.flatMapLatest { dao.latestContinuing(it, module.assetKinds.toList()) }.distinctUntilChanged()
         }.collectAsStateWithLifecycle(initialValue = null)
         latest.value?.let { HomeContinueRow(it, onContinue, onAll) }
     }
@@ -77,12 +77,20 @@ private fun continueKind(kind: String) = when (kind) {
     else -> "影视"
 }
 
-@Composable internal fun ContinueScreen(container: AppContainer, onBack: () -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onContinue: (ContinueRow) -> Unit) {
+@OptIn(ExperimentalCoroutinesApi::class)
+@Composable internal fun ContinueScreen(container: AppContainer, onBack: () -> Unit, onOpen: (LibraryAssetEntity) -> Unit, onContinue: (ContinueRow) -> Unit,
+    module: MediaModule? = null, state: MainUiState = MainUiState()) {
     BackHandler(onBack = onBack)
     val context = LocalContext.current
     val dao = remember { ShadowMediaDatabase.create(context).libraryStateDao() }
     val scope = rememberCoroutineScope()
-    val rows = remember(dao) { Pager(PagingConfig(30, enablePlaceholders = false)) { dao.continuing() }.flow }.collectAsLazyPagingItems()
+    val providers = rememberContinueProviders(container, state)
+    val rows = remember(dao, providers, module) {
+        if (module == null) Pager(PagingConfig(30, enablePlaceholders = false)) { dao.continuing() }.flow
+        else providers.flatMapLatest { visible -> Pager(PagingConfig(30, enablePlaceholders = false)) {
+            dao.continuing(visible, module.assetKinds.toList())
+        }.flow }
+    }.collectAsLazyPagingItems()
     var nextEpisodes by remember { mutableStateOf(emptyList<Pair<EmbySession, MediaItem>>()) }
     var nextLoading by remember { mutableStateOf(true) }
     var nextFailure by remember { mutableStateOf(false) }
@@ -103,12 +111,13 @@ private fun continueKind(kind: String) = when (kind) {
         nextEpisodes = result
         nextLoading = false
     }
-    LaunchedEffect(Unit) { loadFollowing() }
+    val showNext = module == null || module == MediaModule.VIDEO
+    LaunchedEffect(module) { if (showNext) loadFollowing() else { nextEpisodes = emptyList(); nextLoading = false } }
     var association by remember { mutableStateOf<LibraryAssetEntity?>(null) }
     Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 20.dp)) {
-        Row { TextButton(onClick = onBack) { Text("返回") }; Text("继续播放与阅读", Modifier.padding(12.dp), style = MaterialTheme.typography.headlineSmall) }
+        Row { TextButton(onClick = onBack) { Text("返回") }; Text(module?.let { "${it.title}继续记录" } ?: "继续播放与阅读", Modifier.padding(12.dp), style = MaterialTheme.typography.headlineSmall) }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
-            item {
+            if (showNext) item {
                 Text("下一集", style = MaterialTheme.typography.titleMedium)
                 if (nextLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
                 if (nextFailure) TextButton(onClick = { scope.launch { loadFollowing() } }) { Text("部分来源加载失败，重试") }

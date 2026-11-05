@@ -80,7 +80,9 @@ import com.shadow.media.reading.ReaderActivity
             (module == MediaModule.LIVE || destination == MediaDestination.VIDEO_SOURCES)) viewModel.refreshExternalSources()
     }
     val pageStates = rememberSaveableStateHolder()
-    var toolsExpanded by remember { mutableStateOf(false) }
+    var novelAccountScreen by rememberSaveable { mutableStateOf(false) }
+    var continueModule by rememberSaveable { mutableStateOf<MediaModule?>(null) }
+    var showContinue by remember(module) { mutableStateOf(navigationPreferences.getBoolean("continue:${module.name}", true)) }
     var generalSettings by rememberSaveable { mutableStateOf(false) }
     var localShelf by rememberSaveable { mutableStateOf(false) }
     var audioExpanded by rememberSaveable { mutableStateOf(false) }
@@ -201,7 +203,7 @@ import com.shadow.media.reading.ReaderActivity
     fun resetUtility() {
         localLinkUri = null
         localVideoScreen = false; catalogScreen = false; offlineScreen = false; continueScreen = false
-        generalSettings = false; localShelf = false; audioExpanded = false; toolsExpanded = false; allCatalogs = false
+        generalSettings = false; localShelf = false; audioExpanded = false; novelAccountScreen = false; continueModule = null; allCatalogs = false
     }
     fun selectModule(value: MediaModule) {
         if (value == module) return
@@ -226,21 +228,25 @@ import com.shadow.media.reading.ReaderActivity
             resetUtility(); viewModel.showHome(); localLinkUri = it.toString()
         }
     }
-    val moduleRoot = localLink == null && state.screen == Screen.HOME && !audioExpanded && !localVideoScreen &&
-        !continueScreen && !offlineScreen && !catalogScreen && !generalSettings && !localShelf
+    val rootContent = localLink == null && state.screen == Screen.HOME && !audioExpanded && !localVideoScreen &&
+        !continueScreen && !offlineScreen && !catalogScreen && !generalSettings && !localShelf && !novelAccountScreen
+    val moduleRoot = rootContent && destination != MediaDestination.SETTINGS
+    val settingsRoot = rootContent && destination == MediaDestination.SETTINGS
     val resumeCard: @Composable () -> Unit = {
-        HomeContinue(container, state, ::resumeRow) { resetUtility(); continueScreen = true }
+        if (showContinue) HomeContinue(container, state, module, ::resumeRow) { resetUtility(); continueModule = module; continueScreen = true }
     }
     fun returnToModule() { resetUtility(); viewModel.showHome() }
     if (playerScreen) { LegacyMediaRoot(viewModel, container); return }
     BackHandler(enabled = audioExpanded) { audioExpanded = false }
     BackHandler(enabled = localShelf || generalSettings) { returnToModule() }
+    BackHandler(enabled = settingsRoot) { selectDestination(module.destinations.first()) }
     Scaffold(
         topBar = {
-            if (!audioExpanded && state.screen != Screen.MDC && !(module == MediaModule.NOVEL && !localShelf && !generalSettings &&
-                    !catalogScreen && !offlineScreen && !continueScreen && !localVideoScreen && localLink == null && state.screen == Screen.HOME)) MediaModuleHeader(module, ::selectModule, { toolsExpanded = true }, {
-                resetUtility(); generalSettings = true; viewModel.showHome()
-            })
+            if (!audioExpanded && state.screen != Screen.MDC && !novelAccountScreen && !(module == MediaModule.NOVEL && destination != MediaDestination.SETTINGS && !localShelf && !generalSettings &&
+                    !catalogScreen && !offlineScreen && !continueScreen && !localVideoScreen && localLink == null && state.screen == Screen.HOME)) MediaModuleHeader(
+                module, ::selectModule, { selectDestination(MediaDestination.SETTINGS) },
+                settingsPage = settingsRoot)
+
         },
         bottomBar = {
             if (!audioExpanded) Column {
@@ -268,11 +274,12 @@ import com.shadow.media.reading.ReaderActivity
                             else { AudiobookController.playOffline(control, asset); audioExpanded = true }
                         })
                     localLink is LocalMediaLink.Saved -> SavedMediaScreen(container, state, localLink, onMoment = { viewModel.playMoment(it) }, onBack = ::returnToModule)
-                    localVideoScreen && !continueScreen -> LocalVideosScreen(container, viewModel, onBack = ::returnToModule, onContinue = { continueScreen = true })
-                    continueScreen -> ContinueScreen(container, onBack = ::returnToModule, onOpen = ::open, onContinue = ::resumeRow)
+                    localVideoScreen && !continueScreen -> LocalVideosScreen(container, viewModel, onBack = ::returnToModule, onContinue = { continueModule = MediaModule.VIDEO; continueScreen = true })
+                    continueScreen -> ContinueScreen(container, onBack = ::returnToModule, onOpen = ::open, onContinue = ::resumeRow, module = continueModule, state = state)
                     offlineScreen -> OfflineScreen(container, onBack = ::returnToModule, onOpen = { asset ->
                         if (asset.kind in setOf("MOVIE", "EPISODE")) viewModel.playOfflineAsset(asset) else open(asset)
                     })
+                    novelAccountScreen -> NovelScreen(container.novel, onBack = ::returnToModule)
                     state.screen != Screen.HOME -> LegacyMediaRoot(viewModel, container)
                     catalogScreen || (!generalSettings && destination in setOf(MediaDestination.COMIC_LIBRARY, MediaDestination.AUDIO_LIBRARY)) -> CatalogSourcesScreen(container.catalogs,
                         allowedKinds = if (allCatalogs) CatalogKind.entries.toSet() else module.catalogKinds(),
@@ -291,11 +298,33 @@ import com.shadow.media.reading.ReaderActivity
                         } else if (control == null) message = "音频服务正在连接，请稍后重试"
                     })
                     generalSettings -> SourcesHub(state, viewModel, pendingSync, onImport = { importer.launch(arrayOf("*/*")) },
-                        onCatalogs = { generalSettings = false; catalogScreen = true; allCatalogs = true }, onNovel = { selectModule(MediaModule.NOVEL); generalSettings = false },
+                        onCatalogs = { generalSettings = false; catalogScreen = true; allCatalogs = true }, onNovel = { selectModule(MediaModule.NOVEL); generalSettings = false; novelAccountScreen = true },
                         onOffline = { offlineScreen = true }, onContinue = { continueScreen = true }, onVideos = { localVideoScreen = true })
+                    destination == MediaDestination.SETTINGS && !localShelf -> ModuleSettingsScreen(module, showContinue,
+                        onShowContinue = { value -> showContinue = value; navigationPreferences.edit().putBoolean("continue:${module.name}", value).apply() },
+                        onAction = { action ->
+                            resetUtility(); viewModel.showHome()
+                            when (action) {
+                                ModuleSettingAction.SERVERS -> viewModel.showServers()
+                                ModuleSettingAction.MDC -> viewModel.showMdc()
+                                ModuleSettingAction.STORAGE -> viewModel.showNetworkStorages()
+                                ModuleSettingAction.SUBSCRIPTIONS -> viewModel.showSources()
+                                ModuleSettingAction.LOCAL_VIDEO -> localVideoScreen = true
+                                ModuleSettingAction.NOVEL_ACCOUNT -> novelAccountScreen = true
+                                ModuleSettingAction.SOURCES -> catalogScreen = true
+                                ModuleSettingAction.LOCAL_LIBRARY -> localShelf = true
+                                ModuleSettingAction.IMPORT -> importer.launch(arrayOf("*/*"))
+                                ModuleSettingAction.COMIC_FOLDER -> directoryImporter.launch(null)
+                                ModuleSettingAction.COMMUTE -> localLinkUri = "shadowmedia://commute?minutes=20"
+                                ModuleSettingAction.HISTORY -> { continueModule = module; continueScreen = true }
+                                ModuleSettingAction.OFFLINE -> offlineScreen = true
+                                ModuleSettingAction.ADVANCED -> viewModel.showSettings()
+                                ModuleSettingAction.SHARED -> generalSettings = true
+                            }
+                        })
                     module == MediaModule.NOVEL && !localShelf -> NovelScreen(container.novel, onBack = ::returnToModule,
                         rootSection = destination, homeContinue = resumeCard, onLocalShelf = { localShelf = true }, onModule = ::selectModule,
-                        onModuleTools = { toolsExpanded = true }, onGeneralSettings = { resetUtility(); generalSettings = true; viewModel.showHome() })
+                        onModuleTools = { selectDestination(MediaDestination.SETTINGS) }, onGeneralSettings = { resetUtility(); generalSettings = true; viewModel.showHome() })
                     module == MediaModule.MUSIC -> MusicScreen(container, controller, onPlaying = { audioExpanded = true },
                         rootSection = if (destination == MediaDestination.PLAYLISTS) "歌单" else "音乐库")
                     module in setOf(MediaModule.COMIC, MediaModule.AUDIOBOOK) || localShelf -> PublicationShelf(container.library,
@@ -321,24 +350,6 @@ import com.shadow.media.reading.ReaderActivity
                 }
                 }
             }
-        }
-    }
-    if (toolsExpanded) ModalBottomSheet(onDismissRequest = { toolsExpanded = false }) {
-        Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("${module.title}工具", style = MaterialTheme.typography.titleLarge)
-            TextButton(onClick = { resetUtility(); viewModel.showHome(); localLinkUri = "shadowmedia://commute?minutes=20" }) { Text("通勤听 · 已下载") }
-            TextButton(onClick = { resetUtility(); offlineScreen = true }) { Text("下载与离线 · 所有模块") }
-            TextButton(onClick = { resetUtility(); continueScreen = true }) { Text("继续播放与阅读 · 所有模块") }
-            when (module) {
-                MediaModule.NOVEL -> TextButton(onClick = { resetUtility(); viewModel.showHome(); localShelf = true }) { Text("本机书架与导入") }
-                MediaModule.COMIC -> TextButton(onClick = { toolsExpanded = false; directoryImporter.launch(null) }) { Text("导入漫画图片目录") }
-                MediaModule.VIDEO -> TextButton(onClick = { resetUtility(); viewModel.showServers() }) { Text("影视服务连接") }
-                MediaModule.LIVE -> TextButton(onClick = { resetUtility(); viewModel.showSources() }) { Text("管理直播订阅") }
-                else -> Unit
-            }
-            if (module.catalogKinds().isNotEmpty()) TextButton(onClick = { resetUtility(); viewModel.showHome(); catalogScreen = true }) { Text("${module.title}来源连接") }
-            TextButton(onClick = { resetUtility(); viewModel.showSettings() }) { Text("功能与播放设置") }
-            TextButton(onClick = { resetUtility(); generalSettings = true; viewModel.showHome() }) { Text("通用设置与全部连接") }
         }
     }
     importing?.let { label -> AlertDialog(onDismissRequest = {}, title = { Text(label) }, text = { LinearProgressIndicator(Modifier.fillMaxWidth()) }, confirmButton = { TextButton(onClick = { importJob?.cancel() }) { Text("取消") } }) }

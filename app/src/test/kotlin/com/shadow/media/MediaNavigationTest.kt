@@ -10,7 +10,8 @@ class MediaNavigationTest {
         assertEquals(MediaDestination.MUSIC_LIBRARY, MediaModule.MUSIC.destination("CITY"))
         assertEquals(MediaDestination.BOOK_SOURCES, MediaModule.NOVEL.destination("BOOK_SOURCES"))
         assertEquals(MediaDestination.CHANNELS, MediaModule.LIVE.destination(null))
-        assertFalse(MediaModule.LIVE.hasBottomNavigation)
+        assertTrue(MediaModule.LIVE.hasBottomNavigation)
+        MediaModule.entries.forEach { assertEquals(MediaDestination.SETTINGS, it.destinations.last()) }
     }
 
     @Test fun mixedCatalogKeepsFoldersButSeparatesComicsNovelsAndAudio() {

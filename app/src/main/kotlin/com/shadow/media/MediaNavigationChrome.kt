@@ -43,36 +43,40 @@ internal val MediaDestination.icon: ImageVector get() = when (this) {
     MediaDestination.COMIC_LIBRARY -> Icons.Outlined.CollectionsBookmark
     MediaDestination.AUDIO_LIBRARY -> Icons.Outlined.Headphones
     MediaDestination.CHANNELS -> Icons.Outlined.LiveTv
+    MediaDestination.SETTINGS -> Icons.Outlined.Settings
+}
+
+@Composable internal fun ModuleSwitcher(module: MediaModule, onModule: (MediaModule) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }, modifier = Modifier.testTag("module-switch")) {
+            Icon(Icons.Outlined.Apps, "切换模块")
+        }
+        DropdownMenu(expanded, { expanded = false }, modifier = Modifier.widthIn(min = 208.dp)) {
+            MediaModule.entries.forEach { item ->
+                DropdownMenuItem(text = { Text(item.title) }, leadingIcon = { Icon(item.icon, null) },
+                    trailingIcon = { if (item == module) Icon(Icons.Outlined.Check, "当前模块") },
+                    modifier = Modifier.testTag("module-${item.name}"),
+                    onClick = { expanded = false; onModule(item) })
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun MediaModuleHeader(
-    module: MediaModule, onModule: (MediaModule) -> Unit, onTools: () -> Unit, onSettings: () -> Unit,
+    module: MediaModule, onModule: (MediaModule) -> Unit, onSettings: () -> Unit,
+    settingsPage: Boolean = false,
 ) {
-    var expanded by remember { mutableStateOf(false) }
     TopAppBar(
-        title = {
-            Box {
-                TextButton(onClick = { expanded = true }, modifier = Modifier.testTag("module-switch"),
-                    contentPadding = PaddingValues(horizontal = 4.dp)) {
-                    Text(module.title, color = MaterialTheme.colorScheme.onSurface, fontSize = 27.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.width(6.dp))
-                    Icon(Icons.Outlined.KeyboardArrowDown, "切换模块", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                DropdownMenu(expanded, { expanded = false }, modifier = Modifier.widthIn(min = 208.dp)) {
-                    MediaModule.entries.forEach { item ->
-                        DropdownMenuItem(text = { Text(item.title) }, leadingIcon = { Icon(item.icon, null) },
-                            trailingIcon = { if (item == module) Icon(Icons.Outlined.Check, "当前模块") },
-                            modifier = Modifier.testTag("module-${item.name}"),
-                            onClick = { expanded = false; onModule(item) })
-                    }
-                    HorizontalDivider(Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant)
-                    DropdownMenuItem(text = { Text("通用设置") }, leadingIcon = { Icon(Icons.Outlined.Settings, null) },
-                        onClick = { expanded = false; onSettings() })
-                }
+        title = { Text(if (settingsPage) "${module.title}设置" else module.title,
+            fontSize = 27.sp, fontWeight = FontWeight.SemiBold) },
+        actions = {
+            if (!settingsPage) IconButton(onClick = onSettings, modifier = Modifier.testTag("module-settings")) {
+                Icon(Icons.Outlined.Settings, "${module.title}设置")
             }
+            ModuleSwitcher(module, onModule)
         },
-        actions = { IconButton(onClick = onTools, modifier = Modifier.testTag("module-tools")) { Icon(Icons.Outlined.MoreVert, "${module.title}工具与设置") } },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
     )
 }

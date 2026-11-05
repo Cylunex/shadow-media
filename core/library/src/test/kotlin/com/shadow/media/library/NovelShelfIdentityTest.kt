@@ -101,6 +101,24 @@ class NovelShelfIdentityTest {
         assertNull(state.latestContinuing(emptyList()).first())
     }
 
+    @Test fun moduleContinuationFiltersBeforeChoosingLatestAndPagingHistory() = runBlocking {
+        val dao = db.libraryDao()
+        val state = db.libraryStateDao()
+        for ((index, kind) in listOf("MOVIE", "COMIC", "AUDIOBOOK", "BOOK").withIndex()) {
+            dao.putAsset(LibraryAssetEntity(kind, "local", kind, kind, kind = kind, format = "fixture", addedAt = 1))
+            dao.putProgress(ContentProgressEntity(kind, locatorType = "text", locatorJson = "position", progression = .3, updatedAt = index + 10L))
+        }
+        val providers = listOf("local")
+        assertEquals("BOOK", state.latestContinuing(providers).first()?.kind)
+        for (kind in listOf("MOVIE", "COMIC", "AUDIOBOOK", "BOOK")) {
+            assertEquals(kind, state.latestContinuing(providers, listOf(kind)).first()?.kind)
+            assertEquals(listOf(kind), rows(state.continuing(providers, listOf(kind))).map { it.kind })
+        }
+        assertNull(state.latestContinuing(providers, listOf("MUSIC")).first())
+        assertNull(state.latestContinuing(providers, emptyList()).first())
+        assertNull(state.latestContinuing(listOf("other-account"), listOf("BOOK")).first())
+    }
+
     @Test fun favoritesAndRemovalApplyToOneWorkWithoutResurfacingSiblingWindows() = runBlocking {
         window("first"); window("next", version = "v2"); window("unrelated", work = "other")
         val dao = db.libraryDao()

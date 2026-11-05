@@ -81,7 +81,6 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
     var previousRoot by remember { mutableStateOf(rootSection) }
     var refreshRoot by remember { mutableIntStateOf(0) }
     var refreshing by remember { mutableStateOf(false) }
-    var modulePicker by remember { mutableStateOf(false) }
     LaunchedEffect(rootSection) {
         if (rootSection != null && previousRoot != rootSection) {
             job?.cancelAndJoin(); busy = false
@@ -258,17 +257,6 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
             "works" -> if (route.id == "shelf") "我的书架" else if (route.id == "history") "阅读历史" else "发现好书"; else -> c.name
         }, maxLines = 1, style = MaterialTheme.typography.titleLarge,
             modifier = Modifier.weight(1f, fill = false))
-            if (onModule != null && stack.isEmpty()) Box {
-                IconButton(onClick = { modulePicker = true }, modifier = Modifier.testTag("module-switch")) { Icon(Icons.Rounded.ExpandMore, "切换模块") }
-                DropdownMenu(modulePicker, { modulePicker = false }) {
-                    MediaModule.entries.forEach { item -> DropdownMenuItem(text = { Text(item.title) }, leadingIcon = { Icon(item.icon, null) },
-                        onClick = { modulePicker = false; onModule(item) }) }
-                    onGeneralSettings?.let { settings ->
-                        HorizontalDivider()
-                        DropdownMenuItem(text = { Text("通用设置") }, leadingIcon = { Icon(Icons.Rounded.Settings, null) }, onClick = { modulePicker = false; settings() })
-                    }
-                }
-            }
         } },
             expandedHeight = 56.dp,
             colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background), navigationIcon = {
@@ -279,7 +267,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
             Box {
                 IconButton(onClick = { pageTools = true }) { Icon(Icons.Rounded.MoreHoriz, "书库选项") }
                 DropdownMenu(pageTools, { pageTools = false }) {
-                    onModuleTools?.let { tools -> DropdownMenuItem(text = { Text("小说工具与设置") }, onClick = { pageTools = false; tools() }) }
+                    onModuleTools?.let { tools -> DropdownMenuItem(text = { Text("小说设置") }, onClick = { pageTools = false; tools() }) }
                     if (rootSection != null && c != null) DropdownMenuItem(text = { Text("切换小说服务") }, onClick = {
                         pageTools = false; job?.cancel(); busy = false; connection = null; data = null; stack = emptyList()
                     })
@@ -291,6 +279,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
                     if (c != null && route.kind != "tools") DropdownMenuItem(enabled = !busy, text = { Text("书库工具") }, onClick = { pageTools = false; navigate(NovelRoute("tools")) })
                 }
             }
+            if (onModule != null && stack.isEmpty()) ModuleSwitcher(MediaModule.NOVEL, onModule)
         })
         if (rootSection != null && stack.isEmpty() && route == novelRootRoute(rootSection)) homeContinue()
         Box(Modifier.fillMaxWidth().height(2.dp)) {
