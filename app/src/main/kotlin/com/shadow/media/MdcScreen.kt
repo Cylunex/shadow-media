@@ -322,6 +322,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                     TextButton(enabled = !busy, onClick = { load() }) { Text("搜索 / 刷新") }
                 } }
                 if (mode == "playlists") {
+                    if (!busy && playlists.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { Text("暂无片单") }
                     items(playlists, key = { "playlist:" + it.id }) { playlist ->
                         Card(onClick = { selectedPlaylist = playlist.id; load() }) {
                             Column(Modifier.padding(16.dp)) { Text(playlist.name); Text("${playlist.workCount} 部") }

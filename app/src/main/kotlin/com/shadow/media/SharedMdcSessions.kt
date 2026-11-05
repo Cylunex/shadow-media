@@ -44,5 +44,7 @@ internal fun sharedMdcConnection(account: CatalogConnection, manifest: JSONObjec
     val expected = base.newBuilder().addPathSegments("services/mdc/").build()
     require(base.isHttps && url == expected) { "统一服务必须使用已登录账号的同源服务入口" }
     return CatalogConnection(id = "shared-mdc:${account.id}", name = "Shadow MDC · ${account.name}",
-        kind = CatalogKind.OPDS, url = url.toString())
+        kind = CatalogKind.OPDS, url = url.toString(),
+        username = "shared-" + java.util.UUID.nameUUIDFromBytes(
+            "${account.oidcIssuer}\u0000${account.oidcSubject}".toByteArray(Charsets.UTF_8)))
 }

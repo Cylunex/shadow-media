@@ -71,6 +71,17 @@ class MdcMediaProviderTest {
         }
     }
 
+    @Test fun `shared playlist namespace is valid stable across devices and isolated by identity`() {
+        val account = CatalogConnection(id = "device-a", name = "Novel", kind = CatalogKind.OPDS,
+            url = "https://example.com/novel/", oidcIssuer = "https://identity.example.com", oidcSubject = "owner")
+        val manifest = org.json.JSONObject("""{"services":[{"id":"mdc","base_url":"https://example.com/novel/services/mdc/"}]}""")
+        fun owner(c: CatalogConnection) = sharedMdcConnection(c, manifest)!!.username
+        assertTrue(owner(account).matches(Regex("[A-Za-z0-9_-]{1,100}")))
+        assertEquals(owner(account), owner(account.copy(id = "device-b", oidcAuthState = "refreshed")))
+        assertNotEquals(owner(account), owner(account.copy(oidcSubject = "other")))
+        assertNotEquals(owner(account), owner(account.copy(oidcIssuer = "https://other.example.com")))
+    }
+
     @Test fun `prefix credentials cursor and exact playback target survive catalog mapping`() = runTest {
         MockWebServer().use { server ->
             val provider = MdcMediaProvider(CatalogConnection(
