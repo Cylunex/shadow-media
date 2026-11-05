@@ -25,6 +25,14 @@ internal class NovelBrowserState(initial: String = "") {
     var autoFailures by mutableStateOf<Map<String, String>>(emptyMap())
     var autoRetry by mutableIntStateOf(0)
     var matchingOnly by mutableStateOf(false)
+    var searchRequest by mutableIntStateOf(0)
+    var pendingSearch = false
+    fun requestSearch(value: String) {
+        keyword = value.trim().take(200)
+        selectMode(false)
+        pendingSearch = keyword.isNotBlank()
+        searchRequest++
+    }
     var keyword by mutableStateOf(initial)
     var submitted by mutableStateOf("")
     var precise by mutableStateOf(false)
@@ -94,6 +102,10 @@ internal class NovelBrowserState(initial: String = "") {
 @Composable internal fun NovelSourceBrowser(repository: NovelRepository, connection: CatalogConnection,
     state: NovelBrowserState, onWork: (String) -> Unit, onManage: () -> Unit, bindingWork: JSONObject? = null, onBound: () -> Unit = {}, onRead: (NovelSourceOpening) -> Unit = {}) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val scopeStore = remember(context) { NovelSourceScopeStore(context) }
+    val scopeKey = "${connection.id}:${if (state.explore) "explore" else "search"}"
+    var loadedScopeKey by remember(state) { mutableStateOf<String?>(null) }
     val preferences = LocalContext.current.getSharedPreferences("novel_source_columns", android.content.Context.MODE_PRIVATE)
     var favorites by remember(connection.id) { mutableStateOf(runCatching { JSONObject(preferences.getString(connection.id, "{}") ?: "{}").novelObjects("items") }.getOrDefault(emptyList())) }
     var recent by remember(connection.id) { mutableStateOf(runCatching { JSONObject(preferences.getString(connection.id + ":recent", "{}") ?: "{}").novelObjects("items") }.getOrDefault(emptyList())) }
@@ -190,11 +202,28 @@ internal class NovelBrowserState(initial: String = "") {
             }
         }
     }
-    LaunchedEffect(connection.id, state.explore, state.filter) { run {
-        choices()
-        if (searchAfterChoices) { searchAfterChoices = false; search() }
-        else if (!state.explore && state.searchRunning) resumeSearch()
-    } }
+    LaunchedEffect(scopeKey, loadedScopeKey, state.filter, state.searchRequest) {
+        if (loadedScopeKey != scopeKey) {
+            val saved = scopeStore.load(scopeKey)
+            if (saved != null) { state.filter = saved.filter; state.selected = saved.selected }
+            else if (loadedScopeKey != null) {
+                state.filter = NovelBrowserState().apply { selectMode(state.explore) }.filter
+                state.selected = emptySet()
+            }
+            loadedScopeKey = scopeKey
+            return@LaunchedEffect
+        }
+        if (state.pendingSearch) {
+            state.pendingSearch = false
+            search()
+        } else if (searchAfterChoices) {
+            searchAfterChoices = false
+            search()
+        } else run {
+            choices()
+            if (!state.explore && state.searchRunning) resumeSearch()
+        }
+    }
     LaunchedEffect(connection.id) {
         try { state.preferences = repository.live(connection, listOf("library", "preferences")) }
         catch (e: CancellationException) { throw e }
@@ -354,6 +383,7 @@ internal class NovelBrowserState(initial: String = "") {
         }
     }
     if (choose) NovelSourcePicker(repository, connection, state.filter, state.selected, onDismiss = { choose = false }, onApply = { f, ids ->
+        scopeStore.save(scopeKey, NovelSavedSourceScope(f, ids))
         state.filter = f; state.selected = ids; state.entry = null; state.provider = null; state.discovery = null; choose = false
     })
     if (settings) NovelSearchSettings(repository, connection, onDismiss = { settings = false }, onSearch = { state.keyword = it; settings = false; search() })

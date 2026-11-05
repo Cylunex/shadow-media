@@ -129,6 +129,43 @@ class NovelClientFlowTest {
         request.path == "/novel/api/v1/source-previews" -> json("""{"job_id":null,"work_id":"canonical","message":"只读预览"}""")
         else -> json("{}")
     }
+    @Test fun appliedScopeSurvivesNewBrowserAndIsUsedBeforeAutomaticSearch() {
+        handler = { request -> if (request.path!!.startsWith("/novel/api/v1/providers/catalog"))
+            json("""{"items":[],"total":0,"groups":[{"id":"g","name":"常用分组"}],"facets":{"tags":[{"value":"精选"}]}}""")
+            else browserResponse(request) }
+        val repo = repository(); val c = connection()
+        var state by mutableStateOf(NovelBrowserState())
+        var visible by mutableStateOf(true)
+        compose.setContent { ShadowMediaTheme { Surface {
+            if (visible) NovelSourceBrowser(repo, c, state, {}, {}) else Text("已离开")
+        } } }
+        waitText("范围 · 1 源")
+        compose.onNodeWithText("范围 · 1 源").performClick()
+        waitText("精选")
+        compose.onNodeWithText("常用分组").performScrollTo().performClick()
+        compose.onNodeWithText("精选").performScrollTo().performClick()
+        compose.onNodeWithText("应用 · 已选 0 源").performScrollTo().performClick()
+        compose.runOnIdle { visible = false }
+        waitText("已离开")
+        compose.runOnIdle { state = NovelBrowserState().apply { requestSearch("山海") }; visible = true }
+        waitText("山海来信")
+        assertEquals(listOf("精选"), state.filter.tags)
+        assertEquals(listOf("g"), state.filter.groups)
+        val selection = requests.last { it.first.startsWith("/novel/api/v1/source-selection") }.first
+        assertTrue(selection.contains("tag="))
+        assertTrue(selection.contains("group_id=g"))
+        val body = JSONObject(requests.single { it.first.endsWith("/search-jobs") }.second)
+        assertEquals("山海", body.getString("q"))
+        assertEquals("s", body.getJSONArray("provider_ids").getString(0))
+        val store = NovelSourceScopeStore(compose.activity)
+        val saved = requireNotNull(store.load("${c.id}:search"))
+        assertEquals(state.filter, saved.filter)
+        assertNull(store.load("another-connection:search"))
+        assertNull(store.load("${c.id}:explore"))
+        store.save("${c.id}:search", saved.copy(selected = setOf("s")))
+        assertEquals(setOf("s"), NovelSourceScopeStore(compose.activity).load("${c.id}:search")?.selected)
+    }
+
     private fun workSearchAutomaticallyAssociates(serverAuto: Boolean) {
         val result = JSONObject(row)
         val other = JSONObject(row).put("author", "另一作者").put("bookUrl", "https://example.com/book/other").put("name", "同名外的候选")

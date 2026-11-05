@@ -201,7 +201,7 @@ internal data class NovelIntakeAction(val read: Boolean = false, val chapterUrl:
         LazyColumn(Modifier.imePadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item {
                 Text("书源范围", style = MaterialTheme.typography.titleLarge)
-                Text("多组取并集，标签同时满足。书源分组与作品书架分组独立。", style = MaterialTheme.typography.bodySmall)
+                Text("多组取并集，标签同时满足。应用后自动记住此范围，下次无需重选。", style = MaterialTheme.typography.bodySmall)
                 NovelTaskStatus(task)
                 FlowRow { Button(enabled = !task.busy, onClick = { onApply(filter.copy(tags = novelTags(tagText)), ids) }) { Text("应用 · 已选 ${ids.size} 源") }
                     TextButton(onClick = { ids = emptySet() }) { Text("清空选择") }

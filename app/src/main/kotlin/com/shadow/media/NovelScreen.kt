@@ -396,7 +396,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
                             } })
                     }
                     item { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilledTonalButton(enabled = !busy, onClick = { browserState.keyword = search; navigate(NovelRoute("sources")) }) { Text("搜索在线书源") }
+                        FilledTonalButton(enabled = !busy, onClick = { browserState.requestSearch(search); navigate(NovelRoute("sources")) }) { Text("搜索在线书源") }
                         TextButton(enabled = !busy, onClick = { browserState.selectMode(true); navigate(NovelRoute("sources")) }) { Text("书源发现") }
                     } }
                     data?.optJSONObject("_continue")?.takeIf(::novelCanRead)?.let { work -> item {

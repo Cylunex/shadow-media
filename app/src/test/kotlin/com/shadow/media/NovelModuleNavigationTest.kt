@@ -40,6 +40,9 @@ class NovelModuleNavigationTest {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 requests += request.path.orEmpty()
                 val body = when {
+                    request.requestUrl!!.encodedPath.endsWith("/source-browser") -> """{"items":[{"id":"s","name":"测试书源"}]}"""
+                    request.requestUrl!!.encodedPath.endsWith("/search-jobs") -> """{"job_id":"search"}"""
+                    request.requestUrl!!.encodedPath.endsWith("/jobs/search") -> """{"state":"succeeded","result":{"items":[{"provider_id":"s","bookUrl":"https://example.com/book","name":"在线来信","author":"行舟"}],"sources":[]}}"""
                     request.requestUrl!!.encodedPath.endsWith("/city/home") -> """{"total":6,"sections":[]}"""
                     request.requestUrl!!.encodedPath.endsWith("/works/1") -> """{"id":"1","title":"山海来信","author":"行舟","description":"群山深处的一封来信。"}"""
                     request.requestUrl!!.encodedPath.endsWith("/works") -> """{"total":6,"items":$books}"""
@@ -84,6 +87,21 @@ class NovelModuleNavigationTest {
             compose.onAllNodes(hasContentDescription("刷新") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
         }
         compose.waitForIdle()
+    }
+    @Test fun cityOnlineSearchStartsImmediatelyAndReturningDoesNotRepeatIt() {
+        launch("浅色")
+        compose.onNodeWithTag("destination-CITY").performClick()
+        waitText("今天，读点什么")
+        compose.onNode(hasSetTextAction()).performTextInput("山海")
+        compose.onNodeWithText("搜索在线书源").performClick()
+        waitText("在线来信")
+        assertEquals(1, requests.count { it.endsWith("/search-jobs") })
+        compose.onNodeWithTag("destination-SHELF").performClick()
+        waitText("山海来信")
+        compose.onNodeWithTag("destination-CITY").performClick()
+        waitText("在线来信")
+        compose.waitForIdle()
+        assertEquals(1, requests.count { it.endsWith("/search-jobs") })
     }
     @Test fun bottomPagesKeepTheirOwnHistoryWhenReturningFromDiscovery() {
         launch("深色")
