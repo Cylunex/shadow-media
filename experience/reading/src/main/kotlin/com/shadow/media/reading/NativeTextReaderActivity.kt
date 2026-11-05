@@ -24,6 +24,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -316,7 +317,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         @Suppress("DEPRECATION")
         window.statusBarColor = android.graphics.Color.TRANSPARENT
         @Suppress("DEPRECATION")
-        window.navigationBarColor = style.paper.background
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
         if (Build.VERSION.SDK_INT >= 29) {
             window.isStatusBarContrastEnforced = false
             window.isNavigationBarContrastEnforced = false
@@ -425,6 +426,10 @@ class NativeTextReaderActivity : ComponentActivity() {
             }
             BoxWithConstraints(Modifier.fillMaxSize().background(Color(style.paper.background))
                 .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))) {
+                ReaderPaperBackground(style, Modifier.matchParentSize())
+                val density = LocalDensity.current
+                val paperTopInset = WindowInsets.statusBars.getTop(density)
+                val paperBottomInset = if (style.fullScreen) 0 else WindowInsets.navigationBars.getBottom(density)
                 val compactControls = maxHeight < 480.dp
                 AndroidView(factory = { context -> NativeTextView(context).also { reader ->
                     view = reader
@@ -443,7 +448,10 @@ class NativeTextReaderActivity : ComponentActivity() {
                         if (saveAfterLayout) { saveAfterLayout = false; positionChanged(reader.readingOffset, true) }
                     }
                     pendingShow?.let { (content, title, restored) -> reader.show(content, title, restored, style); pendingShow = null }
-                } }, update = { it.gesturesEnabled = !busy && !menu && panel == null && excerpt == null }, modifier = Modifier.fillMaxSize().statusBarsPadding()
+                } }, update = {
+                    it.gesturesEnabled = !busy && !menu && panel == null && excerpt == null
+                    it.setPaperInsets(paperTopInset, paperBottomInset)
+                }, modifier = Modifier.fillMaxSize().statusBarsPadding()
                     .then(if (style.fullScreen) Modifier else Modifier.navigationBarsPadding()))
                 var showLoading by remember { mutableStateOf(false) }
                 LaunchedEffect(busy) { showLoading = false; if (busy) { delay(220); showLoading = true } }
@@ -547,6 +555,8 @@ class NativeTextReaderActivity : ComponentActivity() {
                     }
                     // Transient feedback must not resize the chapter list under the reader’s finger.
                     if (browsingContents) SnackbarHost(snackbar, Modifier.align(Alignment.TopStart).padding(start = 12.dp, end = 72.dp))
+                    if (acquiring) ReaderChapterLoading(onCancel = { navigationJob?.cancel() },
+                        modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding().padding(12.dp))
                 }
             }
             excerpt?.let { (text, position) -> AlertDialog(onDismissRequest = { excerpt = null }, title = { Text("摘录") }, text = { androidx.compose.foundation.text.selection.SelectionContainer { Text(if (text.length > 1000) "最多保存 1000 字，请返回缩短选区。\n\n$text" else text) } },

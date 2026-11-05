@@ -69,6 +69,19 @@ internal class NovelBrowserState(initial: String = "") {
     var preferences by mutableStateOf<JSONObject?>(null)
     var detail by mutableStateOf<JSONObject?>(null)
     var explore by mutableStateOf(false)
+    fun selectMode(discovery: Boolean) {
+        explore = discovery
+        filter = filter.copy(enabled = if (discovery) "" else "true", capability = if (discovery) "" else "search",
+            exploreEnabled = if (discovery) "true" else "")
+    }
+    var backRequests by mutableIntStateOf(0)
+    var columnIndex = 0
+    var columnOffset = 0
+    fun backWithinBrowser(): Boolean {
+        if (detail != null) { detail = null; return true }
+        if (explore && entry != null) { entry = null; backRequests++; return true }
+        return false
+    }
     var provider by mutableStateOf<JSONObject?>(null)
     var entries by mutableStateOf<List<JSONObject>>(emptyList())
     var entry by mutableStateOf<JSONObject?>(null)
@@ -110,9 +123,12 @@ internal class NovelBrowserState(initial: String = "") {
         state.features = repository.sourceSearch.features(connection)
         val f = state.filter
         val browser = repository.live(connection, listOf("source-browser"), listOf("mode" to if (state.explore) "explore" else "search") + f.groups.map { "group_id" to it })
-        val allowed = repository.tools.selection(connection, f).toSet()
+        // The browser already applies its mode and group scope. The bulk-selection endpoint
+        // has a 5000-source limit and is only needed for additional user filters.
+        val defaultScope = NovelBrowserState().apply { selectMode(state.explore) }.filter
+        val allowed = if (f.copy(groups = emptyList()) == defaultScope) null else repository.tools.selection(connection, f).toSet()
         currentCoroutineContext().ensureActive()
-        state.choices = browser.novelObjects("items").filter { it.getString("id") in allowed }
+        state.choices = browser.novelObjects("items").filter { allowed == null || it.getString("id") in allowed }
 
     }
     suspend fun resumeSearch() {
@@ -155,6 +171,7 @@ internal class NovelBrowserState(initial: String = "") {
         }
     }
     fun discover(provider: JSONObject, entry: JSONObject, page: Int, refresh: Boolean = false) {
+        if (state.entry == null) { state.columnIndex = list.firstVisibleItemIndex; state.columnOffset = list.firstVisibleItemScrollOffset }
         val visit = JSONObject().put("provider", provider.getString("id")).put("entry", entry.getString("key")).put("name", provider.optString("name") + " · " + entry.optString("name"))
         recent = (listOf(visit) + recent.filterNot { it.optString("provider") == visit.optString("provider") && it.optString("entry") == visit.optString("entry") }).take(8)
         preferences.edit { putString(connection.id + ":recent", JSONObject().put("items", JSONArray(recent)).toString()) }
@@ -205,14 +222,22 @@ internal class NovelBrowserState(initial: String = "") {
         }
     }
     DisposableEffect(state) { onDispose { state.listIndex = list.firstVisibleItemIndex; state.listOffset = list.firstVisibleItemScrollOffset; task?.cancel(); generation++ } }
-    BackHandler(state.detail != null) { state.detail = null }
+    var handledBack by remember { mutableIntStateOf(state.backRequests) }
+    LaunchedEffect(state.backRequests) {
+        if (handledBack != state.backRequests) {
+            handledBack = state.backRequests
+            task?.cancel(); generation++; busy = false; jobId = null
+            list.scrollToItem(state.columnIndex, state.columnOffset)
+        }
+    }
+    BackHandler(state.detail != null || state.explore && state.entry != null) { state.backWithinBrowser() }
     Column(Modifier.fillMaxSize()) {
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         LazyColumn(state = list, modifier = Modifier.weight(1f).imePadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item {
                 if (bindingWork == null) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(!state.explore, { state.explore = false; state.filter = state.filter.copy(capability = "search", exploreEnabled = "") }, label = { Text("在线搜索") })
-                    FilterChip(state.explore, { state.explore = true; state.filter = state.filter.copy(capability = "", exploreEnabled = "true") }, label = { Text("书源发现") })
+                    FilterChip(!state.explore, { state.selectMode(false) }, label = { Text("在线搜索") })
+                    FilterChip(state.explore, { state.selectMode(true) }, label = { Text("书源发现") })
                 } else Text("为《${bindingWork.optString("title")}》查找其他来源", style = MaterialTheme.typography.titleMedium)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AssistChip(onClick = { choose = true }, label = { Text("范围 · ${visibleChoices.size} 源") })
@@ -283,7 +308,7 @@ internal class NovelBrowserState(initial: String = "") {
                     if (!busy && visibleChoices.isEmpty() && error == null) item { Text("当前范围没有启用发现的来源，或来源尚无发现能力。") }
                 } else {
                     item { Text("${state.provider?.optString("name")} · ${state.entry?.optString("name")} · 第 ${state.page} 页")
-                        FlowRow { TextButton(onClick = { task?.cancel(); generation++; busy = false; state.entry = null }) { Text("选择其他栏目") }
+                        FlowRow { TextButton(onClick = { state.backWithinBrowser() }) { Text("选择其他栏目") }
                             TextButton(enabled = !busy, onClick = { discover(state.provider!!, state.entry!!, state.page, true) }) { Text("刷新本页") }
                             TextButton(onClick = {
                                 val favorite = JSONObject().put("provider", state.provider!!.getString("id")).put("entry", state.entry!!.getString("key"))
@@ -334,7 +359,7 @@ internal class NovelBrowserState(initial: String = "") {
     if (settings) NovelSearchSettings(repository, connection, onDismiss = { settings = false }, onSearch = { state.keyword = it; settings = false; search() })
     state.detail?.let { row -> NovelSourcePreviewSheet(repository, connection, row, bindingWork, onDismiss = { state.detail = null }, onAuthor = {
         state.detail = null; state.keyword = it
-        if (state.explore) { searchAfterChoices = true; state.explore = false; state.filter = state.filter.copy(capability = "search", exploreEnabled = "") } else search()
+        if (state.explore) { searchAfterChoices = true; state.selectMode(false) } else search()
     }, onWork = onWork, onBound = onBound, features = state.features, automaticReceipt = state.autoReceipts[novelSourceIdentity(row)], onRead = { state.detail = null; onRead(it) }) }
 }
 

@@ -49,8 +49,9 @@ internal class NativeTextLayout(
         return low
     }
     fun offsetAt(page: Int, vertical: Float): Int = pages[page].lines.firstOrNull { it.baseline >= vertical + topInset }?.start ?: pages[page].end
-    fun draw(canvas: Canvas, page: Int, bookTitle: String, texture: Bitmap? = null, appearance: ReaderSettings = settings) {
-        drawReaderPaper(canvas, width.toFloat(), height.toFloat(), appearance, texture)
+    fun draw(canvas: Canvas, page: Int, bookTitle: String, texture: Bitmap? = null, appearance: ReaderSettings = settings,
+        paperTopInset: Float = 0f, paperBottomInset: Float = 0f) {
+        drawReaderPaper(canvas, width.toFloat(), height.toFloat(), appearance, texture, paperTopInset, paperBottomInset)
         bodyPaint.color = appearance.paper.foreground
         titlePaint.color = appearance.paper.foreground
         furniture.color = appearance.paper.foreground; furniture.alpha = 185

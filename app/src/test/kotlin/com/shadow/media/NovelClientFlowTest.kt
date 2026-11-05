@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
@@ -43,6 +44,68 @@ class NovelClientFlowTest {
     @After fun stop() { server.shutdown() }
     private fun json(value: String) = MockResponse().setBody(value)
     private fun connection() = CatalogConnection(name = "原创书库", kind = CatalogKind.OPDS, url = server.url("/novel/").toString(), allowHttp = true)
+    @Test fun rankingsLoadAndOpenLocalWork() {
+        handler = { request -> when {
+            request.path == "/novel/api/v1/rankings" -> json("""{"boards":[{"provider_id":"s","provider_name":"外部榜单","key":"heat","name":"总点击","period":"total"}]}""")
+            request.path!!.startsWith("/novel/api/v1/rankings/local?") -> json("""{"items":[{"rank":1,"work":{"id":"one","title":"山海来信","author":"行舟","availability":["online"]}}],"total":1,"offset":0,"limit":30,"categories":[]}""")
+            request.path!!.startsWith("/novel/api/v1/rankings/s/heat?") -> json("""{"name":"总点击","items":[{"index":0,"rank":1,"name":"远航","author":"行舟","work_id":"two"}],"total":1,"offset":0,"token":"snapshot"}""")
+            else -> json("{}")
+        } }
+        val repo = repository(); val c = connection(); var opened = ""
+        compose.setContent { ShadowMediaTheme { Surface { NovelRankingsScreen(repo, c, { opened = it }, {}, {}) } } }
+        waitText("山海来信")
+        compose.onNodeWithText("山海来信").performClick()
+        assertEquals("one", opened)
+        compose.onNodeWithText("外部榜单").performClick()
+        waitText("远航")
+        compose.onNodeWithText("山海来信").assertDoesNotExist()
+        compose.onNodeWithText("远航").performClick()
+        assertEquals("two", opened)
+        compose.onNodeWithText("我的书库").performClick()
+        waitText("山海来信")
+    }
+    @Test fun returningFromRankedWorkRestoresScrolledPosition() {
+        val items = (0 until 30).joinToString(",") { """{"rank":${it + 1},"work":{"id":"$it","title":"山海来信$it","author":"行舟"}}""" }
+        handler = { request -> if (request.path!!.startsWith("/novel/api/v1/rankings/local?"))
+            json("""{"items":[$items],"total":30,"offset":0,"categories":[]}""") else json("{}") }
+        val repo = repository(); val c = connection(); var opened by mutableStateOf(false)
+        compose.setContent { ShadowMediaTheme { Surface {
+            val pages = rememberSaveableStateHolder()
+            if (!opened) pages.SaveableStateProvider("rankings") { NovelRankingsScreen(repo, c, { opened = true }, {}, {}) }
+            else TextButton(onClick = { opened = false }) { Text("返回榜单") }
+        } } }
+        waitText("山海来信0")
+        compose.onAllNodes(hasScrollToIndexAction()).onLast().performScrollToIndex(13)
+        compose.onNodeWithText("山海来信12").assertIsDisplayed().performClick()
+        compose.onNodeWithText("返回榜单").performClick()
+        waitText("山海来信12")
+        compose.onNodeWithText("山海来信12").assertIsDisplayed()
+    }
+    @Test fun discoveryUsesIndependentScopeAndBackReturnsToColumns() {
+        handler = { request -> when {
+            request.path!!.startsWith("/novel/api/v1/source-browser?") -> json("""{"items":[{"id":"s","name":"原创来源","entry_count":1}]}""")
+            request.path!!.startsWith("/novel/api/v1/source-selection") -> json("""{"detail":"匹配超过 5000 条"}""").setResponseCode(400)
+            request.path == "/novel/api/v1/source-browser/s/entries" -> json("""{"items":[{"key":"fantasy","name":"幻想","kind":"分类"}]}""")
+            request.path!!.startsWith("/novel/api/v1/source-browser/s/fantasy?") -> json("""{"items":[$row],"stale":false}""")
+            else -> json("{}")
+        } }
+        val repo = repository(); val c = connection(); val state = NovelBrowserState().apply { selectMode(true) }
+        compose.setContent { ShadowMediaTheme { Surface { NovelSourceBrowser(repo, c, state, {}, {}) } } }
+        waitText("原创来源 · 1 栏目")
+        compose.onNodeWithText("原创来源 · 1 栏目").performClick()
+        waitText("分类 · 幻想")
+        compose.onNodeWithText("分类 · 幻想").performClick()
+        waitText("山海来信")
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.onNodeWithText("原创来源 · 1 栏目").assertIsDisplayed()
+        assertNull(state.entry)
+        assertTrue(state.explore)
+        val request = requests.first { it.first.startsWith("/novel/api/v1/source-browser?") }.first
+        assertTrue(request.contains("mode=explore"))
+        assertFalse(requests.any { it.first.startsWith("/novel/api/v1/source-selection") })
+        assertEquals("", state.filter.capability)
+        assertEquals("true", state.filter.exploreEnabled)
+    }
     private fun repository() = NovelRepository(compose.activity, api = NovelApi())
     private fun waitText(value: String) = compose.waitUntil(15_000) { compose.onAllNodesWithText(value, substring = true).fetchSemanticsNodes().isNotEmpty() }
     private fun scrollTo(value: String) { compose.onAllNodes(hasScrollAction()).onLast().performScrollToNode(hasText(value, substring = true)) }

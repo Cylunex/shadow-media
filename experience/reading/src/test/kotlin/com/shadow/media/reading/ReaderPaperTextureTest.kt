@@ -15,6 +15,33 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [28], manifest = Config.NONE)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ReaderPaperTextureTest {
+    @Test fun nativePageDoesNotPaintOutsideItsInsetViewport() {
+        val bitmap = Bitmap.createBitmap(432, 960, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(android.graphics.Color.MAGENTA)
+        val view = NativeTextView(RuntimeEnvironment.getApplication())
+        view.layout(0, 0, 432, 880)
+        canvas.translate(0f, 48f)
+        view.draw(canvas)
+        assertEquals(android.graphics.Color.MAGENTA, bitmap.getPixel(100, 20))
+        assertEquals(android.graphics.Color.MAGENTA, bitmap.getPixel(100, 940))
+        assertEquals(ReaderSettings().paper.background, bitmap.getPixel(100, 100))
+        bitmap.recycle()
+    }
+    @Test fun systemBarsAndBodyShareOneContinuousPaperTexture() {
+        val texture = ReaderPaperTexture.bitmap(RuntimeEnvironment.getApplication())
+        val full = Bitmap.createBitmap(432, 960, Bitmap.Config.ARGB_8888)
+        val body = Bitmap.createBitmap(432, 880, Bitmap.Config.ARGB_8888)
+        for (paper in listOf(ReaderPaper.PARCHMENT, ReaderPaper.DEEP_PARCHMENT, ReaderPaper.NIGHT)) {
+            val settings = ReaderSettings(paper = paper)
+            drawReaderPaper(Canvas(full), 432f, 960f, settings, texture)
+            drawReaderPaper(Canvas(body), 432f, 880f, settings, texture, topInset = 48f, bottomInset = 32f)
+            for (y in 0 until 880 step 11) for (x in 0 until 432 step 11) {
+                assertEquals("Paper must not restart at the status bar", full.getPixel(x, y + 48), body.getPixel(x, y))
+            }
+        }
+        full.recycle(); body.recycle()
+    }
     @Test fun bundledPaperHasActualGrainAndReadableContrastEvenAtFullStrength() {
         val context = RuntimeEnvironment.getApplication()
         val texture = ReaderPaperTexture.bitmap(context)

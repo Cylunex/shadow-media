@@ -201,6 +201,13 @@ internal class NativeTextView(context: Context) : View(context) {
     private var animation: ValueAnimator? = null
     private val bitmaps = mutableMapOf<Int, Bitmap>()
     private var paperTexture: Bitmap? = null
+    private var paperTopInset = 0
+    private var paperBottomInset = 0
+    fun setPaperInsets(top: Int, bottom: Int) {
+        if (paperTopInset == top && paperBottomInset == bottom) return
+        paperTopInset = top; paperBottomInset = bottom
+        clearBitmaps(); invalidate()
+    }
     private val curl = LegadoPageCurl()
     private val slop = ViewConfiguration.get(context).scaledTouchSlop
     private var downX = 0f
@@ -403,17 +410,22 @@ internal class NativeTextView(context: Context) : View(context) {
     }
     fun cancelTurn() { pause(); scrollOffset = 0f }
     private fun bitmap(page: Int): Bitmap = bitmaps.getOrPut(page) {
-        Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { document!!.draw(Canvas(it), page, bookTitle, paperTexture, settings) }
+        Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
+            document!!.draw(Canvas(it), page, bookTitle, paperTexture, settings, paperTopInset.toFloat(), paperBottomInset.toFloat())
+        }
     }
     private fun clearBitmaps() { bitmaps.values.forEach { it.recycle() }; bitmaps.clear() }
     private fun pruneBitmaps() { bitmaps.keys.filter { abs(it - pageIndex) > 1 }.forEach { bitmaps.remove(it)?.recycle() } }
     override fun onDraw(canvas: Canvas) {
+        // AndroidView can receive a canvas whose clip extends into the Compose inset area.
+        // Keep the native page within its viewport so it cannot erase the system-bar paper.
+        canvas.clipRect(0, 0, width, height)
         canvas.drawColor(settings.paper.background)
         val doc = document ?: return
         if (doc.width != width || doc.height != height) return
         val current = bitmap(pageIndex)
         if (settings.pageMode == ReaderPageMode.SCROLL) {
-            drawReaderPaper(canvas, width.toFloat(), height.toFloat(), settings, paperTexture)
+            drawReaderPaper(canvas, width.toFloat(), height.toFloat(), settings, paperTexture, paperTopInset.toFloat(), paperBottomInset.toFloat())
             val viewportWidth = width.toFloat(); val viewportHeight = height.toFloat()
             canvas.withClip(0f, doc.topInset, viewportWidth, viewportHeight - doc.topInset) {
                 val pull = (-overScroll * .22f).coerceIn(-viewportHeight * .08f, viewportHeight * .08f)

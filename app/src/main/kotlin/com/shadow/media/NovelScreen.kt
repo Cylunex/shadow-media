@@ -193,6 +193,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
         route = target; query = nextQuery; search = nextSearch; data = null; navigation = JSONObject(); error = null; message = null
     }
     fun back() {
+        if (route.kind == "sources" && browserState.backWithinBrowser()) return
         job?.cancel(); busy = false; error = null; message = null
         if (stack.isNotEmpty()) { val previous = stack.last(); route = previous.route; query = previous.query; search = previous.search; stack = stack.dropLast(1); data = previous.data; navigation = previous.navigation; offset = previous.offset }
         else if (connection != null) { connection = null; data = null }
@@ -346,7 +347,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
             if (route.kind == "discovery") NovelDiscoveryHome(repository, c, { navigate(NovelRoute("work", it)) }, { navigate(NovelRoute("list", it)) }) { section ->
                 when (section) {
                     "排行榜" -> navigate(NovelRoute("rankings"))
-                    "书源栏目" -> { browserState.explore = true; navigate(NovelRoute("sources")) }
+                    "书源栏目" -> { browserState.selectMode(true); navigate(NovelRoute("sources")) }
                     "主题书单" -> navigate(NovelRoute("lists"))
                     "作家" -> navigate(NovelRoute("authors"))
                     else -> navigate(NovelRoute("works", "city"))
@@ -359,7 +360,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
             else if (route.kind == "tools") NovelToolsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = {
                 rememberSearch(it); navigate(NovelRoute("works", "search"), NovelQuery(q = it), it)
             })
-            else if (route.kind == "rankings") NovelRankingsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = { title -> browserState.keyword = title; browserState.explore = false; navigate(NovelRoute("sources")) }, onLogin = { signIn(c.name, c.url, c) }) else if (route.kind == "contents") {
+            else if (route.kind == "rankings") NovelRankingsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = { title -> browserState.keyword = title; browserState.selectMode(false); navigate(NovelRoute("sources")) }, onLogin = { signIn(c.name, c.url, c) }) else if (route.kind == "contents") {
                 NovelContentsPanel(repository, c, route.id, route.version, !busy, onOpen = { open(route.id, route.version, it.getString("id")) },
                     modifier = Modifier.weight(1f).fillMaxWidth().imePadding().padding(horizontal = 20.dp))
             } else if (route.kind == "works") {
@@ -407,7 +408,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
                     }
                     item { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilledTonalButton(enabled = !busy, onClick = { browserState.keyword = search; navigate(NovelRoute("sources")) }) { Text("搜索在线书源") }
-                        TextButton(enabled = !busy, onClick = { browserState.explore = true; browserState.filter = browserState.filter.copy(capability = "", exploreEnabled = "true"); navigate(NovelRoute("sources")) }) { Text("书源发现") }
+                        TextButton(enabled = !busy, onClick = { browserState.selectMode(true); navigate(NovelRoute("sources")) }) { Text("书源发现") }
                     } }
                     data?.optJSONObject("_continue")?.takeIf(::novelCanRead)?.let { work -> item {
                         NovelContinueCard(work, !busy, onRead = { open(work.getString("id")) }, onDetail = { navigate(NovelRoute("work", work.getString("id"))) }, onBookmarks = { navigate(NovelRoute("notes", work.getString("id"))) })

@@ -23,7 +23,6 @@ import org.json.JSONObject
     val scope = rememberCoroutineScope()
     val snapshots = remember(connection.id) { mutableMapOf<NovelRankingSelection, NovelRankingPage>() }
     val positions = remember(connection.id) { mutableMapOf<NovelRankingSelection, Pair<Int, Int>>() }
-    var loadedSelection by rememberSaveable(connection.id) { mutableStateOf<String?>(null) }
     var provider by rememberSaveable(connection.id) { mutableStateOf("local") }
     var kind by rememberSaveable(connection.id) { mutableStateOf("heat") }
     var boardKey by rememberSaveable(connection.id) { mutableStateOf("") }
@@ -41,7 +40,9 @@ import org.json.JSONObject
     var authenticationRequired by remember { mutableStateOf(false) }
     val boards = remember(index) { NovelRankingBoard.parse(index ?: JSONObject()) }
     val selection = NovelRankingSelection(provider, kind, boardKey, period, category).resolved(boards)
-    val listState = remember(connection.id, selection) { androidx.compose.foundation.lazy.LazyListState(positions[selection]?.first ?: 0, positions[selection]?.second ?: 0) }
+    val listState = rememberSaveable(connection.id, selection, saver = androidx.compose.foundation.lazy.LazyListState.Saver) {
+        androidx.compose.foundation.lazy.LazyListState(positions[selection]?.first ?: 0, positions[selection]?.second ?: 0)
+    }
     DisposableEffect(selection, listState) { onDispose { positions[selection] = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset } }
     SideEffect { snapshot?.let { snapshots[it.selection] = it } }
     val page = snapshot?.forSelection(selection)
@@ -101,8 +102,7 @@ import org.json.JSONObject
         snapshot = snapshots[selection]; loading = snapshot == null; error = null; notice = null
         try {
             val result = fetch(selection)
-            if (loadedSelection != selection.toString() && selection !in positions) listState.scrollToItem(0)
-            loadedSelection = selection.toString()
+            // Publish before awaiting any list layout: the loading branch contains no LazyColumn.
             snapshot = NovelRankingPage(selection, result); loading = false
             val current = result
             if (!selection.local && !LibraryResources.offlineOnly && !current.has("_cached_at") && current.optBoolean("stale") &&
