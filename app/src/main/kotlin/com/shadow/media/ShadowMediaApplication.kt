@@ -61,6 +61,7 @@ class AppContainer(private val application: Application) {
     val music = com.shadow.media.library.MusicRepository(application, library)
     val catalogs = com.shadow.media.library.NativeCatalogRepository(application, library)
     val novel = com.shadow.media.library.NovelRepository(application, library)
+    internal val sharedMdc = SharedMdcSessions(novel)
     val playlistExports = com.shadow.media.library.PlaylistExportRepository(application, catalogs, library)
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val database = ShadowMediaDatabase.create(application)

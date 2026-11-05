@@ -204,6 +204,8 @@ class MainViewModel(
     private val playbackNetwork: StateFlow<Boolean> = MutableStateFlow(true),
     private val retryLimit: () -> Int = { 2 },
     private val mdcConnections: () -> List<com.shadow.media.library.CatalogConnection> = { emptyList() },
+    private val discoverSharedMdc: suspend () -> List<com.shadow.media.library.CatalogConnection> = { emptyList() },
+    private val sharedMdcToken: (suspend (com.shadow.media.library.CatalogConnection, Boolean) -> String)? = null,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     var feedPreloader: com.shadow.media.playback.FeedPreloadPool? = null
@@ -416,7 +418,15 @@ class MainViewModel(
     fun showMdc() = navigate { copy(screen = Screen.MDC, errorMessage = null) }
 
     internal fun mdcProvider(connection: com.shadow.media.library.CatalogConnection) =
-        MdcMediaProvider(connection, externalClient)
+        MdcMediaProvider(connection, externalClient, if (connection.isSharedMdc()) {
+            { force -> checkNotNull(sharedMdcToken) { "统一服务连接不可用" }.invoke(connection, force) }
+        } else null)
+
+    internal suspend fun discoverMdcConnections(): List<com.shadow.media.library.CatalogConnection> {
+        discoverSharedMdc()
+        syncProviders()
+        return mdcConnections()
+    }
 
     internal suspend fun playMdc(
         provider: MdcMediaProvider, key: MediaKey, preparedPlan: org.json.JSONObject? = null,
@@ -1746,7 +1756,7 @@ class MainViewModel(
         val storedNetworkConnections = loadNetworkStorageConnections().orEmpty()
         val providers = buildList {
             addAll(nativeProviders())
-            mdcConnections().forEach { add(MdcMediaProvider(it, externalClient)) }
+            mdcConnections().forEach { add(mdcProvider(it)) }
             library?.let { add(com.shadow.media.library.LibraryMediaProvider(it)) }
             sessionStore.loadAll().distinctBy { it.providerId }.forEach { add(EmbyMediaProvider(it, repository)) }
             storedNetworkConnections.forEach { connection ->
@@ -2082,7 +2092,9 @@ class MainViewModel(
                         autoSwitchLines = { container.videoPreferences.settings.value.autoSwitchLines },
                         playbackNetwork = container.playbackNetwork,
                         retryLimit = { container.videoPreferences.settings.value.retries },
-                        mdcConnections = { runCatching { container.mdcConnections.load() }.getOrDefault(emptyList()) },
+                        mdcConnections = { container.sharedMdc.connections() + container.mdcConnections.load() },
+                        discoverSharedMdc = container.sharedMdc::discover,
+                        sharedMdcToken = container.sharedMdc::token,
                     ) as T
             }
     }

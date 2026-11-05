@@ -16,6 +16,61 @@ import org.robolectric.RobolectricTestRunner
 @org.robolectric.annotation.Config(sdk = [28], application = android.app.Application::class)
 @RunWith(RobolectricTestRunner::class)
 class MdcMediaProviderTest {
+    @Test fun `shared account refreshes once for api and poster without storing a mobile token`() = runTest {
+        MockWebServer().use { server ->
+            val refreshes = mutableListOf<Boolean>()
+            val connection = CatalogConnection(id = "shared-mdc:account", name = "MDC", kind = CatalogKind.OPDS,
+                url = server.url("/novel/services/mdc/").toString(), allowHttp = true)
+            val provider = MdcMediaProvider(connection, OkHttpClient()) { force ->
+                refreshes.add(force); if (force) "fresh-session" else "existing-session"
+            }
+            server.enqueue(MockResponse().setResponseCode(401))
+            server.enqueue(MockResponse().setBody("""{"items":[],"next_cursor":null}"""))
+            provider.browse(ProviderBrowseRequest())
+            assertEquals(listOf(false, true), refreshes)
+            assertEquals("Bearer existing-session", server.takeRequest().getHeader("Authorization"))
+            assertEquals("Bearer fresh-session", server.takeRequest().getHeader("Authorization"))
+            server.enqueue(MockResponse().setBody("poster"))
+            provider.imageClient.newCall(okhttp3.Request.Builder()
+                .url(server.url("/novel/services/mdc/api/media/v1/works/a/poster")).build()).execute().close()
+            assertEquals("Bearer existing-session", server.takeRequest().getHeader("Authorization"))
+            assertTrue(connection.token.isEmpty())
+            assertTrue(connection.oidcAuthState.isEmpty())
+            assertTrue(runCatching { provider.imageClient.newCall(okhttp3.Request.Builder()
+                .url(server.url("/novel/auth/me")).build()).execute().close() }.isFailure)
+            assertEquals(3, server.requestCount)
+        }
+    }
+
+    @Test fun `shared service discovery rejects other origins paths and plain http`() {
+        val account = CatalogConnection(id = "account", name = "Novel", kind = CatalogKind.OPDS,
+            url = "https://example.com/novel/", oidcIssuer = "https://identity.example.com", oidcAuthState = "private")
+        fun manifest(url: String) = org.json.JSONObject().put("services", org.json.JSONArray().put(
+            org.json.JSONObject().put("id", "mdc").put("base_url", url)))
+        val service = sharedMdcConnection(account, manifest("https://example.com/novel/services/mdc/"))!!
+        assertEquals("shared-mdc:account", service.id)
+        assertTrue(service.oidcAuthState.isEmpty())
+        assertNull(sharedMdcConnection(account, org.json.JSONObject()))
+        for (url in listOf("https://other.example.com/novel/services/mdc/", "https://example.com/other/",
+            "http://example.com/novel/services/mdc/", "https://example.com/novel/services/mdc/?token=x")) {
+            assertTrue(runCatching { sharedMdcConnection(account, manifest(url)) }.isFailure)
+        }
+    }
+
+    @Test fun `expired shared session fails instead of falling back to a mobile credential`() = runTest {
+        MockWebServer().use { server ->
+            var attempts = 0
+            val provider = MdcMediaProvider(CatalogConnection(name = "MDC", kind = CatalogKind.OPDS,
+                url = server.url("/mdc/").toString(), allowHttp = true, token = "must-not-use"), OkHttpClient()) {
+                attempts++
+                throw java.io.IOException("signed out")
+            }
+            assertTrue(runCatching { provider.checkConnection() }.isFailure)
+            assertEquals(1, attempts)
+            assertEquals(0, server.requestCount)
+        }
+    }
+
     @Test fun `prefix credentials cursor and exact playback target survive catalog mapping`() = runTest {
         MockWebServer().use { server ->
             val provider = MdcMediaProvider(CatalogConnection(

@@ -1,8 +1,10 @@
-# 小说统一账号登录
+# 小说与我的服务统一账号登录
 
 在「来源 → Novel → 添加」输入自己的 HTTPS 小说服务地址，选择「统一账号」，点击「登录统一账号」。应用会打开系统浏览器，完成统一身份服务登录后返回原生书城；输入服务根域名或 `/novel/` 根均可，应用读取服务端公布的规范 API 根。
 
 登录使用 AppAuth Authorization Code + PKCE（S256），独立 public client，不内嵌域名、client secret 或账号密码。服务端需要部署[Novel 原生认证协议](https://github.com/Cylunex/shadow-novel/blob/main/docs/authentication.md)。回调 URI 为 `com.shadow.media.novel:/oauth2redirect`。
+
+已登录的统一账号也可用于「我的服务」中的 MDC。网关启用服务发现后，MDC 自动复用此处的会话与续期，不重复认证；退出统一账号同时停止这些共享连接的访问。独立 Emby 或第三方媒体服务仍按各自认证协议连接。详见 [MDC 接入](MDC_INTEGRATION.md)。
 
 ## 应用标识与服务配置
 

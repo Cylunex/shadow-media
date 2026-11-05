@@ -71,24 +71,16 @@ internal fun MdcScreen(viewModel: MainViewModel) {
     val provider = remember(connection) { connection?.let(viewModel::mdcProvider) }
     val libraryScroll = rememberLazyGridState()
     val detailScroll = rememberLazyGridState()
-    val loader = remember(connection) {
-        connection?.let { c ->
-            val base = c.base()
-            val client = okhttp3.OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
-                .addInterceptor(com.shadow.media.network.OfflineModeInterceptor())
-                .addNetworkInterceptor { chain ->
-                    val request = chain.request()
-                    val builder = request.newBuilder().removeHeader("Authorization")
-                    if (request.url.scheme == base.scheme && request.url.host == base.host &&
-                        request.url.port == base.port &&
-                        (request.url.encodedPath.startsWith(base.newBuilder().addPathSegments("api/media/v1/works/").build().encodedPath) ||
-                        request.url.encodedPath.startsWith(base.newBuilder().addPathSegments("api/media/v1/catalog/people/").build().encodedPath))) {
-                        builder.header("Authorization", "Bearer ${c.token}")
-                    }
-                    chain.proceed(builder.build())
-                }.build()
-            ImageLoader.Builder(context).components { add(OkHttpNetworkFetcherFactory(callFactory = { client })) }.build()
-        }
+    val loader = remember(provider) {
+        provider?.let { p -> ImageLoader.Builder(context)
+            .components { add(OkHttpNetworkFetcherFactory(callFactory = { p.imageClient })) }.build() }
+    }
+    LaunchedEffect(Unit) {
+        busy = true
+        try { connections = viewModel.discoverMdcConnections() }
+        catch (e: CancellationException) { throw e }
+        catch (e: Exception) { error = e.message }
+        finally { busy = false }
     }
     DisposableEffect(loader) { onDispose { loader?.shutdown() } }
     fun load(next: String? = null) {
@@ -130,7 +122,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
             finally { busy = false }
         }
     }
-    LaunchedEffect(selected, workId) { if (provider != null) load() }
+    LaunchedEffect(provider, workId) { if (provider != null) load() }
     fun back() {
         job?.cancel()
         when {
@@ -145,7 +137,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
     }
     BackHandler { back() }
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        TopAppBar(title = { Text(detail?.title ?: connection?.name ?: "Shadow MDC") },
+        TopAppBar(title = { Text(detail?.title ?: connection?.name ?: "Shadow MDC", maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
             navigationIcon = { TextButton(onClick = ::back) { Text("返回") } },
             actions = { if (connection == null) TextButton(onClick = {
                 editingConnection = null; name = ""; url = ""; token = ""; preferenceSpace = ""; includeInSearch = false; allowHttp = false; editor = true
@@ -155,14 +147,17 @@ internal fun MdcScreen(viewModel: MainViewModel) {
         LazyVerticalGrid(GridCells.Adaptive(150.dp), state = if (workId == null) libraryScroll else detailScroll, contentPadding = PaddingValues(16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (connection == null) {
-                item(span = { GridItemSpan(maxLineSpan) }) { Text("连接自己的 MDC 片库，在作品详情直接播放已关联的 Emby 影片。") }
+                item(span = { GridItemSpan(maxLineSpan) }) { Text("我的服务共用统一账号。已登录 Novel 后，MDC 自动连接，无需再次认证。") }
                 items(connections, key = { it.id }) { c -> Card {
                     TextButton(onClick = { selected = c.id }) { Text(c.name) }
+                    if (c.isSharedMdc()) Text("已共用统一账号", Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                    else {
                     TextButton(onClick = {
                         editingConnection = c; name = c.name; url = c.url; token = c.token
                         preferenceSpace = c.username; allowHttp = c.allowHttp; includeInSearch = c.includeInSearch; editor = true
                     }) { Text("编辑连接") }
-                    TextButton(onClick = { store.remove(c.id); connections = store.load(); viewModel.refreshProviderConnections() }) { Text("移除连接") }
+                    TextButton(onClick = { store.remove(c.id); connections = connections.filter { it.isSharedMdc() } + store.load(); viewModel.refreshProviderConnections() }) { Text("移除连接") }
+                    }
                 } }
             } else if (workId != null) {
                 detail?.let { item ->
@@ -435,7 +430,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                     viewModel.mdcProvider(c).checkConnection()
                     ensureActive()
                     val saved = store.replace(editingConnection, c)
-                    connections = store.load(); editor = false; selected = saved.id
+                    connections = connections.filter { it.isSharedMdc() } + store.load(); editor = false; selected = saved.id
                     viewModel.refreshProviderConnections()
                     name = ""; url = ""; token = ""; preferenceSpace = ""
                 } catch (e: CancellationException) { throw e }

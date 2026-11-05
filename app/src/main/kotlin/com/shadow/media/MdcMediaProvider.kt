@@ -15,8 +15,29 @@ import org.json.JSONObject
 internal class MdcMediaProvider(
     val connection: CatalogConnection,
     client: OkHttpClient,
+    private val accessToken: (suspend (Boolean) -> String)? = null,
 ) : MediaProvider {
-    private val client = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
+    // API and images share one refresh path. No credential is sent outside the exact API subtree.
+    internal val imageClient = client.newBuilder().followRedirects(false).followSslRedirects(false)
+        .addInterceptor { chain ->
+            val request = chain.request()
+            val base = connection.base()
+            val prefix = base.newBuilder().addPathSegments("api/media/v1/").build().encodedPath
+            if (request.url.scheme != base.scheme || request.url.host != base.host ||
+                request.url.port != base.port || !request.url.encodedPath.startsWith(prefix)) {
+                throw java.io.IOException("拒绝跨来源 MDC 请求")
+            }
+            fun authorized(force: Boolean): Request = request.newBuilder()
+                .header("Authorization", "Bearer ${accessToken?.let { kotlinx.coroutines.runBlocking { it(force) } } ?: connection.token}")
+                .header("X-Catalog-Owner", connection.username.ifBlank { connection.id }).build()
+            var response = chain.proceed(authorized(false))
+            if (response.code == 401 && accessToken != null) {
+                response.close()
+                response = chain.proceed(authorized(true))
+            }
+            response
+        }.build()
+    private val client = imageClient
     override val descriptor = ProviderDescriptor(
         "mdc:${connection.id}", connection.name, ProviderKind.DECLARATIVE_HTTP,
         setOf(ProviderCapability.BROWSE, ProviderCapability.SEARCH, ProviderCapability.PLAYBACK),
@@ -36,7 +57,7 @@ internal class MdcMediaProvider(
                 val body = response.body?.string().orEmpty()
                 check(response.isSuccessful) {
                     when (response.code) {
-                        401 -> "MDC 访问令牌无效"
+                        401 -> if (accessToken == null) "MDC 访问令牌无效" else "统一账号登录已失效，请在 Novel 重新登录"
                         409 -> runCatching { JSONObject(body).optString("detail") }.getOrDefault("尚未关联 Emby 条目")
                         else -> "MDC 请求失败（${response.code}）"
                     }
