@@ -2,7 +2,6 @@
 package com.shadow.media
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.*
@@ -151,8 +150,8 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
     val gridState = rememberLazyGridState()
     var previousQuery by remember { mutableStateOf(query) }
     LaunchedEffect(query) { if (query != previousQuery) gridState.scrollToItem(0); previousQuery = query }
-    LazyVerticalGrid(modifier = Modifier.fillMaxSize(), state = gridState, columns = if (grid) GridCells.Adaptive(96.dp) else GridCells.Fixed(1),
-        contentPadding = PaddingValues(20.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    LazyVerticalGrid(modifier = Modifier.fillMaxSize(), state = gridState, columns = if (grid) GridCells.Adaptive(84.dp) else GridCells.Fixed(1),
+        contentPadding = PaddingValues(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) { Column {
             NovelSearchField(search, onSearch, !busy, onSubmit, if (isShelf) "搜索我的书架" else "搜索书名、作者或题材", onClear = { onQuery(query.copy(q = "")) })
             NovelSavedFilters(view, query, onQuery)
@@ -221,15 +220,15 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
         items(items, key = { it.getString("id") }) { work ->
             Column {
             val id = work.getString("id")
-            if (!managing && work.optInt("update_count") > 0 && onUpdates != null) TextButton(enabled = !busy, onClick = { onUpdates(id) }) { Text("查看本次更新") }
             if (managing) Checkbox(id in selected, { select(id) })
-            val read = if (managing) ({ select(id) }) else if (view in setOf("shelf", "history") && novelCanRead(work)) ({ onRead(work.getString("id")) }) else null
+            val read = if (managing) ({ select(id) }) else if (view in setOf("shelf", "history") && novelCanRead(work)) ({ onRead(id) }) else null
             val detail = { if (managing) select(id) else onWork(id) }
-            if (!grid) Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                NovelWorkCard(work, !busy, read ?: detail)
-                if (read != null) TextButton(enabled = !busy, onClick = detail) { Text("详情") }
-            } else NovelShelfTile(work, !busy, detail, read, onManage = if (isShelf && onBulk != null) ({ managing = true; selected = setOf(id); actions = true }) else null)
-            if (isShelf) NovelShelfReadingSummary(work, showLastChapter = !grid)
+            if (grid || view in setOf("shelf", "history")) {
+                NovelShelfItem(work, grid, !busy, detail, read,
+                    onManage = if (!managing && isShelf && onBulk != null) ({ selected = setOf(id); actions = true }) else null,
+                    onUpdates = if (!managing && onUpdates != null) ({ onUpdates(id) }) else null,
+                    showReadingInfo = !managing && isShelf, showActions = !managing)
+            } else NovelWorkCard(work, !busy, detail)
             }
         }
         if (items.size < total) item(span = { GridItemSpan(maxLineSpan) }) { OutlinedButton(enabled = !busy, onClick = onMore, modifier = Modifier.fillMaxWidth()) { Text(if (busy) "正在加载…" else "加载更多 · 已显示 ${items.size} 本") } }
@@ -237,25 +236,3 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
 }
 
 internal fun novelCanRead(work: JSONObject) = work.novelStrings("availability").any { it in setOf("local", "online", "cached", "readable") }
-
-@Composable internal fun NovelShelfTile(work: JSONObject, enabled: Boolean, onDetail: () -> Unit, onRead: (() -> Unit)?, onManage: (() -> Unit)? = null) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Card(modifier = Modifier.combinedClickable(enabled = enabled, onClick = onRead ?: onDetail, onLongClick = onManage), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                Box {
-                    NovelBookCover(work, Modifier.fillMaxWidth())
-                    if (work.optInt("update_count") > 0) Surface(Modifier.align(Alignment.TopEnd).padding(5.dp), shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.primary) {
-                        Text("+${work.optInt("update_count")}章", Modifier.padding(horizontal = 6.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-                if (work.optBoolean("pinned")) Text("置顶", style = MaterialTheme.typography.labelSmall)
-                Text(work.optString("title"), maxLines = 2, minLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
-                if (work.optString("last_chapter_title").isNotBlank()) Text("读至 " + work.optString("last_chapter_title"), maxLines = 1, style = MaterialTheme.typography.labelSmall)
-                Text(work.optString("author").ifBlank { "作者待补全" }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(if (!novelCanRead(work)) "仅资料" else serialLabel(work.optString("serial_status")).ifBlank { "可阅读" }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-            }
-        }
-        if (onManage != null) TextButton(enabled = enabled, onClick = onManage, modifier = Modifier.fillMaxWidth()) { Text("管理此书") }
-        if (onRead != null) TextButton(enabled = enabled, onClick = onDetail, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 4.dp)) { Text("详情") }
-    }
-}

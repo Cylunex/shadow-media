@@ -52,6 +52,12 @@ class NovelLibraryViewsTest {
         compose.setContent { ShadowMediaTheme { Surface { NovelWorksPage("shelf", NovelQuery(view = "shelf"), "", navigation, data, false,
             {}, {}, {}, {}, {}, { error("Management must not open details") }, { error("Management must not open reader") },
             onBulk = { ids, action, value, _ -> appliedIds = ids; appliedAction = action; appliedGroup = value }) } } }
+        compose.onNodeWithText("山海来信").performTouchInput { longClick() }
+        compose.onNodeWithText("整理 1 本").assertIsDisplayed()
+        compose.onAllNodesWithText("追更", substring = false).onLast().performClick()
+        compose.onNodeWithText("应用", substring = false).performClick()
+        compose.waitForIdle()
+        assertEquals(setOf("one"), appliedIds)
         compose.onNodeWithText("管理", substring = false).performClick()
         compose.onNodeWithText("选择已显示").performClick()
         compose.onNodeWithText("整理 1 本").performClick()
@@ -118,16 +124,21 @@ class NovelLibraryViewsTest {
         compose.onNodeWithText("山海来信").performClick()
         assertEquals("1", read)
         assertNull(detail)
-        compose.onAllNodesWithText("详情").onFirst().performClick()
+        compose.onNodeWithContentDescription("山海来信 · 更多操作").performClick()
+        compose.onNodeWithText("详情").performClick()
         assertEquals("1", detail)
         screenshot("novel-shelf-dark")
         compose.onNodeWithContentDescription("切换列表视图").performClick()
         compose.onNodeWithContentDescription("切换网格视图").assertIsDisplayed()
+        compose.onNodeWithText("沿着旧日留下的来信，寻找群山背后的灯火。").assertDoesNotExist()
+        assertTrue(compose.onNodeWithText("山海来信").fetchSemanticsNode().boundsInRoot.height <= 120 * compose.activity.resources.displayMetrics.density)
+        screenshot("novel-shelf-list")
         compose.runOnIdle { read = null; detail = null }
         compose.onNodeWithText("山海来信").performClick()
         assertEquals("1", read)
         assertNull(detail)
-        compose.onAllNodesWithText("详情").onFirst().performClick()
+        compose.onNodeWithContentDescription("山海来信 · 更多操作").performClick()
+        compose.onNodeWithText("详情").performClick()
         assertEquals("1", detail)
         compose.onNodeWithText("最近收录").performClick()
         compose.onNodeWithText("最近阅读").performClick()
@@ -143,7 +154,7 @@ class NovelLibraryViewsTest {
         compose.setContent { ShadowMediaTheme { Surface { NovelWorksPage("shelf", NovelQuery(), "", JSONObject(), data, false,
             onSearch = {}, onSubmit = {}, onQuery = {}, onFilter = {}, onMore = {}, onWork = {}, onRead = {}) } } }
         compose.onNodeWithContentDescription("全部筛选").assertIsDisplayed()
-        compose.onNodeWithText("详情").assertIsDisplayed()
+        compose.onNodeWithContentDescription("山海来信与远方灯火的漫长故事 · 更多操作").assertIsDisplayed()
         screenshot("novel-shelf-compact")
     }
 

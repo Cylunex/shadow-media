@@ -32,7 +32,7 @@ internal data class NovelArtwork(val repository: NovelRepository, val connection
 internal val LocalNovelArtwork = staticCompositionLocalOf<NovelArtwork?> { null }
 
 /** Covers use the same authenticated API and origin checks as book data; no arbitrary image URL is opened. */
-@Composable internal fun NovelBookCover(work: JSONObject, modifier: Modifier = Modifier) {
+@Composable internal fun NovelBookCover(work: JSONObject, modifier: Modifier = Modifier, aspectRatio: Float = 0.7f, showAuthor: Boolean = true) {
     val artwork = LocalNovelArtwork.current
     val id = work.optString("id")
     val revision = work.optString("revision")
@@ -59,15 +59,15 @@ internal val LocalNovelArtwork = staticCompositionLocalOf<NovelArtwork?> { null 
         1 -> scheme.secondaryContainer to scheme.onSecondaryContainer
         else -> scheme.tertiaryContainer to scheme.onTertiaryContainer
     }
-    Box(modifier.aspectRatio(0.7f).clip(RoundedCornerShape(14.dp)).background(Brush.verticalGradient(
+    Box(modifier.aspectRatio(aspectRatio).clip(RoundedCornerShape(14.dp)).background(Brush.verticalGradient(
         listOf(paper, paper.copy(alpha = .78f)))), contentAlignment = Alignment.Center) {
         if (bitmap != null) Image(bitmap!!, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         else {
             Box(Modifier.align(Alignment.CenterStart).width(5.dp).fillMaxHeight().background(ink.copy(alpha = .10f)))
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(work.optString("title").take(18), style = MaterialTheme.typography.titleSmall, fontFamily = FontFamily.Serif,
-                    fontWeight = FontWeight.Medium, color = ink, maxLines = 4, overflow = TextOverflow.Ellipsis)
-                if (work.optString("author").isNotBlank()) Text(work.optString("author"), style = MaterialTheme.typography.labelSmall,
+            Column(Modifier.padding(horizontal = if (showAuthor) 12.dp else 8.dp, vertical = if (showAuthor) 10.dp else 6.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(work.optString("title").take(18), style = if (showAuthor) MaterialTheme.typography.titleSmall else MaterialTheme.typography.labelMedium, fontFamily = FontFamily.Serif,
+                    fontWeight = FontWeight.Medium, color = ink, maxLines = if (showAuthor) 4 else 3, overflow = TextOverflow.Ellipsis)
+                if (showAuthor && work.optString("author").isNotBlank()) Text(work.optString("author"), style = MaterialTheme.typography.labelSmall,
                     maxLines = 1, color = ink.copy(alpha = .8f), overflow = TextOverflow.Ellipsis)
             }
         }
