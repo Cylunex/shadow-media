@@ -237,7 +237,7 @@ import com.shadow.media.reading.ReaderActivity
     BackHandler(enabled = localShelf || generalSettings) { returnToModule() }
     Scaffold(
         topBar = {
-            if (!audioExpanded && !(module == MediaModule.NOVEL && !localShelf && !generalSettings &&
+            if (!audioExpanded && state.screen != Screen.MDC && !(module == MediaModule.NOVEL && !localShelf && !generalSettings &&
                     !catalogScreen && !offlineScreen && !continueScreen && !localVideoScreen && localLink == null && state.screen == Screen.HOME)) MediaModuleHeader(module, ::selectModule, { toolsExpanded = true }, {
                 resetUtility(); generalSettings = true; viewModel.showHome()
             })
@@ -245,7 +245,7 @@ import com.shadow.media.reading.ReaderActivity
         bottomBar = {
             if (!audioExpanded) Column {
                 if (audioState.id != null) AudioMiniBar(controller, onOpen = { audioExpanded = true }, onToggle = { controller?.let { toggleAudio(it) } })
-                if (!television) MediaModuleNavigation(module, destination, ::selectDestination)
+                if (!television && state.screen != Screen.MDC) MediaModuleNavigation(module, destination, ::selectDestination)
             }
         },
     ) { padding ->

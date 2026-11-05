@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -137,7 +138,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
     }
     BackHandler { back() }
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        TopAppBar(title = { Text(detail?.title ?: connection?.name ?: "Shadow MDC", maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
+        TopAppBar(title = { Text(detail?.title ?: connection?.takeUnless { it.isSharedMdc() }?.name ?: "Shadow MDC", maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
             navigationIcon = { TextButton(onClick = ::back) { Text("返回") } },
             actions = { if (connection == null) TextButton(onClick = {
                 editingConnection = null; name = ""; url = ""; token = ""; preferenceSpace = ""; includeInSearch = false; allowHttp = false; editor = true
@@ -163,7 +164,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                 detail?.let { item ->
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            item.posterUrl?.let { if (loader != null) AsyncImage(it, item.title, imageLoader = loader, modifier = Modifier.height(240.dp).fillMaxWidth()) }
+                            item.posterUrl?.let { if (loader != null) MdcArtwork(it, item.title, loader, Modifier.height(240.dp).fillMaxWidth()) }
                             Text(item.title, style = MaterialTheme.typography.headlineSmall)
                             Text(item.subtitle.orEmpty())
                             Button(enabled = !busy, onClick = {
@@ -337,8 +338,8 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                 }, key = { it.id }) { person ->
                     Card(onClick = { actor = person.id; mode = "works"; query = ""; actorProfile = null; load() }) {
                         Column(Modifier.padding(16.dp)) {
-                            if (loader != null) AsyncImage(person.imageUrl, person.name, imageLoader = loader,
-                                modifier = Modifier.fillMaxWidth().height(150.dp))
+                            if (loader != null) MdcArtwork(person.imageUrl, person.name, loader,
+                                Modifier.fillMaxWidth().height(150.dp), "暂无头像")
                             Text(person.name)
                             Text(person.aliases.joinToString(" / "))
                             Text("${person.workCount} 部作品")
@@ -348,9 +349,9 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                 if (mode == "works") {
                 items(rows, key = { it.key.stableId }) { item ->
                     Card(onClick = { detail = null; workId = item.key.itemId }) { Column(Modifier.padding(8.dp)) {
-                        if (loader != null) AsyncImage(item.posterUrl, item.title, imageLoader = loader, modifier = Modifier.fillMaxWidth().height(180.dp))
-                        Text(item.title, maxLines = 2)
-                        Text(item.subtitle.orEmpty(), maxLines = 1, style = MaterialTheme.typography.bodySmall)
+                        if (loader != null) MdcArtwork(item.posterUrl, item.title, loader, Modifier.fillMaxWidth().height(180.dp))
+                        Text(item.title, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        Text(item.subtitle.orEmpty(), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
                     } }
                 }
                 }
@@ -438,4 +439,16 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                 finally { busy = false }
             }
         }) { Text("连接") } }, dismissButton = { TextButton(enabled = !busy, onClick = { editor = false }) { Text("取消") } })
+}
+
+@Composable
+private fun MdcArtwork(url: String?, description: String, loader: ImageLoader, modifier: Modifier,
+    unavailable: String = "暂无封面") {
+    var failed by remember(url) { mutableStateOf(url.isNullOrBlank()) }
+    Box(modifier, contentAlignment = Alignment.Center) {
+        AsyncImage(url, description, imageLoader = loader, modifier = Modifier.fillMaxSize(),
+            onSuccess = { failed = false }, onError = { failed = true })
+        if (failed) Text(unavailable, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall)
+    }
 }
