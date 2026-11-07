@@ -262,6 +262,21 @@ internal class NovelBrowserState(initial: String = "") {
     BackHandler(state.detail != null || state.explore && state.entry != null) { state.backWithinBrowser() }
     Column(Modifier.fillMaxSize()) {
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (!state.explore && (state.submitted.isNotBlank() || busy)) Surface(tonalElevation = 2.dp) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                Text("${state.rows.size} 个来源结果 · 剩余 ${state.remaining.size} 个书源", style = MaterialTheme.typography.labelSmall)
+                FlowRow {
+                    if (state.remaining.isNotEmpty()) Button(enabled = !busy && !state.searchRunning, onClick = { search(state.remaining, append = true) }) { Text("继续搜索 ${state.remaining.size} 源") }
+                    if (state.pendingIds.isNotEmpty() && !state.searchRunning) TextButton(enabled = !busy, onClick = { search(state.pendingIds, state.pendingPage, true) }) { Text("重试未完成") }
+                    if (busy) TextButton(onClick = {
+                        val id = state.searchJobId
+                        task?.cancel(); generation++; busy = false; jobId = null
+                        if (id != null) run { state.updateSearch(repository.sourceSearch.cancel(connection, id)); if (state.searchRunning) resumeSearch() }
+                    }) { Text("停止搜索") }
+                    TextButton(onClick = { scope.launch { list.scrollToItem(0) } }) { Text("回到顶部") }
+                }
+            }
+        }
         LazyColumn(state = list, modifier = Modifier.weight(1f).imePadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item {
                 if (bindingWork == null) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -365,8 +380,6 @@ internal class NovelBrowserState(initial: String = "") {
                     if (novelSourceIdentity(row) in state.autoReceipts) Text("已自动关联", style = MaterialTheme.typography.labelSmall)
                     state.autoFailures[novelSourceIdentity(row)]?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 } }
-                if (state.pendingIds.isNotEmpty() && !busy && !state.searchRunning) item { TextButton(onClick = { search(state.pendingIds, state.pendingPage, true) }) { Text("重试尚未返回的 ${state.pendingIds.size} 个书源") } }
-                if (state.remaining.isNotEmpty()) item { Button(enabled = !busy, onClick = { search(state.remaining, append = true) }) { Text("继续搜索其他 ${state.remaining.size} 个书源") } }
                 items(state.sources, key = { it.optString("provider_id") }) { source ->
                     Column {
                         Text("${source.optString("name")} · ${if (source.optBoolean("ok")) "${source.optInt("count")} 条 / 原始 ${source.optInt("raw_count", source.optInt("count"))} 条" else source.optString("message")}", style = MaterialTheme.typography.bodySmall)

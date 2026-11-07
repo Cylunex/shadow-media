@@ -51,6 +51,43 @@ class NovelReaderToolsUiTest {
         }
     }
 
+    @Test fun readingShortcutsAreAvailableDirectlyInTheHeader() {
+        var selected = ""
+        compose.setContent { MaterialTheme { NativeReaderHeader("示例小说", "第一章", "已同步", true,
+            onBack = {}, onClose = {}, onBookmark = {}, sources = true, onPanel = { selected = it }) } }
+        compose.onNodeWithText("换源").assertIsDisplayed().performClick()
+        assertEquals("书源", selected)
+        compose.onNodeWithText("替换").assertIsDisplayed().performClick()
+        assertEquals("替换", selected)
+        compose.onNodeWithText("搜正文").assertIsDisplayed()
+        compose.onNodeWithText("书签").assertIsDisplayed()
+        screenshot("novel-reader-header-shortcuts-320")
+    }
+
+    @Test fun continuationIsVisibleAboveLongSourceListsAndRetainsEarlierSources() {
+        handler = { request -> when (request.path) {
+            "/api/v1/works/work" -> json("""{"id":"work","versions":[],"title":"山海来信","author":"行舟"}""")
+            "/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true}}""")
+            "/api/v1/search-jobs" -> json("""{"job_id":"next"}""")
+            "/api/v1/jobs/next" -> json("""{"state":"succeeded","result":{"remaining":0,"items":[],"sources":[{"provider_id":"new","ok":true}]}}""")
+            else -> json("{}")
+        } }
+        val repo = repository()
+        val state = NovelReaderSourceState().apply {
+            submitted = "山海来信"
+            result = JSONObject("""{"remaining":30,"items":[],"sources":[{"provider_id":"old","ok":true}]}""")
+        }
+        compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize().padding(16.dp)) {
+            NovelReaderSourcesPanel(repo, publication(), "山海来信", "当前章", true, state) { _, _ -> }
+        } } } }
+        waitText("继续搜索 30 源")
+        compose.onNodeWithText("继续搜索 30 源").assertIsDisplayed().performClick()
+        compose.waitUntil(10_000) { state.jobState == "succeeded" }
+        val body = JSONObject(requests.single { it.first == "/api/v1/search-jobs" }.second)
+        assertEquals(listOf("old"), body.novelStrings("exclude_ids"))
+        assertEquals(setOf("old", "new"), state.result!!.novelObjects("sources").map { it.getString("provider_id") }.toSet())
+    }
+
     @Test fun sourceSelectionShowsTargetContentsAndOnlyExplicitChapterMovesReading() {
         handler = { request -> if (request.path == "/api/v1/works/work") json("""{"id":"work","versions":[{"id":"v1","state":"ready","label":"主书源"},{"id":"v2","state":"ready","label":"备用书源"}]}""")
             else if (request.path!!.contains("/open")) json("""{"version_id":"v2","quality":"approximate","mapping_basis":"title","position":{"chapter_id":"next"}}""")
@@ -119,7 +156,7 @@ class NovelReaderToolsUiTest {
         waitText("搜索可用书源")
         compose.onNodeWithText("搜索可用书源").performScrollTo().performClick()
         waitText("关联并选择章节")
-        compose.onNodeWithText("停止搜索").performScrollTo().performClick()
+        compose.onNodeWithText("停止搜索").assertIsDisplayed().performClick()
         waitText("搜索已停止，已返回结果保留")
         compose.onNodeWithText("只看同名同作者").performScrollTo().performClick()
         waitText("暂无同名同作者结果")

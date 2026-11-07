@@ -21,7 +21,7 @@ import com.shadow.media.database.ContentAnnotationEntity
 import com.shadow.media.library.LibraryRepository
 
 @Composable
-internal fun NativeReaderHeader(title: String, chapter: String, status: String?, enabled: Boolean, onBack: () -> Unit, onClose: () -> Unit, onBookmark: () -> Unit, conflict: (@Composable () -> Unit)? = null, night: Boolean = false, onToggleNight: (() -> Unit)? = null) {
+internal fun NativeReaderHeader(title: String, chapter: String, status: String?, enabled: Boolean, onBack: () -> Unit, onClose: () -> Unit, onBookmark: () -> Unit, conflict: (@Composable () -> Unit)? = null, night: Boolean = false, onToggleNight: (() -> Unit)? = null, onPanel: (String) -> Unit = {}, sources: Boolean = false) {
     Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 1.dp) {
         Column(Modifier.fillMaxWidth().statusBarsPadding().padding(bottom = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -37,6 +37,12 @@ internal fun NativeReaderHeader(title: String, chapter: String, status: String?,
                 IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "收起阅读菜单") }
             }
             status?.let { Text(it, Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                if (sources) TextButton(enabled = enabled, onClick = { onPanel("书源") }) { Icon(Icons.Rounded.SwapHoriz, null, Modifier.size(18.dp)); Text("换源") }
+                TextButton(enabled = enabled, onClick = { onPanel("搜索") }) { Text("搜正文") }
+                TextButton(enabled = enabled, onClick = { onPanel("替换") }) { Text("替换") }
+                TextButton(enabled = enabled, onClick = { onPanel("书签") }) { Text("书签") }
+            }
             conflict?.invoke()
         }
     }

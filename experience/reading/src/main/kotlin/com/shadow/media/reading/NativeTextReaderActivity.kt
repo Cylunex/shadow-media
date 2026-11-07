@@ -34,6 +34,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import org.json.JSONObject
 import com.shadow.media.database.LibraryAssetEntity
 import com.shadow.media.database.NovelPublicationEntity
@@ -142,6 +143,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         if (pub != null) novel.beginReading(pub, locator ?: content.locator(restored))
         val newSession = ReaderNarrationService.activeSession?.takeIf { it.first == item.id }?.second ?: if (asset?.id != item.id || session == null) ProgressWriter.begin(library, item) else session
         asset = item; publication = pub; chapter = content; offset = restored; session = newSession
+        if (content.rulesWarning.isNotBlank()) message = content.rulesWarning
         if (!narrating && narrationChapter != content.ref.id) {
             val saved = getSharedPreferences("reader_narration", MODE_PRIVATE).getString(item.id, null)
                 ?.let { runCatching { JSONObject(it) }.getOrNull() }
@@ -424,6 +426,22 @@ class NativeTextReaderActivity : ComponentActivity() {
                 bookmarkAssets = if (pub == null) listOfNotNull(asset?.id) else novel.dao.publications(pub.scope)
                     .filter { it.workId == pub.workId && it.versionId == pub.versionId }.map { it.assetId }
             }
+            LaunchedEffect(publication?.scope) {
+                val scope = publication?.scope ?: return@LaunchedEffect
+                val previous = novel.textRules(scope).optInt("revision")
+                try {
+                    val fresh = novel.textRules(scope, refresh = true)
+                    if (fresh.optInt("revision") != previous) {
+                        snapshotFlow { busy }.first { !it }
+                        if (publication?.scope == scope) {
+                            val locator = chapter?.locator(offset)
+                            source.invalidate()
+                            navigate { asset?.let { open(it, locator) } }
+                        }
+                    }
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { /* Cached rules remain available when offline or on an older service. */ }
+            }
             BoxWithConstraints(Modifier.fillMaxSize().background(Color(style.paper.background))
                 .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))) {
                 ReaderPaperBackground(style, Modifier.matchParentSize())
@@ -472,6 +490,8 @@ class NativeTextReaderActivity : ComponentActivity() {
                             onBack = { finish() }, onClose = { menu = false; applyWindow() },
                             onBookmark = { chapter?.let { mark(it.locator(offset), it.ref.title) } },
                             night = style.paper == ReaderPaper.NIGHT, onToggleNight = { update(style.toggleNight()) },
+                            sources = publication != null,
+                            onPanel = { if (it == "书源") sourceState.selectedVersion = null; panel = it; applyWindow() },
                             conflict = if (state?.conflictJson?.isNotBlank() == true) ({
                                 FlowRow(Modifier.padding(horizontal = 12.dp)) {
                                     TextButton(onClick = { resolve(false) }, enabled = !busy) { Text("保留本机进度") }
@@ -524,7 +544,6 @@ class NativeTextReaderActivity : ComponentActivity() {
                             "更多" -> {
                                 TextButton(onClick = { panel = "搜索" }) { Text("搜正文") }
                                 TextButton(onClick = { panel = "书签" }) { Text("书签与摘录") }
-                                if (publication != null) TextButton(onClick = { panel = "书源" }) { Text("切换阅读书源") }
                                 TextButton(onClick = { message = "轻点中间打开菜单，左右两侧翻页。长按正文选字，拖动两端手柄调整范围。" }) { Text("手势帮助") }
                             }
                             "目录" -> asset?.let { item -> chapter?.let { content ->
@@ -537,6 +556,13 @@ class NativeTextReaderActivity : ComponentActivity() {
                             "书源" -> publication?.let { pub -> chapter?.let { content ->
                                 NovelReaderSourcesPanel(novel, pub, asset?.title.orEmpty(), content.ref.title, !busy, sourceState, ::switchSource)
                             } }
+                            "替换" -> NovelTextRulesPanel(novel, publication?.scope,
+                                sample = view?.selectedText?.takeIf(String::isNotBlank) ?: chapter?.let { it.originalText ?: it.text }.orEmpty(),
+                                onSaved = {
+                                    val locator = chapter?.locator(offset)
+                                    source.invalidate(); panel = null
+                                    navigate { asset?.let { open(it, locator) } }
+                                })
                             "搜索" -> asset?.let { item ->
                                 NativeReaderSearchPanel(item, publication, source, !busy, chapter?.let { it.ref.ordinal to offset }, session = readerSearch) { hit -> jumpTo(NativeReaderLocation(hit.assetId, hit.locator)) }
                             }

@@ -136,7 +136,7 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
         NovelShelfGroupManager(artwork.repository, artwork.connection) { groupManager = false; onQuery(query.copy(group = "", ungrouped = false)) }
     }
     fun select(id: String) { selected = if (id in selected) selected - id else (selected + id).take(500).toSet() }
-    if (actions && onBulk != null) NovelShelfActions(selected, navigation, onDismiss = { actions = false }, onApply = { action, value, tags ->
+    if (actions && onBulk != null) NovelShelfActions(selected, navigation, deleted = view == "trash", onDismiss = { actions = false }, onApply = { action, value, tags ->
         onBulk(selected, action, value, tags)
         selected = emptySet(); actions = false
     })
@@ -196,7 +196,7 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (data == null) { if (busy) "正在找书…" else "尚未载入" } else "$total 本书", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (isShelf && onBulk != null) TextButton(enabled = !busy, onClick = { managing = !managing; selected = emptySet() }) { Text(if (managing) "完成管理" else "管理") }
+                if (onBulk != null) TextButton(enabled = !busy, onClick = { managing = !managing; selected = emptySet() }) { Text(if (managing) "完成管理" else "管理") }
                 var sorting by remember { mutableStateOf(false) }
                 Box {
                     TextButton(enabled = !busy, onClick = { sorting = true }) { Text(when (query.sort) { "last_read" -> "最近阅读"; "title" -> "书名"; "popularity" -> "热度"; else -> if (view == "history") "最近阅读" else "最近收录" }); Icon(Icons.Rounded.ExpandMore, null, Modifier.size(18.dp)) }
@@ -221,13 +221,13 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
             Column {
             val id = work.getString("id")
             if (managing) Checkbox(id in selected, { select(id) })
-            val read = if (managing) ({ select(id) }) else if (view in setOf("shelf", "history") && novelCanRead(work)) ({ onRead(id) }) else null
+            val read = if (view == "trash") null else if (managing) ({ select(id) }) else if (view in setOf("shelf", "history") && novelCanRead(work)) ({ onRead(id) }) else null
             val detail = { if (managing) select(id) else onWork(id) }
             if (grid || view in setOf("shelf", "history")) {
                 NovelShelfItem(work, grid, !busy, detail, read,
-                    onManage = if (!managing && isShelf && onBulk != null) ({ selected = setOf(id); actions = true }) else null,
-                    onUpdates = if (!managing && onUpdates != null) ({ onUpdates(id) }) else null,
-                    showReadingInfo = !managing && isShelf, showActions = !managing)
+                    onManage = if (!managing && onBulk != null) ({ selected = setOf(id); actions = true }) else null,
+                    onUpdates = if (!managing && view != "trash" && onUpdates != null) ({ onUpdates(id) }) else null,
+                    showReadingInfo = !managing && isShelf, showActions = !managing && view != "trash")
             } else NovelWorkCard(work, !busy, detail)
             }
         }

@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.shadow.media.library.*
+import com.shadow.media.reading.NovelTextRulesPanel
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -68,6 +69,7 @@ internal data class NovelExport(val name: String, val path: List<String>, val bo
             "groups" -> NovelSourceGroups(repository, connection)
             "notes" -> NovelNotesLibrary(repository, novelScope(connection))
             "shelf_groups" -> NovelShelfGroupManager(repository, connection, {})
+            "rules" -> NovelTextRulesPanel(repository, novelScope(connection), onSaved = { task.message = "全局替换已保存，重新打开正文后应用" })
             "books" -> NovelBulkBooks(repository, connection, onWork)
             "subscriptions" -> NovelSubscriptions(repository, connection, { exportFile(it) }, { importFile(listOf("subscriptions", "import")) })
             "search" -> NovelSearchSettings(repository, connection, onDismiss = { page = "" }, onSearch = { page = ""; onSearch(it) })
@@ -78,7 +80,7 @@ internal data class NovelExport(val name: String, val path: List<String>, val bo
                         summary?.let { Text("作品 ${it.optInt("works")} · 书架 ${it.optInt("on_shelf")} · 有阅读记录 ${it.optInt("read_works")}\n追更 ${it.optInt("following")} · 笔记 ${it.optInt("notes")}") }
                         if (summary == null) TextButton(enabled = !task.busy, onClick = { task.run { summary = repository.live(connection, listOf("library", "summary")) } }) { Text("加载统计") }
                     }
-                    items(listOf("sources" to "书源管理", "groups" to "独立书源分组", "books" to "批量整理作品", "shelf_groups" to "书架分组", "notes" to "书签与摘录", "subscriptions" to "订阅与 RSS", "files" to "文件与书目清单", "settings" to "偏好、缓存与备份")) { (id, name) ->
+                    items(listOf("sources" to "书源管理", "groups" to "独立书源分组", "books" to "批量整理作品", "rules" to "全局替换与净化", "shelf_groups" to "书架分组", "notes" to "书签与摘录", "subscriptions" to "订阅与 RSS", "files" to "文件与书目清单", "settings" to "偏好、缓存与备份")) { (id, name) ->
                         Card(onClick = { page = id }) { Text(name, Modifier.fillMaxWidth().padding(20.dp), style = MaterialTheme.typography.titleMedium) }
                     }
                 }

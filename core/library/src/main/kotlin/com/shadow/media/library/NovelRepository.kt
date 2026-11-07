@@ -21,6 +21,23 @@ class NovelRepository(private val context: Context, private val library: Library
     private val api = api ?: NovelApi(bearer = oidc)
     val sourceSearch = NovelSourceSearch(this.api)
     val tools = NovelLibraryTools(this.api)
+    private val rulesStore = context.getSharedPreferences("novel_text_rules", Context.MODE_PRIVATE)
+    suspend fun textRules(scope: String?, refresh: Boolean = false): JSONObject {
+        val key = scope ?: "local"
+        val cached = rulesStore.getString(key, null)?.let(::JSONObject) ?: JSONObject().put("revision", 0).put("items", org.json.JSONArray())
+        // Reading cached text must never wait for a network round trip. The UI refreshes separately.
+        if (scope == null || LibraryResources.offlineOnly || !refresh) return cached
+        return live(connection(scope), listOf("reading-rules")).also {
+            rulesStore.edit().putString(key, it.toString()).apply()
+        }
+    }
+    suspend fun saveTextRules(scope: String?, items: org.json.JSONArray, revision: Int): JSONObject {
+        val body = JSONObject().put("items", items).put("expected_revision", revision)
+        val result = if (scope == null) JSONObject().put("items", items).put("revision", revision + 1)
+            else mutate(connection(scope), listOf("reading-rules"), "PUT", body)
+        rulesStore.edit().putString(scope ?: "local", result.toString()).apply()
+        return result
+    }
     suspend fun live(c: CatalogConnection, path: List<String>, query: List<Pair<String, String>> = emptyList()) = this.api.json(c, path, query)
     private val connections = connectionLoader ?: store::load
     fun availableConnections(): List<CatalogConnection> = connections()

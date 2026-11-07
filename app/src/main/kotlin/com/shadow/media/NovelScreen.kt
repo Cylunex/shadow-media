@@ -254,7 +254,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
         TopAppBar(title = { Row(verticalAlignment = Alignment.CenterVertically) { Text(if (c == null) { if (rootSection == null) "Shadow Novel" else "连接小说服务" } else when (route.kind) {
             "work" -> data?.optString("title") ?: "作品"; "author" -> route.name; "list" -> data?.optString("title") ?: "书单"; "contents" -> "版本目录"
             "sources" -> "在线找书"; "tools" -> "书库工具"; "home" -> "书城"; "lists" -> "我的书单"; "rankings" -> "排行榜"; "offline" -> "离线阅读"; "discovery" -> "发现"
-            "works" -> if (route.id == "shelf") "我的书架" else if (route.id == "history") "阅读历史" else "发现好书"; else -> c.name
+            "works" -> if (route.id == "shelf") "我的书架" else if (route.id == "history") "阅读历史" else if (route.id == "trash") "已删除作品" else "发现好书"; else -> c.name
         }, maxLines = 1, style = MaterialTheme.typography.titleLarge,
             modifier = Modifier.weight(1f, fill = false))
         } },
@@ -376,7 +376,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
                             repository.downloads.start(novelScope(c), work, opening.getString("version_id"), title, wifiOnly = true)
                             JSONObject()
                         } else if (action == "booklist") repository.mutate(c, listOf("booklists", value, "items", "bulk"), "POST", JSONObject().put("work_ids", JSONArray(ids))) else repository.tools.bulkBooks(c, ids, action, value, tags)
-                        undoOperation = result.novelId("operation_id"); load(); message = "已整理 ${ids.size} 本作品"
+                        undoOperation = result.novelId("operation_id"); load(); message = if (action == "delete") "已删除 ${result.optInt("changed")} 本，可在书城的已删除列表恢复" else if (action == "restore") "已恢复 ${result.optInt("changed")} 本" else "已整理 ${ids.size} 本作品"
                     })
             } else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (route.kind == "home") {
@@ -398,6 +398,8 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
                     item { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilledTonalButton(enabled = !busy, onClick = { browserState.requestSearch(search); navigate(NovelRoute("sources")) }) { Text("搜索在线书源") }
                         TextButton(enabled = !busy, onClick = { browserState.selectMode(true); navigate(NovelRoute("sources")) }) { Text("书源发现") }
+                        TextButton(enabled = !busy, onClick = { navigate(NovelRoute("works", "city"), NovelQuery()) }) { Text("管理作品") }
+                        TextButton(enabled = !busy, onClick = { navigate(NovelRoute("works", "trash"), NovelQuery()) }) { Text("已删除") }
                     } }
                     data?.optJSONObject("_continue")?.takeIf(::novelCanRead)?.let { work -> item {
                         NovelContinueCard(work, !busy, onRead = { open(work.getString("id")) }, onDetail = { navigate(NovelRoute("work", work.getString("id"))) }, onBookmarks = { navigate(NovelRoute("notes", work.getString("id"))) })
@@ -439,6 +441,12 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             FilterChip(work.optBoolean("on_shelf"), enabled = editable && !busy, onClick = { execute { change(listOf("me", "books", route.id), "PATCH", JSONObject().put("on_shelf", !work.optBoolean("on_shelf"))) } }, label = { Text(if (work.optBoolean("on_shelf")) "已在书架" else "加入书架") })
                             TextButton(enabled = editable && !busy, onClick = { execute { val result = repository.get(c, listOf("booklists"), listOf("work_id" to route.id, "limit" to PAGE.toString())); memberships = result.novelObjects("items"); membershipOffset = 0; membershipTotal = result.optInt("total") } }) { Text("加入书单") }
+                            TextButton(enabled = editable && !busy, onClick = { execute {
+                                val deleted = !work.isNull("deleted_at")
+                                val result = repository.tools.bulkBooks(c, listOf(route.id), if (deleted) "restore" else "delete")
+                                undoOperation = result.novelId("operation_id"); load()
+                                message = if (deleted) "作品已恢复" else "作品已删除，可在书城的已删除列表恢复"
+                            } }) { Text(if (!work.isNull("deleted_at")) "恢复作品" else "删除作品") }
                             TextButton(enabled = editable && !busy, onClick = { editor = NovelEdit("个人阅读资料", listOf("分组" to work.optString("group_name"), "标签（逗号分隔）" to work.novelStrings("tags").joinToString(","))) { values -> change(listOf("me", "books", route.id), "PATCH", JSONObject().put("group_name", values.getValue("分组")).put("tags", JSONArray(splitTags(values.getValue("标签（逗号分隔）"))))) } }) { Text("分组与标签") }
                         }
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("want" to "想读", "reading" to "在读", "read" to "已读", "paused" to "暂停").forEach { (value, title) ->

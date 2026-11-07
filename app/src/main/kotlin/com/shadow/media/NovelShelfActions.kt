@@ -35,7 +35,7 @@ import org.json.JSONObject
 }
 
 @Composable internal fun NovelShelfActions(ids: Set<String>, navigation: JSONObject, onDismiss: () -> Unit,
-    localOnly: Boolean = false, onApply: suspend (String, String, List<String>) -> Unit) {
+    localOnly: Boolean = false, deleted: Boolean = false, onApply: suspend (String, String, List<String>) -> Unit) {
     var action by remember { mutableStateOf("group") }
     var group by remember { mutableStateOf<List<String>>(emptyList()) }
     var tags by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -57,7 +57,7 @@ import org.json.JSONObject
     ModalBottomSheet(onDismissRequest = { if (!busy) onDismiss() }) {
         LazyColumn(Modifier.imePadding(), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item { Text("整理 ${ids.size} 本", style = MaterialTheme.typography.titleLarge) }
-            item { NovelOptionChips("操作", action, listOf("download" to "下载全本", "booklist" to "加入书单", "pin" to "置顶", "unpin" to "取消置顶", "group" to "移动分组", "tags_add" to "添加标签", "tags_remove" to "移除标签", "status" to "阅读状态", "refresh_following" to "检查追更", "shelf_remove" to "移出书架").filterNot { (localOnly && it.first in setOf("download", "booklist", "refresh_following", "shelf_remove")) || (it.first == "download" && ids.size != 1) }) { if (!busy) { action = it; confirmed = false } } }
+            item { NovelOptionChips("操作", action, listOf("restore" to "恢复作品", "delete" to "删除作品", "shelf_add" to "加入书架", "download" to "下载全本", "booklist" to "加入书单", "pin" to "置顶", "unpin" to "取消置顶", "group" to "移动分组", "tags_add" to "添加标签", "tags_remove" to "移除标签", "status" to "阅读状态", "refresh_following" to "检查追更", "shelf_remove" to "移出书架").filter { if (deleted) it.first == "restore" else it.first != "restore" }.filterNot { (localOnly && it.first in setOf("download", "booklist", "refresh_following", "shelf_remove", "shelf_add", "delete", "restore")) || (it.first == "download" && ids.size != 1) }) { if (!busy) { action = it; confirmed = false } } }
             item {
                 when (action) {
                     "booklist" -> {
@@ -72,6 +72,8 @@ import org.json.JSONObject
                     "status" -> NovelOptionChips("状态", status, listOf("want" to "想读", "reading" to "在读", "read" to "已读", "paused" to "暂停")) { status = it }
                     "download" -> Text("下载所选作品当前版本的全本，仅 Wi-Fi。进度可从离线阅读查看。")
                     "refresh_following" -> Text("检查所选作品的追更来源，任务在后台继续。")
+                    "delete" -> Text("从书城、搜索和书架移到已删除列表，可恢复。原文件、阅读进度与笔记保留。")
+                    "restore" -> Text("恢复作品及其原有书架、阅读进度和笔记。")
                     "shelf_remove" -> Row { Checkbox(confirmed, { confirmed = it }); Text("移出所选 ${ids.size} 本并停止追更，保留作品和原文件") }
                 }
             }

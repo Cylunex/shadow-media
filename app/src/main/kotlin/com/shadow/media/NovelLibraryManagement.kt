@@ -16,7 +16,8 @@ import org.json.JSONObject
 @Composable internal fun NovelBulkBooks(repository: NovelRepository, c: CatalogConnection, onWork: (String) -> Unit) {
     val task = rememberNovelTask()
     var query by remember { mutableStateOf("") }; var submitted by remember { mutableStateOf("") }
-    var shelf by remember { mutableStateOf(true) }
+    var view by remember { mutableStateOf("shelf") }
+    var undo by remember { mutableStateOf<String?>(null) }
     var rows by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var ids by remember { mutableStateOf<Set<String>>(emptySet()) }
     var total by remember { mutableIntStateOf(0) }
@@ -24,27 +25,31 @@ import org.json.JSONObject
     var status by remember { mutableStateOf("want") }
     var navigation by remember { mutableStateOf(JSONObject()) }
     suspend fun load(more: Boolean = false) {
-        val result = repository.live(c, listOf("works"), listOf("view" to if (shelf) "shelf" else "search", "q" to submitted, "limit" to "50", "offset" to if (more) rows.size.toString() else "0"))
+        val result = repository.live(c, listOf("works"), listOf("view" to view, "q" to submitted, "limit" to "50", "offset" to if (more) rows.size.toString() else "0"))
         rows = (if (more) rows else emptyList()) + result.novelObjects("items"); total = result.optInt("total")
     }
-    LaunchedEffect(shelf) { task.run { load(); navigation = repository.live(c, listOf("navigation")) } }
+    LaunchedEffect(view) { task.run { ids = emptySet(); action = if (view == "trash") "restore" else "shelf_add"; load(); navigation = repository.live(c, listOf("navigation")) } }
     LazyColumn(Modifier.fillMaxSize().imePadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text("批量整理作品", style = MaterialTheme.typography.titleLarge); NovelTaskStatus(task)
             NovelSearchField(query, { query = it }, !task.busy, { submitted = query.trim(); task.run { load() } }, "按书名或作者查找")
-            FlowRow { FilterChip(shelf, { shelf = !shelf }, label = { Text(if (shelf) "当前书架" else "全部作品") })
+            FlowRow {
+                listOf("shelf" to "当前书架", "search" to "全部作品", "trash" to "已删除").forEach { (key, label) -> FilterChip(view == key, enabled = !task.busy, onClick = { view = key }, label = { Text(label) }) }
                 TextButton(enabled = !task.busy, onClick = { ids = (ids + rows.map { it.getString("id") }).take(500).toSet() }) { Text("选择已加载") }
                 TextButton(onClick = { ids = emptySet() }) { Text("清空选择") }
             }
             Text("已选 ${ids.size} 本，跨页保留，最多 500 本。移出书架保留作品与原文件。", style = MaterialTheme.typography.bodySmall)
-            NovelOptionChips("操作", action, listOf("shelf_add" to "加入书架", "shelf_remove" to "移出书架", "tags_add" to "添加标签", "tags_remove" to "移除标签", "group" to "主分组", "status" to "阅读状态", "refresh" to "更新目录")) { action = it }
+            NovelOptionChips("操作", action, listOf("shelf_add" to "加入书架", "shelf_remove" to "移出书架", "tags_add" to "添加标签", "tags_remove" to "移除标签", "group" to "主分组", "status" to "阅读状态", "refresh" to "更新目录", "delete" to "删除作品", "restore" to "恢复作品").filter { if (view == "trash") it.first == "restore" else it.first != "restore" }) { action = it }
             if (action in setOf("tags_add", "tags_remove", "group")) NovelValuePicker(if (action == "group") "主分组" else "标签", navigation.novelStrings(if (action == "group") "groups" else "tags"), if (action == "group") listOf(value).filter(String::isNotBlank) else novelTags(value), single = action == "group", allowCreate = action != "tags_remove") { value = it.joinToString(",") }
             if (action == "status") NovelOptionChips("阅读状态", status, listOf("want" to "想读", "reading" to "在读", "read" to "已读", "paused" to "暂停")) { status = it }
             Button(enabled = !task.busy && ids.isNotEmpty(), onClick = { task.run {
                 val result = repository.tools.bulkBooks(c, ids, action, if (action == "status") status else value, novelTags(value))
                 task.message = novelReceipt(result) + if (action == "refresh") " · 目录任务已排队" else ""
-                load()
+                undo = result.novelId("operation_id"); ids = emptySet(); load()
             } }) { Text("应用到 ${ids.size} 本作品") }
         }
+        undo?.let { operation -> item { TextButton(enabled = !task.busy, onClick = { task.run {
+            repository.mutate(c, listOf("operations", operation, "undo"), "POST"); undo = null; load(); task.message = "已撤销"
+        } }) { Text("撤销上次整理") } } }
         items(rows, key = { it.getString("id") }) { row -> Card { Column(Modifier.fillMaxWidth().padding(12.dp)) {
             Row { val id = row.getString("id"); Checkbox(id in ids, { checked -> if (!checked) ids = ids - id else if (ids.size < 500) ids = ids + id })
                 Column(Modifier.weight(1f)) { Text(row.optString("title")); Text(row.optString("author"), style = MaterialTheme.typography.bodySmall) }

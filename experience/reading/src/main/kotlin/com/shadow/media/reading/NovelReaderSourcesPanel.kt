@@ -97,17 +97,17 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
     fun resumeSearch() = runSearch { receive ->
         repository.sourceSearch.resumeSearch(requireNotNull(c), requireNotNull(state.jobId), receive)
     }
-    fun searchSources(providerIds: List<String>? = null) = runSearch { receive ->
+    fun searchSources(providerIds: List<String>? = null, more: Boolean = false) = runSearch { receive ->
         val connection = requireNotNull(c)
         if (state.searchRunning) repository.sourceSearch.cancel(connection, requireNotNull(state.jobId))
         val features = repository.sourceSearch.features(connection)
-        if (providerIds == null) state.submitted = state.query.trim()
-        state.searchBase = state.result.takeIf { providerIds != null }
+        if (providerIds == null && !more) state.submitted = state.query.trim()
+        state.searchBase = state.result.takeIf { providerIds != null || more }
         state.result = state.searchBase; state.jobId = null; state.jobState = ""
-        if (features.autoBind && providerIds == null) state.autoReceipts = emptyMap()
+        if (features.autoBind && providerIds == null && !more) state.autoReceipts = emptyMap()
         repository.sourceSearch.search(connection, state.submitted,
             NovelSearchOptions(mode = if (features.searchModes) { if (providerIds == null) "auto" else "all" } else null,
-                providerIds = providerIds, workId = publication.workId.takeIf { features.autoBind }),
+                providerIds = providerIds, excludeIds = if (more) state.searchBase?.novelObjects("sources").orEmpty().mapNotNull { it.novelId("provider_id") }.distinct() else emptyList(), workId = publication.workId.takeIf { features.autoBind }),
             onJob = { state.jobId = it; state.jobState = "queued" }, onUpdate = receive)
     }
     fun stopSearch() = runSearch(stop = true) { receive ->
@@ -186,6 +186,13 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
             onOpen = { onOpen(version, it.getString("id")) }, modifier = Modifier.weight(1f), contentScope = publication.scope)
         return
     }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        val remaining = state.result?.optInt("remaining", 0) ?: 0
+        if (remaining > 0) Button(enabled = online && !busy && !searching && !state.searchRunning,
+            onClick = { searchSources(more = true) }) { Text("继续搜索 $remaining 源") }
+        if (searching && state.searchRunning) TextButton(enabled = !stopping, onClick = ::stopSearch) { Text(if (stopping) "正在停止" else "停止搜索") }
+        TextButton(onClick = { coroutine.launch { list.scrollToItem(0) } }) { Text("回到顶部") }
+    }
     LazyColumn(Modifier.weight(1f), state = list, verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
         item {
             Text("切换阅读书源", style = MaterialTheme.typography.titleMedium)
@@ -218,7 +225,6 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
             OutlinedTextField(state.query, { state.query = it.take(200) }, singleLine = true, label = { Text("书名或作者") }, modifier = Modifier.fillMaxWidth(), enabled = !busy && !searching)
             Row {
                 TextButton(enabled = online && enabled && !busy && !searching && state.query.isNotBlank(), onClick = { searchSources() }) { Text("搜索可用书源") }
-                if (searching && state.searchRunning) TextButton(enabled = !stopping, onClick = ::stopSearch) { Text(if (stopping) "正在停止" else "停止搜索") }
             }
             searchError?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)

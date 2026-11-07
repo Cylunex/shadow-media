@@ -18,6 +18,8 @@ internal data class NativeTextChapter(
     val legacyHref: String? = null,
     val legacyStart: Int = 0,
     val legacyLength: Int = text.length,
+    val originalText: String? = null,
+    val rulesWarning: String = "",
 ) {
     val textHash = LibraryRepository.digest(text)
     fun locator(offset: Int): JSONObject {
@@ -34,6 +36,14 @@ internal data class NativeTextChapter(
         if (anchor != null && anchor.optInt("schema") == 1 && anchor.optString("chapter_id") == ref.id &&
             anchor.optString("version_id") == version && anchor.optString("text_hash") == textHash) {
             return safeTextOffset(text, anchor.optInt("offset", 0))
+        }
+        // Removing an ad above the viewport changes offsets, but a unique surviving quote is exact.
+        if (anchor?.optString("chapter_id") == ref.id && anchor.optString("version_id") == version) {
+            val quote = locator.optJSONObject("text")?.optString("after").orEmpty()
+            if (quote.length >= 4) {
+                val found = text.indexOf(quote)
+                if (found >= 0 && text.indexOf(quote, found + 1) < 0) return safeTextOffset(text, found)
+            }
         }
         val ratio = locator.optJSONObject("locations")?.optDouble("progression", 0.0) ?: 0.0
         val fraction = ratio.takeIf { it.isFinite() }.orZero().coerceIn(0.0, 1.0)
@@ -65,9 +75,16 @@ internal class NativeTextSource(private val library: LibraryRepository, private 
         }
         localChapters
     }
-    fun invalidate() { localAsset = null; localChapters = emptyList() }
+    fun invalidate() { localAsset = null; localChapters = emptyList(); parsed.evictAll() }
+    private suspend fun purify(chapter: NativeTextChapter, scope: String?): NativeTextChapter {
+        val settings = novel.textRules(scope)
+        val result = NovelTextRules.apply(chapter.text, settings)
+        // Keep paragraph joining identical to the Web character anchors.
+        val body = result.text.lineSequence().filter { it.isNotBlank() }.joinToString("\n")
+        return chapter.copy(text = body, originalText = chapter.text, rulesWarning = result.warning)
+    }
     suspend fun searchEntries(asset: LibraryAssetEntity, publication: NovelPublicationEntity?): List<NativeSearchEntry> = withContext(Dispatchers.IO) {
-        if (publication == null) return@withContext local(asset).map { content -> NativeSearchEntry(asset.id, content.ref) { content } }
+        if (publication == null) return@withContext local(asset).map { content -> NativeSearchEntry(asset.id, content.ref) { purify(content, null) } }
         // Snapshot package metadata once. Overlapping windows must not duplicate search hits.
         novel.dao.publications(publication.scope)
             .filter { it.workId == publication.workId && it.versionId == publication.versionId }
@@ -88,21 +105,22 @@ internal class NativeTextSource(private val library: LibraryRepository, private 
             val legacy = all.filter { it.legacyHref == path }
             if (legacyRatio != null && legacy.isNotEmpty()) {
                 val oldOffset = (legacy.first().legacyLength * legacyRatio.coerceIn(0.0, 1.0)).toInt()
-                legacy.lastOrNull { it.legacyStart <= oldOffset }?.let { return@withContext it }
+                legacy.lastOrNull { it.legacyStart <= oldOffset }?.let { return@withContext purify(it, null) }
             }
-            return@withContext all.firstOrNull { it.ref.href == path } ?: all.first()
+            return@withContext purify(all.firstOrNull { it.ref.href == path } ?: all.first(), null)
         }
         val mapping = NovelPublicationMap(JSONObject(publication.mappingJson))
         val ref = href?.let(mapping::chapterForHref) ?: mapping.chapters.first()
         val cacheKey = "${asset.id}:${asset.revision}:${ref.getString("id")}"
-        parsed.get(cacheKey)?.let { return@withContext it }
+        parsed.get(cacheKey)?.let { return@withContext purify(it, publication.scope) }
         val xml = SafeArchives.xml(SafeArchives.read(library.localFile(asset), ref.getString("href")))
         val paragraphs = xml.getElementsByTagNameNS("*", "p")
         val body = (0 until paragraphs.length).joinToString("\n") { paragraphs.item(it).textContent }
         require(body.isNotBlank()) { "此章节没有可读正文" }
         require(body.length <= 512_000) { "此章节超过 50 万字，请先在 Novel 中拆分章节" }
-        NativeTextChapter(NativeChapterRef(ref.getString("id"), ref.getString("title"), ref.getInt("ordinal"), ref.getString("href")),
+        val raw = NativeTextChapter(NativeChapterRef(ref.getString("id"), ref.getString("title"), ref.getInt("ordinal"), ref.getString("href")),
             body, publication.versionId, mapping.json.getInt("total")).also { parsed.put(cacheKey, it) }
+        purify(raw, publication.scope)
     }
 
     companion object {

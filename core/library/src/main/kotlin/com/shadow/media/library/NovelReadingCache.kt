@@ -135,7 +135,7 @@ class NovelReadingCache(private val context: Context, private val library: Libra
             for (row in rows.filterNot { it.optBoolean("cached") }) {
                 currentCoroutineContext().ensureActive()
                 try {
-                    val body = api.json(c, listOf("chapters", row.getString("id")))
+                    val body = api.json(c, listOf("chapters", row.getString("id")), listOf("apply_rules" to "false"))
                     require(body.optString("id") == row.getString("id") && body.optString("version_id") == version && body.optString("content").isNotBlank()) { "正文身份不匹配或内容为空" }
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
@@ -154,7 +154,7 @@ class NovelReadingCache(private val context: Context, private val library: Libra
                     val missing = e.detail.novelStrings("missing_chapter_ids")
                     require(missing.isNotEmpty() && missing.size <= size && missing.all { id -> rows.any { it.getString("id") == id } }) { "服务端请求窗口以外的正文" }
                     for (id in missing) {
-                        try { api.json(c, listOf("chapters", id)) }
+                        try { api.json(c, listOf("chapters", id), listOf("apply_rules" to "false")) }
                         catch (cancelled: CancellationException) { throw cancelled }
                         catch (failure: Exception) {
                             if (!allowPartial || requiredChapter == null || id == requiredChapter) throw failure
