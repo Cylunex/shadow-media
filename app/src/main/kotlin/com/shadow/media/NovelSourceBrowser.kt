@@ -95,6 +95,7 @@ internal class NovelBrowserState(initial: String = "") {
     var entry by mutableStateOf<JSONObject?>(null)
     var page by mutableIntStateOf(1)
     var discovery by mutableStateOf<JSONObject?>(null)
+    var discoveryQuery by mutableStateOf("")
     var listIndex = 0
     var listOffset = 0
 }
@@ -109,6 +110,7 @@ internal class NovelBrowserState(initial: String = "") {
     val preferences = LocalContext.current.getSharedPreferences("novel_source_columns", android.content.Context.MODE_PRIVATE)
     var favorites by remember(connection.id) { mutableStateOf(runCatching { JSONObject(preferences.getString(connection.id, "{}") ?: "{}").novelObjects("items") }.getOrDefault(emptyList())) }
     var recent by remember(connection.id) { mutableStateOf(runCatching { JSONObject(preferences.getString(connection.id + ":recent", "{}") ?: "{}").novelObjects("items") }.getOrDefault(emptyList())) }
+    var pinned by remember(connection.id) { mutableStateOf(preferences.getStringSet(connection.id + ":pinned", emptySet()).orEmpty().toSet()) }
     fun saveFavorites(rows: List<JSONObject>) { favorites = rows.take(50); preferences.edit { putString(connection.id, JSONObject().put("items", JSONArray(favorites)).toString()) } }
     var task by remember { mutableStateOf<Job?>(null) }
     var generation by remember { mutableIntStateOf(0) }
@@ -262,6 +264,15 @@ internal class NovelBrowserState(initial: String = "") {
     BackHandler(state.detail != null || state.explore && state.entry != null) { state.backWithinBrowser() }
     Column(Modifier.fillMaxSize()) {
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (state.explore && state.entry != null) Surface(tonalElevation = 2.dp) {
+            FlowRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                TextButton(enabled = !busy, onClick = { state.backWithinBrowser() }) { Text("返回栏目") }
+                TextButton(enabled = !busy && state.page > 1, onClick = { discover(state.provider!!, state.entry!!, state.page - 1) }) { Text("上一页") }
+                TextButton(enabled = !busy, onClick = { discover(state.provider!!, state.entry!!, state.page, true) }) { Text("刷新第 ${state.page} 页") }
+                TextButton(enabled = !busy && state.entry?.optBoolean("paginated") == true && state.page < 100 && state.discovery?.novelObjects("items")?.isNotEmpty() == true,
+                    onClick = { discover(state.provider!!, state.entry!!, state.page + 1) }) { Text("下一页") }
+            }
+        }
         if (!state.explore && (state.submitted.isNotBlank() || busy)) Surface(tonalElevation = 2.dp) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
                 Text("${state.rows.size} 个来源结果 · 剩余 ${state.remaining.size} 个书源", style = MaterialTheme.typography.labelSmall)
@@ -323,6 +334,8 @@ internal class NovelBrowserState(initial: String = "") {
             }
             if (state.explore) {
                 if (state.entry == null) {
+                    item { OutlinedTextField(state.discoveryQuery, { state.discoveryQuery = it.take(100) }, singleLine = true,
+                        label = { Text("查找发现书源") }, modifier = Modifier.fillMaxWidth()) }
                     items((favorites + recent).distinctBy { it.optString("provider") + ":" + it.optString("entry") }, key = { it.optString("provider") + ":" + it.optString("entry") }) { favorite ->
                         Row {
                             TextButton(enabled = !busy, onClick = {
@@ -341,7 +354,13 @@ internal class NovelBrowserState(initial: String = "") {
                         }
                     }
                     item { Text("选择书源与栏目；发现开关独立于搜索开关。", style = MaterialTheme.typography.bodySmall) }
-                    items(visibleChoices, key = { it.getString("id") }) { provider ->
+                    items(visibleChoices.filter { it.optString("name").contains(state.discoveryQuery.trim(), true) }
+                        .sortedByDescending { it.optString("id") in pinned }, key = { it.getString("id") }) { provider ->
+                        val id = provider.getString("id")
+                        TextButton(onClick = {
+                            pinned = if (id in pinned) pinned - id else pinned + id
+                            preferences.edit { putStringSet(connection.id + ":pinned", pinned) }
+                        }) { Text(if (id in pinned) "取消发现置顶" else "置顶发现") }
                         TextButton(enabled = !busy, onClick = { state.provider = provider; state.entries = emptyList(); run {
                             state.entries = repository.live(connection, listOf("source-browser", provider.getString("id"), "entries")).novelObjects("items")
                         } }) { Text("${provider.optString("name")} · ${provider.optInt("entry_count")} 栏目") }
@@ -353,7 +372,6 @@ internal class NovelBrowserState(initial: String = "") {
                 } else {
                     item { Text("${state.provider?.optString("name")} · ${state.entry?.optString("name")} · 第 ${state.page} 页")
                         FlowRow { TextButton(onClick = { state.backWithinBrowser() }) { Text("选择其他栏目") }
-                            TextButton(enabled = !busy, onClick = { discover(state.provider!!, state.entry!!, state.page, true) }) { Text("刷新本页") }
                             TextButton(onClick = {
                                 val favorite = JSONObject().put("provider", state.provider!!.getString("id")).put("entry", state.entry!!.getString("key"))
                                     .put("name", state.provider!!.optString("name") + " · " + state.entry!!.optString("name"))
@@ -365,11 +383,6 @@ internal class NovelBrowserState(initial: String = "") {
                         if (state.discovery?.optBoolean("stale") == true) Text("显示上次成功内容，更新失败时继续保留。", style = MaterialTheme.typography.bodySmall)
                     }
                     items(state.discovery?.novelObjects("items").orEmpty(), key = ::novelResultKey) { row -> NovelSourceResultCard(row) { state.detail = row } }
-                    item { FlowRow {
-                        TextButton(enabled = !busy && state.page > 1, onClick = { discover(state.provider!!, state.entry!!, state.page - 1) }) { Text("上一页") }
-                        TextButton(enabled = !busy && state.entry?.optBoolean("paginated") == true && state.page < 100 && state.discovery?.novelObjects("items")?.isNotEmpty() == true,
-                            onClick = { discover(state.provider!!, state.entry!!, state.page + 1) }) { Text("下一页") }
-                    } }
                 }
             } else {
                 if (state.rows.isEmpty() && !busy && state.submitted.isNotBlank() && error == null) item { Text("本批未找到匹配项；仍可继续其他书源或单源下一页。") }

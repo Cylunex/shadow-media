@@ -221,7 +221,7 @@ internal data class NovelIntakeAction(val read: Boolean = false, val chapterUrl:
                     NovelOptionChips("能力", filter.capability, listOf("" to "全部", "search" to "搜索", "detail" to "详情", "toc" to "目录", "chapter" to "正文")) { filter = filter.copy(capability = it) }
                     NovelOptionChips("可用性", filter.availability, listOf("" to "全部") + listOf("直接可用", "代理可用", "需要处理", "不可用").map { it to it }) { filter = filter.copy(availability = it) }
                     NovelOptionChips("类型", filter.category, listOf("" to "全部") + data?.optJSONObject("facets")?.novelObjects("category").orEmpty().map { it.optString("value") to it.optString("value") }) { filter = filter.copy(category = it) }
-                    NovelOptionChips("排序", filter.sort, listOf("priority" to "优先级", "name" to "名称", "domain" to "站点", "enabled" to "启用优先", "latency" to "响应耗时", "revision" to "修订次数")) { filter = filter.copy(sort = it) }
+                    NovelOptionChips("排序", filter.sort, listOf("priority" to "优先级", "rank" to "有效命中优先", "name" to "名称", "domain" to "站点", "enabled" to "启用优先", "latency" to "响应耗时", "revision" to "修订次数")) { filter = filter.copy(sort = it) }
                 }
                 FlowRow {
                     Button(enabled = !task.busy, onClick = { load() }) { Text("筛选") }
@@ -235,6 +235,9 @@ internal data class NovelIntakeAction(val read: Boolean = false, val chapterUrl:
                 Card(onClick = { ids = if (id in ids) ids - id else ids + id }) { Row(Modifier.fillMaxWidth().padding(12.dp)) {
                     Checkbox(id in ids, { ids = if (it) ids + id else ids - id })
                     Column(Modifier.weight(1f)) { Text(row.optString("name")); Text("${if (row.optBoolean("enabled")) "启用" else "停用"} · 发现${if (row.optBoolean("explore_enabled")) "开启" else "关闭"}", style = MaterialTheme.typography.bodySmall)
+                        row.optJSONObject("stages")?.let { stages -> Text(listOf("search" to "搜索", "toc" to "目录", "chapter" to "正文").joinToString(" · ") { (key, name) ->
+                            name + when (stages.optJSONObject(key)?.optString("state")) { "passed" -> "已验证"; "empty" -> "无结果"; "failed" -> "失败"; "unsupported" -> "不支持"; else -> "未测" }
+                        }, style = MaterialTheme.typography.labelSmall) }
                         Text(row.novelStrings("tags").joinToString(" · "), style = MaterialTheme.typography.bodySmall)
                         Text(row.novelObjects("groups").joinToString(" · ") { it.optString("name") }.ifBlank { "未分组" }, style = MaterialTheme.typography.bodySmall)
                     }

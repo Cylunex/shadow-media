@@ -47,6 +47,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
     onModule: ((MediaModule) -> Unit)? = null, onModuleTools: (() -> Unit)? = null,
     onGeneralSettings: (() -> Unit)? = null, homeContinue: @Composable () -> Unit = {}) {
     val context = LocalContext.current
+    val displayPreferences = remember(context) { NovelLibraryPreferences(context.getSharedPreferences("novel_library_ui", 0)) }
     val scope = rememberCoroutineScope()
     var connections by remember { mutableStateOf<List<CatalogConnection>>(emptyList()) }
     var connection by remember { mutableStateOf<CatalogConnection?>(null) }
@@ -124,6 +125,10 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
     }
     suspend fun load(next: Boolean = false) {
         val c = connection ?: return
+        if (route.kind == "works" && route.id == "shelf") {
+            val restored = displayPreferences.restore(c.id, route.id, query)
+            if (restored != query) { query = restored; data = null; return }
+        }
         val requestedRoute = route
         val requestedQuery = query
         if (route.kind == "offline") { disconnectedDownloads = repository.downloaded(novelScope(c)); data = JSONObject(); return }
@@ -180,7 +185,15 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
             catch (e: Exception) { if (connection?.id == c.id) message = "搜索历史未保存：${novelToolError(e)}" }
         }
     }
-    fun updateQuery(value: NovelQuery) { if (query != value) { query = value; data = null } }
+    fun updateQuery(value: NovelQuery) {
+        val c = connection
+        val next = if (c != null && route.kind == "works") {
+            if (value.group == query.group && value.ungrouped == query.ungrouped) {
+                displayPreferences.save(c.id, route.id, value); value.copy(view = route.id)
+            } else displayPreferences.restore(c.id, route.id, value)
+        } else value
+        if (query != next) { query = next; data = null }
+    }
     fun navigate(target: NovelRoute, nextQuery: NovelQuery = query, nextSearch: String = "", allowWhileBusy: Boolean = false) {
         if (busy && !allowWhileBusy) return
         if (target == route) {
@@ -333,7 +346,8 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
                 TextButton(enabled = !busy, onClick = { execute { load() } }) { Text("搜索") }
             }
             pageStates.SaveableStateProvider("${c.id}:${route}") {
-            if (route.kind == "discovery") NovelDiscoveryHome(repository, c, { navigate(NovelRoute("work", it)) }, { navigate(NovelRoute("list", it)) }) { section ->
+            if (route.kind == "discovery") NovelDiscoveryHome(repository, c, { navigate(NovelRoute("work", it)) }, { navigate(NovelRoute("list", it)) },
+                onBrowse = { navigate(NovelRoute("works", "city"), novelSectionQuery(it)) }) { section ->
                 when (section) {
                     "排行榜" -> navigate(NovelRoute("rankings"))
                     "书源栏目" -> { browserState.selectMode(true); navigate(NovelRoute("sources")) }
@@ -349,7 +363,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
             else if (route.kind == "tools") NovelToolsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = {
                 rememberSearch(it); navigate(NovelRoute("works", "search"), NovelQuery(q = it), it)
             })
-            else if (route.kind == "rankings") NovelRankingsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = { title -> browserState.keyword = title; browserState.selectMode(false); navigate(NovelRoute("sources")) }, onLogin = { signIn(c.name, c.url, c) }) else if (route.kind == "contents") {
+            else if (route.kind == "rankings") NovelRankingsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = { title -> browserState.requestSearch(title); navigate(NovelRoute("sources")) }, onLogin = { signIn(c.name, c.url, c) }) else if (route.kind == "contents") {
                 NovelContentsPanel(repository, c, route.id, route.version, !busy, onOpen = { open(route.id, route.version, it.getString("id")) },
                     modifier = Modifier.weight(1f).fillMaxWidth().imePadding().padding(horizontal = 20.dp))
             } else if (route.kind == "works") {
@@ -655,7 +669,7 @@ private fun splitTags(text: String) = text.split(',', '，').map(String::trim).f
         item { NovelValuePicker("个人分组", navigation.novelStrings("groups"), listOf(value.group).filter(String::isNotBlank), single = true) { value = value.copy(group = it.firstOrNull().orEmpty()) } }
         item { NovelValuePicker("个人标签", navigation.novelStrings("tags"), splitTags(tags)) { tags = it.joinToString(",") } }
         item { OutlinedTextField(popularity, { popularity = it.filter { char -> char.isDigit() || char == '.' } }, Modifier.fillMaxWidth(), label = { Text("最低热度 0–100（可留空）") }) }
-        item { Row { TextButton(onClick = { value = NovelQuery(view = query.view, q = query.q); tags = ""; popularity = "" }) { Text("重置") }
+        item { Row { TextButton(onClick = { value = NovelQuery(view = query.view, q = query.q, sort = query.sort); tags = ""; popularity = "" }) { Text("重置") }
             Button(enabled = popularity.isBlank() || popularity.toDoubleOrNull()?.let { it in 0.0..100.0 } == true, onClick = { onApply(value.copy(personalTags = splitTags(tags), minPopularity = popularity)) }) { Text("应用筛选") } } }
     } }
 }

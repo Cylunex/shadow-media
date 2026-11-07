@@ -21,6 +21,7 @@ Shadow Novel 提供原生书城、书单、排行榜、作家、个人书架与�
 阅读中换源、自动预取和本机全本/范围下载见 [阅读与缓存](docs/NOVEL_READING_CACHE_2026_10_24.md)。
 阅读手势、菜单稳定性与排版设置见 [阅读交互与排版](docs/NATIVE_READING_INTERACTIONS_2026_10_24.md)。
 顶部换源、固定续搜、全局替换净化及书城删除恢复见 [阅读与管理优化](docs/READING_INTERACTIONS_2026_11_07.md)。
+书架排序记忆、三列布局、来源发现及换源排版稳定性见 [书架与发现细节](docs/LIBRARY_DISCOVERY_POLISH_2026_11_07.md)。
 状态栏、章节切换、目录滚动、深羊皮纸与页面连续性见 [Novel 阅读体验优化](docs/NOVEL_READING_POLISH_2026_11_02.md)。
 
 接入方法、支持范围及未完成项见 [全媒介实施说明](docs/MULTIMEDIA_IMPLEMENTATION.md)。

@@ -150,7 +150,7 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
     val gridState = rememberLazyGridState()
     var previousQuery by remember { mutableStateOf(query) }
     LaunchedEffect(query) { if (query != previousQuery) gridState.scrollToItem(0); previousQuery = query }
-    LazyVerticalGrid(modifier = Modifier.fillMaxSize(), state = gridState, columns = if (grid) GridCells.Adaptive(84.dp) else GridCells.Fixed(1),
+    LazyVerticalGrid(modifier = Modifier.fillMaxSize(), state = gridState, columns = GridCells.Fixed(if (grid) 3 else 1),
         contentPadding = PaddingValues(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) { Column {
             NovelSearchField(search, onSearch, !busy, onSubmit, if (isShelf) "搜索我的书架" else "搜索书名、作者或题材", onClear = { onQuery(query.copy(q = "")) })
@@ -167,7 +167,7 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
             if (isShelf) LazyRow {
                 item { FilterChip(query.group.isBlank() && !query.ungrouped, { onQuery(query.copy(group = "", ungrouped = false)) }, label = { Text("全部分组") }) }
                 item { FilterChip(query.ungrouped, { onQuery(query.copy(group = "", ungrouped = !query.ungrouped)) }, label = { Text("未分组") }) }
-                items(navigation.novelStrings("groups")) { group -> FilterChip(query.group == group, { onQuery(query.copy(group = group, ungrouped = false, sort = preferences.getString("sort:$view:$group", query.sort) ?: query.sort)) }, label = { Text(group) }) }
+                items(navigation.novelStrings("groups")) { group -> FilterChip(query.group == group, { onQuery(query.copy(group = group, ungrouped = false)) }, label = { Text(group) }) }
                 if (artwork != null) item { TextButton(onClick = { groupManager = true }) { Text("管理分组") } }
             }
             if (managing) Row {
@@ -202,7 +202,7 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
                     TextButton(enabled = !busy, onClick = { sorting = true }) { Text(when (query.sort) { "last_read" -> "最近阅读"; "title" -> "书名"; "popularity" -> "热度"; else -> if (view == "history") "最近阅读" else "最近收录" }); Icon(Icons.Rounded.ExpandMore, null, Modifier.size(18.dp)) }
                     DropdownMenu(sorting, onDismissRequest = { sorting = false }) {
                         novelSortOptions(view).forEach { (key, text) ->
-                            DropdownMenuItem(text = { Text(text) }, onClick = { sorting = false; preferences.edit { putString("sort:$view:${query.group}", key) }; onQuery(query.copy(sort = key)) })
+                            DropdownMenuItem(text = { Text(text) }, onClick = { sorting = false; onQuery(query.copy(sort = key)) })
                         }
                     }
                 }

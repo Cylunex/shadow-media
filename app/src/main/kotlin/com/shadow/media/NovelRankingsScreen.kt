@@ -21,13 +21,16 @@ import org.json.JSONObject
 /** Native discovery only. Neither server page URLs nor external site pages are navigation targets. */
 @Composable internal fun NovelRankingsScreen(repository: NovelRepository, connection: CatalogConnection, onWork: (String) -> Unit, onSearch: (String) -> Unit, onLogin: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val preferences = androidx.compose.ui.platform.LocalContext.current.getSharedPreferences("novel_rankings_ui", 0)
+    val saved = remember(connection.id) { runCatching { JSONObject(preferences.getString(connection.id, "{}") ?: "{}") }.getOrDefault(JSONObject()) }
     val snapshots = remember(connection.id) { mutableMapOf<NovelRankingSelection, NovelRankingPage>() }
     val positions = remember(connection.id) { mutableMapOf<NovelRankingSelection, Pair<Int, Int>>() }
-    var provider by rememberSaveable(connection.id) { mutableStateOf("local") }
-    var kind by rememberSaveable(connection.id) { mutableStateOf("heat") }
-    var boardKey by rememberSaveable(connection.id) { mutableStateOf("") }
-    var period by rememberSaveable(connection.id) { mutableStateOf("total") }
-    var category by rememberSaveable(connection.id) { mutableStateOf("") }
+    var provider by rememberSaveable(connection.id) { mutableStateOf(saved.optString("provider", "local")) }
+    var kind by rememberSaveable(connection.id) { mutableStateOf(saved.optString("kind", "heat")) }
+    var boardKey by rememberSaveable(connection.id) { mutableStateOf(saved.optString("key")) }
+    var period by rememberSaveable(connection.id) { mutableStateOf(saved.optString("period", "total")) }
+    var category by rememberSaveable(connection.id) { mutableStateOf(saved.optString("category")) }
+    var sourceQuery by rememberSaveable(connection.id) { mutableStateOf("") }
     var index by remember { mutableStateOf<JSONObject?>(null) }
     var indexError by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
@@ -40,6 +43,11 @@ import org.json.JSONObject
     var authenticationRequired by remember { mutableStateOf(false) }
     val boards = remember(index) { NovelRankingBoard.parse(index ?: JSONObject()) }
     val selection = NovelRankingSelection(provider, kind, boardKey, period, category).resolved(boards)
+    LaunchedEffect(connection.id, selection, index) {
+        if (index != null && (selection.local || selection.key.isNotBlank())) preferences.edit().putString(connection.id,
+            JSONObject().put("provider", selection.provider).put("kind", selection.kind).put("key", selection.key)
+                .put("period", selection.period).put("category", selection.category).toString()).apply()
+    }
     val listState = rememberSaveable(connection.id, selection, saver = androidx.compose.foundation.lazy.LazyListState.Saver) {
         androidx.compose.foundation.lazy.LazyListState(positions[selection]?.first ?: 0, positions[selection]?.second ?: 0)
     }
@@ -113,9 +121,12 @@ import org.json.JSONObject
         finally { loading = false; working = false }
     }
     Column(Modifier.fillMaxSize()) {
+        if (boards.map { it.providerId }.distinct().size > 5 || sourceQuery.isNotBlank()) OutlinedTextField(sourceQuery,
+            { sourceQuery = it.take(100) }, label = { Text("查找榜单来源或栏目") }, singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp))
         LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             item { FilterChip(provider == "local", enabled = !working, onClick = { provider = "local"; boardKey = ""; period = "total" }, label = { Text("我的书库") }) }
-            items(boards.distinctBy { it.providerId }, key = { it.providerId }) { source ->
+            items(boards.filter { it.providerId == provider || (it.providerName + " " + it.name + " " + it.category).contains(sourceQuery.trim(), true) }.distinctBy { it.providerId }, key = { it.providerId }) { source ->
                 FilterChip(provider == source.providerId, enabled = !working, onClick = { provider = source.providerId; boardKey = ""; period = "total"; category = "" }, label = { Text(source.providerName) })
             }
             item { TextButton(enabled = !working && !LibraryResources.offlineOnly, onClick = { sourceEditor = true; error = null }) { Text("添加来源") } }
@@ -173,7 +184,7 @@ import org.json.JSONObject
                     Text(row.optInt("rank").toString(), Modifier.widthIn(min = 28.dp).padding(top = 16.dp), style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold, color = if (row.optInt("rank") <= 3) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                     Column(Modifier.weight(1f)) {
-                        NovelWorkCard(work, !loading) { if (workId.isNotBlank()) onWork(workId) else onSearch(listOf(row.optString("name"), row.optString("author")).filter(String::isNotBlank).joinToString(" ")) }
+                        NovelWorkCard(work, !loading) { if (workId.isNotBlank()) onWork(workId) else onSearch(row.optString("name")) }
                         if (!selection.local) Text(listOf(row.optString("score"), when {
                             !row.isNull("change") -> row.optInt("change").let { if (it > 0) "↑ $it" else if (it < 0) "↓ ${-it}" else "排名持平" }
                             row.optBoolean("new_entry") -> "上次未上榜"
@@ -197,7 +208,7 @@ import org.json.JSONObject
                                     notice = "榜单已更新，请在最新榜单中重新选择作品"
                                 }
                             } }) { Text("收录资料") }
-                            if (!selection.local) TextButton(onClick = { onSearch(listOf(row.optString("name"), row.optString("author")).filter(String::isNotBlank).joinToString(" ")) }) { Text("找可读书源") }
+                            if (!selection.local) TextButton(onClick = { onSearch(row.optString("name")) }) { Text("找可读书源") }
                         }
                     }
                 }

@@ -81,6 +81,27 @@ class NovelClientFlowTest {
         waitText("山海来信12")
         compose.onNodeWithText("山海来信12").assertIsDisplayed()
     }
+    @Test fun rankingSelectionPersistsAndSourceSearchUsesOnlyTheBookTitle() {
+        handler = { request -> when {
+            request.path == "/novel/api/v1/rankings" -> json("""{"boards":[{"provider_id":"s","provider_name":"外部榜单","key":"weekly","name":"周点击","period":"week"}]}""")
+            request.path!!.startsWith("/novel/api/v1/rankings/local?") -> json("""{"items":[],"total":0,"categories":[]}""")
+            request.path!!.startsWith("/novel/api/v1/rankings/s/weekly?") -> json("""{"name":"周点击","items":[{"index":0,"rank":1,"name":"远航","author":"行舟"}],"total":1}""")
+            else -> json("{}")
+        } }
+        val repo = repository(); val c = connection(); var visible by mutableStateOf(true); var query = ""
+        compose.setContent { ShadowMediaTheme { Surface { if (visible) NovelRankingsScreen(repo, c, {}, { query = it }, {}) } } }
+        waitText("外部榜单")
+        compose.onNodeWithText("外部榜单").performClick()
+        waitText("远航")
+        compose.onNodeWithText("找可读书源").performScrollTo().performClick()
+        assertEquals("远航", query)
+        compose.waitForIdle()
+        compose.runOnIdle { visible = false }; compose.waitForIdle()
+        compose.runOnIdle { visible = true }
+        waitText("远航")
+        compose.onAllNodesWithText("周点击").onFirst().assertIsDisplayed()
+        assertTrue(requests.count { it.first.startsWith("/novel/api/v1/rankings/s/weekly?") } >= 2)
+    }
     @Test fun discoveryUsesIndependentScopeAndBackReturnsToColumns() {
         handler = { request -> when {
             request.path!!.startsWith("/novel/api/v1/source-browser?") -> json("""{"items":[{"id":"s","name":"原创来源","entry_count":1}]}""")

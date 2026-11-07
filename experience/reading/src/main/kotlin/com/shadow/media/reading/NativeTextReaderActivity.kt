@@ -47,6 +47,10 @@ class NativeTextReaderActivity : ComponentActivity() {
     private lateinit var novel: NovelRepository
     private lateinit var source: NativeTextSource
     private lateinit var store: ReaderSettingsStore
+    private val settingsBinding = ReaderSettingsBinding { key ->
+        ReaderSettingsStore(getSharedPreferences("reader_book_" + key, MODE_PRIVATE),
+            ReaderSettingsStore(getSharedPreferences("reader_preferences", MODE_PRIVATE)))
+    }
     private var style by mutableStateOf(ReaderSettings())
     private var asset by mutableStateOf<LibraryAssetEntity?>(null)
     private var publication by mutableStateOf<NovelPublicationEntity?>(null)
@@ -132,16 +136,14 @@ class NativeTextReaderActivity : ComponentActivity() {
     }
     private suspend fun open(item: LibraryAssetEntity, locator: JSONObject?, lastPage: Boolean = false, savePosition: Boolean = false) {
         val pub = novel.dao.publication(item.id)
-        val settingsId = pub?.let { LibraryRepository.digest(it.scope + ":" + it.workId) } ?: item.id
-        store = ReaderSettingsStore(getSharedPreferences("reader_book_" + settingsId, MODE_PRIVATE),
-            ReaderSettingsStore(getSharedPreferences("reader_preferences", MODE_PRIVATE)))
-        style = store.load()
         require(item.format == "txt" || pub != null) { "此阅读器支持 TXT 和 Novel 正文" }
         val content = source.chapter(item, pub, locator?.optString("href"),
             if (locator?.optJSONObject("native_text") == null) locator?.optJSONObject("locations")?.optDouble("progression", 0.0)?.takeIf { it.isFinite() } else null)
         val restored = if (lastPage) content.text.length else content.restore(locator)
         if (pub != null) novel.beginReading(pub, locator ?: content.locator(restored))
         val newSession = ReaderNarrationService.activeSession?.takeIf { it.first == item.id }?.second ?: if (asset?.id != item.id || session == null) ProgressWriter.begin(library, item) else session
+        val (bookStore, bookStyle) = settingsBinding.bind(readerBookSettingsKey(item.id, pub), style)
+        store = bookStore; style = bookStyle
         asset = item; publication = pub; chapter = content; offset = restored; session = newSession
         if (content.rulesWarning.isNotBlank()) message = content.rulesWarning
         if (!narrating && narrationChapter != content.ref.id) {

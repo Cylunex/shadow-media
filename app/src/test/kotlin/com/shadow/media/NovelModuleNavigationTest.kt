@@ -160,4 +160,30 @@ class NovelModuleNavigationTest {
         compose.waitUntil(15_000) { readingRequests() > before }
         compose.onNodeWithText("最近阅读").assertIsDisplayed()
     }
+
+    @Test fun shelfReopeningRestoresSortAndUsesExactlyThreeColumns() {
+        val c = CatalogConnection(name = "测试书库", kind = CatalogKind.OPDS, url = server.url("/").toString(), allowHttp = true)
+        val repository = NovelRepository(compose.activity, api = NovelApi(), connectionLoader = { listOf(c) })
+        var visible by mutableStateOf(true)
+        compose.setContent { ShadowMediaTheme { if (visible) NovelScreen(repository, {}, rootSection = MediaDestination.SHELF) } }
+        waitText("山海来信")
+        compose.waitUntil(15_000) { compose.onAllNodes(hasContentDescription("刷新") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+        val first = compose.onNodeWithText("山海来信").fetchSemanticsNode().boundsInRoot
+        val second = compose.onNodeWithText("长夜与星河").fetchSemanticsNode().boundsInRoot
+        val third = compose.onNodeWithText("远山灯火").fetchSemanticsNode().boundsInRoot
+        val fourth = compose.onNodeWithText("群山之间").fetchSemanticsNode().boundsInRoot
+        assertTrue(first.left < second.left && second.left < third.left)
+        assertTrue(kotlin.math.abs(first.top - third.top) < 3)
+        assertTrue(fourth.top > first.bottom)
+        compose.onNodeWithText("最近收录").performClick()
+        compose.onNodeWithText("最近阅读").performClick()
+        compose.waitUntil(15_000) { requests.any { it.contains("sort=last_read") } }
+        val before = requests.count { it.contains("sort=last_read") }
+        compose.runOnIdle { visible = false }; compose.waitForIdle()
+        compose.runOnIdle { visible = true }
+        compose.waitUntil(15_000) { requests.count { it.contains("sort=last_read") } > before }
+        waitText("山海来信")
+        compose.onNodeWithText("最近阅读").assertIsDisplayed()
+        screenshot("shelf-three-columns-persistent-sort")
+    }
 }
