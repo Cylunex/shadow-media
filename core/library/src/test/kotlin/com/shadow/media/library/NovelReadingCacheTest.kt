@@ -268,6 +268,23 @@ class NovelReadingCacheTest {
         }
     }
 
+    @Test fun nextChapterIsExposedForLayoutBeforeFartherDownloadsAndWhenAlreadyCached() = runBlocking {
+        Service(total = 4).use { service ->
+            val repository = repository(service)
+            val current = repository.cache.window(service.c, "work", "v1", 0, 1)
+            var ready = 0
+            repository.cache.prefetch(service.c, current.publication, 0) {
+                ready++
+                assertNotNull(repository.cachedChapter(current.publication.scope, "work", "v1", "c1"))
+                assertFalse("The immediate neighbour must be warmed first", 2 in service.cached)
+            }
+            assertEquals(1, ready)
+            repository.cache.prefetch(service.c, current.publication, 0) { ready++ }
+            assertEquals("Already downloaded chapters also trigger layout warmup", 2, ready)
+            assertNull(repository.dao.state(NovelRepository.stateId(current.publication.scope, "work")))
+        }
+    }
+
     @Test fun serverCacheCompletionIsNotLocalDownloadCompletionUntilPackageValidation() = runBlocking {
         Service(total = 3).use { service ->
             service.cacheJobs = true

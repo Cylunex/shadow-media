@@ -224,7 +224,8 @@ class NovelReadingCache(private val context: Context, private val library: Libra
         .map { JSONObject(it.toString()).put("readable", true) }
 
     /** Keep three *readable* chapters ahead, starting as soon as a chapter is displayed. */
-    suspend fun prefetch(c: CatalogConnection, publication: NovelPublicationEntity, ordinal: Int, ahead: Int = 3) {
+    suspend fun prefetch(c: CatalogConnection, publication: NovelPublicationEntity, ordinal: Int, ahead: Int = 3,
+        onNextReady: suspend () -> Unit = {}) {
         require(ahead in 1..10)
         if (LibraryResources.offlineOnly) return
         val wanted = mutableListOf<JSONObject>()
@@ -239,13 +240,17 @@ class NovelReadingCache(private val context: Context, private val library: Libra
         }
         val cached = chapters(publication.scope, publication.workId, publication.versionId).map { it.getString("id") }.toSet()
         var failure: Exception? = null
-        for (row in wanted.filterNot { it.getString("id") in cached }) {
+        for ((index, row) in wanted.withIndex()) {
             currentCoroutineContext().ensureActive()
             // Small immutable packages are immediately usable offline; no reader or progress side effects.
             try {
-                com.shadow.media.network.ResourceScheduler.process.run(com.shadow.media.network.ResourcePriority.ADJACENT) {
-                    window(c, publication.workId, publication.versionId, row.getInt("ordinal"), 1, row.getString("id"))
+                if (row.getString("id") !in cached) {
+                    com.shadow.media.network.ResourceScheduler.process.run(com.shadow.media.network.ResourcePriority.ADJACENT) {
+                        window(c, publication.workId, publication.versionId, row.getInt("ordinal"), 1, row.getString("id"))
+                    }
                 }
+                // Make the immediate next chapter renderable before fetching farther chapters.
+                if (index == 0) onNextReady()
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { failure = e }
         }

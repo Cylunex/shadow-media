@@ -170,7 +170,7 @@ internal class NativeTextView(context: Context) : View(context) {
     private val scrollStride get() = (height - 2 * (document?.topInset ?: 0f)).coerceAtLeast(1f)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var layoutJob: Job? = null
-    private val layouts = android.util.LruCache<String, NativeTextLayout>(3)
+    private val layouts = NativeTextLayoutCache(scope)
     private fun layoutCacheKey(content: NativeTextChapter, w: Int, h: Int, style: ReaderSettings) =
         "${content.version}:${content.ref.id}:${content.textHash}:${content.ref.title}:${content.total}:$w:$h:${layoutKey(style)}"
 
@@ -179,12 +179,10 @@ internal class NativeTextView(context: Context) : View(context) {
         val w = width; val h = height; val style = settings
         if (w <= 0 || h <= 0) return
         val key = layoutCacheKey(content, w, h, style)
-        if (layouts.get(key) != null) return
-        val result = withContext(Dispatchers.Default) {
+        layouts.get(key) {
             NativeTextLayout.paginate(content, w, h, style, resources.displayMetrics.density,
                 resources.displayMetrics.scaledDensity, fonts.typeface(style))
         }
-        layouts.put(key, result)
     }
     private var chapter: NativeTextChapter? = null
     private var bookTitle = ""
@@ -303,11 +301,10 @@ internal class NativeTextView(context: Context) : View(context) {
         layoutJob = scope.launch {
             try {
                 val key = layoutCacheKey(content, w, h, style)
-                val result = layouts.get(key) ?: withContext(Dispatchers.Default) {
+                val result = layouts.get(key) {
                     ReaderPaperTexture.bitmap(context.applicationContext)
                     NativeTextLayout.paginate(content, w, h, style, resources.displayMetrics.density, resources.displayMetrics.scaledDensity, fonts.typeface(style))
                 }
-                layouts.put(key, result)
                 paperTexture = ReaderPaperTexture.bitmap(context.applicationContext)
                 cancelTurn(); clearBitmaps(); document = result
                 pageIndex = result.pageAt(readingOffset)
@@ -612,5 +609,5 @@ internal class NativeTextView(context: Context) : View(context) {
         AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> { turn(-1); true }
         else -> super.performAccessibilityAction(action, args)
     } }
-    fun dispose() { clearSelection(); removeCallbacks(clearNotice); cancelTurn(); velocity?.recycle(); velocity = null; scope.cancel(); clearBitmaps(); layouts.evictAll(); document = null }
+    fun dispose() { clearSelection(); removeCallbacks(clearNotice); cancelTurn(); velocity?.recycle(); velocity = null; scope.cancel(); clearBitmaps(); layouts.clear(); document = null }
 }
