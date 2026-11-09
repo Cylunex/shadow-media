@@ -56,12 +56,17 @@ class NovelClientFlowTest {
         waitText("山海来信")
         compose.onNodeWithText("山海来信").performClick()
         assertEquals("one", opened)
-        compose.onNodeWithText("外部榜单").performClick()
+        compose.waitUntil(15_000) { compose.onAllNodes(hasText("选择榜单", substring = true) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("选择榜单", substring = true).performClick()
+        waitText("外部榜单")
+        compose.onNodeWithText("外部榜单", substring = true).performClick()
         waitText("远航")
         compose.onNodeWithText("山海来信").assertDoesNotExist()
         compose.onNodeWithText("远航").performClick()
         assertEquals("two", opened)
-        compose.onNodeWithText("我的书库").performClick()
+        compose.waitUntil(15_000) { compose.onAllNodes(hasText("选择榜单", substring = true) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("选择榜单", substring = true).performClick()
+        compose.onNodeWithText("我的书库 · 书库热榜", substring = true).performClick()
         waitText("山海来信")
     }
     @Test fun returningFromRankedWorkRestoresScrolledPosition() {
@@ -90,8 +95,11 @@ class NovelClientFlowTest {
         } }
         val repo = repository(); val c = connection(); var visible by mutableStateOf(true); var query = ""
         compose.setContent { ShadowMediaTheme { Surface { if (visible) NovelRankingsScreen(repo, c, {}, { query = it }, {}) } } }
+        waitText("选择榜单")
+        compose.waitUntil(15_000) { compose.onAllNodes(hasText("选择榜单", substring = true) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("选择榜单", substring = true).performClick()
         waitText("外部榜单")
-        compose.onNodeWithText("外部榜单").performClick()
+        compose.onNodeWithText("外部榜单", substring = true).performClick()
         waitText("远航")
         compose.onNodeWithText("找可读书源").performScrollTo().performClick()
         assertEquals("远航", query)
@@ -113,7 +121,7 @@ class NovelClientFlowTest {
         val repo = repository(); val c = connection(); val state = NovelBrowserState().apply { selectMode(true) }
         compose.setContent { ShadowMediaTheme { Surface { NovelSourceBrowser(repo, c, state, {}, {}) } } }
         waitText("原创来源 · 1 栏目")
-        compose.onNodeWithText("原创来源 · 1 栏目").performClick()
+        compose.onNodeWithText("原创来源 · 1 栏目").performScrollTo().performClick()
         waitText("分类 · 幻想")
         compose.onNodeWithText("分类 · 幻想").performClick()
         waitText("山海来信")

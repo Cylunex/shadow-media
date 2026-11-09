@@ -36,7 +36,7 @@ import org.json.JSONObject
 
 @Composable internal fun NovelShelfActions(ids: Set<String>, navigation: JSONObject, onDismiss: () -> Unit,
     localOnly: Boolean = false, deleted: Boolean = false, onApply: suspend (String, String, List<String>) -> Unit) {
-    var action by remember { mutableStateOf("group") }
+    var action by remember { mutableStateOf(if (deleted) "restore" else "group") }
     var group by remember { mutableStateOf<List<String>>(emptyList()) }
     var tags by remember { mutableStateOf<List<String>>(emptyList()) }
     var status by remember { mutableStateOf("reading") }
@@ -52,12 +52,30 @@ import org.json.JSONObject
     }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var confirmed by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    fun apply(selectedAction: String) {
+        if (busy) return
+        busy = true; error = null
+        scope.launch {
+            try { onApply(selectedAction, if (selectedAction == "status") status else if (selectedAction == "booklist") booklists.first { it.optString("title") + " · " + it.getString("id").take(8) == listChoice.first() }.getString("id") else group.firstOrNull().orEmpty(), tags) }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { error = e.message ?: "整理失败，请重试" }
+            finally { busy = false }
+        }
+    }
+    val direct = setOf("delete", "restore", "shelf_add", "shelf_remove", "pin", "unpin", "refresh_following", "download")
     ModalBottomSheet(onDismissRequest = { if (!busy) onDismiss() }) {
         LazyColumn(Modifier.imePadding(), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item { Text("整理 ${ids.size} 本", style = MaterialTheme.typography.titleLarge) }
-            item { NovelOptionChips("操作", action, listOf("restore" to "恢复作品", "delete" to "删除作品", "shelf_add" to "加入书架", "download" to "下载全本", "booklist" to "加入书单", "pin" to "置顶", "unpin" to "取消置顶", "group" to "移动分组", "tags_add" to "添加标签", "tags_remove" to "移除标签", "status" to "阅读状态", "refresh_following" to "检查追更", "shelf_remove" to "移出书架").filter { if (deleted) it.first == "restore" else it.first != "restore" }.filterNot { (localOnly && it.first in setOf("download", "booklist", "refresh_following", "shelf_remove", "shelf_add", "delete", "restore")) || (it.first == "download" && ids.size != 1) }) { if (!busy) { action = it; confirmed = false } } }
+            item { Text("整理 ${ids.size} 本", style = MaterialTheme.typography.titleLarge)
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+            item { Text("删除可恢复；原文件、阅读进度和笔记保留。", style = MaterialTheme.typography.bodySmall)
+                val options = listOf("restore" to "恢复作品", "delete" to "删除作品", "shelf_add" to "加入书架", "download" to "下载全本", "booklist" to "加入书单", "pin" to "置顶", "unpin" to "取消置顶", "group" to "移动分组", "tags_add" to "添加标签", "tags_remove" to "移除标签", "status" to "阅读状态", "refresh_following" to "检查追更", "shelf_remove" to "移出书架").filter { if (deleted) it.first == "restore" else it.first != "restore" }.filterNot { (localOnly && it.first in setOf("download", "booklist", "refresh_following", "shelf_remove", "shelf_add", "delete", "restore")) || (it.first == "download" && ids.size != 1) }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { options.filter { it.first in direct }.forEach { (key, label) ->
+                    TextButton(enabled = !busy, onClick = { apply(key) }, colors = ButtonDefaults.textButtonColors(contentColor = if (key == "delete") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)) { Text(label) }
+                } }
+                if (!deleted) NovelOptionChips("更多整理", action, options.filterNot { it.first in direct }) { if (!busy) action = it }
+            }
             item {
                 when (action) {
                     "booklist" -> {
@@ -74,19 +92,9 @@ import org.json.JSONObject
                     "refresh_following" -> Text("检查所选作品的追更来源，任务在后台继续。")
                     "delete" -> Text("从书城、搜索和书架移到已删除列表，可恢复。原文件、阅读进度与笔记保留。")
                     "restore" -> Text("恢复作品及其原有书架、阅读进度和笔记。")
-                    "shelf_remove" -> Row { Checkbox(confirmed, { confirmed = it }); Text("移出所选 ${ids.size} 本并停止追更，保留作品和原文件") }
                 }
             }
-            error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
-            item { Button(enabled = !busy && (action != "shelf_remove" || confirmed) && (!action.startsWith("tags_") || tags.isNotEmpty()) && (action != "booklist" || listChoice.isNotEmpty()), onClick = {
-                busy = true; error = null
-                scope.launch {
-                    try { onApply(action, if (action == "status") status else if (action == "booklist") booklists.first { it.optString("title") + " · " + it.getString("id").take(8) == listChoice.first() }.getString("id") else group.firstOrNull().orEmpty(), tags) }
-                    catch (e: CancellationException) { throw e }
-                    catch (e: Exception) { error = e.message ?: "整理失败，请重试" }
-                    finally { busy = false }
-                }
-            }) { Text(if (busy) "正在整理" else "应用") } }
+            if (action !in direct) item { Button(enabled = !busy && (!action.startsWith("tags_") || tags.isNotEmpty()) && (action != "booklist" || listChoice.isNotEmpty()), onClick = { apply(action) }) { Text(if (busy) "正在整理" else "应用") } }
         }
     }
 }

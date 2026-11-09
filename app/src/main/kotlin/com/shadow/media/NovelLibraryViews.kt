@@ -135,7 +135,8 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
     if (groupManager && artwork != null) ModalBottomSheet(onDismissRequest = { groupManager = false }) {
         NovelShelfGroupManager(artwork.repository, artwork.connection) { groupManager = false; onQuery(query.copy(group = "", ungrouped = false)) }
     }
-    fun select(id: String) { selected = if (id in selected) selected - id else (selected + id).take(500).toSet() }
+    var applying by remember { mutableStateOf(false) }
+    fun select(id: String) { if (busy || selecting || applying) return; selected = if (id in selected) selected - id else (selected + id).take(500).toSet() }
     if (actions && onBulk != null) NovelShelfActions(selected, navigation, deleted = view == "trash", onDismiss = { actions = false }, onApply = { action, value, tags ->
         onBulk(selected, action, value, tags)
         selected = emptySet(); actions = false
@@ -150,7 +151,18 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
     val gridState = rememberLazyGridState()
     var previousQuery by remember { mutableStateOf(query) }
     LaunchedEffect(query) { if (query != previousQuery) gridState.scrollToItem(0); previousQuery = query }
-    LazyVerticalGrid(modifier = Modifier.fillMaxSize(), state = gridState, columns = GridCells.Fixed(if (grid) 3 else 1),
+    fun applyDirect(action: String) {
+        if (busy || applying || selected.isEmpty() || onBulk == null) return
+        val ids = selected.toSet(); applying = true; selectionError = null
+        selectionScope.launch {
+            try { onBulk(ids, action, "", emptyList()); selected = emptySet() }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { selectionError = e.message ?: "操作失败，请重试" }
+            finally { applying = false }
+        }
+    }
+    Column(Modifier.fillMaxSize()) {
+    LazyVerticalGrid(modifier = Modifier.weight(1f), state = gridState, columns = GridCells.Fixed(if (grid) 3 else 1),
         contentPadding = PaddingValues(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) { Column {
             NovelSearchField(search, onSearch, !busy, onSubmit, if (isShelf) "搜索我的书架" else "搜索书名、作者或题材", onClear = { onQuery(query.copy(q = "")) })
@@ -170,33 +182,13 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
                 items(navigation.novelStrings("groups")) { group -> FilterChip(query.group == group, { onQuery(query.copy(group = group, ungrouped = false)) }, label = { Text(group) }) }
                 if (artwork != null) item { TextButton(onClick = { groupManager = true }) { Text("管理分组") } }
             }
-            if (managing) Row {
-                TextButton(onClick = { selected = (selected + items.map { it.getString("id") }).take(500).toSet() }) { Text("选择已显示") }
-                TextButton(onClick = { selected = emptySet() }) { Text("清空选择") }
-                TextButton(onClick = { val visible = items.map { it.getString("id") }.toSet(); selected = ((selected - visible) + (visible - selected)).take(500).toSet() }) { Text("反选已显示") }
-                TextButton(enabled = selected.isNotEmpty() && !busy, onClick = { actions = true }) { Text("整理 ${selected.size} 本") }
-            }
-            if (managing && artwork != null) Row {
-                TextButton(enabled = !selecting, onClick = {
-                    selecting = true; selectionError = null
-                    selectionScope.launch {
-                        try { selected = artwork.repository.live(artwork.connection, listOf("library", "books", "selection"), query.copy(view = view).parameters()).novelStrings("work_ids").toSet() }
-                        catch (e: kotlinx.coroutines.CancellationException) { throw e }
-                        catch (e: Exception) { selectionError = e.message ?: "选择失败" }
-                        finally { selecting = false }
-                    }
-                }) { Text("选择全部匹配") }
-                TextButton(onClick = { review = !review }) { Text("查看已选 ${selected.size} 本") }
-            }
-            if (review) selected.forEach { id -> Text(names[id] ?: "已选作品 ${id.take(8)}", style = MaterialTheme.typography.bodySmall) }
-            selectionError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (labels.isNotEmpty()) LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(labels) { (label, cleared) -> InputChip(selected = true, enabled = !busy, onClick = { onQuery(cleared) }, label = { Text(label) }, trailingIcon = { Icon(Icons.Rounded.Close, "移除$label", Modifier.size(14.dp)) }) }
                 item { TextButton(enabled = !busy, onClick = { onQuery(NovelQuery(view = query.view, q = query.q, sort = query.sort)) }) { Text("清除筛选") } }
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (data == null) { if (busy) "正在找书…" else "尚未载入" } else "$total 本书", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (onBulk != null) TextButton(enabled = !busy, onClick = { managing = !managing; selected = emptySet() }) { Text(if (managing) "完成管理" else "管理") }
+                if (onBulk != null) TextButton(enabled = !busy && !applying && !selecting, onClick = { managing = !managing; selected = emptySet() }) { Text(if (managing) "完成管理" else "批量操作") }
                 var sorting by remember { mutableStateOf(false) }
                 Box {
                     TextButton(enabled = !busy, onClick = { sorting = true }) { Text(when (query.sort) { "last_read" -> "最近阅读"; "title" -> "书名"; "popularity" -> "热度"; else -> if (view == "history") "最近阅读" else "最近收录" }); Icon(Icons.Rounded.ExpandMore, null, Modifier.size(18.dp)) }
@@ -220,7 +212,7 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
         items(items, key = { it.getString("id") }) { work ->
             Column {
             val id = work.getString("id")
-            if (managing) Checkbox(id in selected, { select(id) })
+            if (managing) Checkbox(id in selected, { select(id) }, enabled = !busy && !applying && !selecting)
             val read = if (view == "trash") null else if (managing) ({ select(id) }) else if (view in setOf("shelf", "history") && novelCanRead(work)) ({ onRead(id) }) else null
             val detail = { if (managing) select(id) else onWork(id) }
             if (grid || view in setOf("shelf", "history")) {
@@ -232,6 +224,38 @@ internal fun novelSortOptions(view: String): List<Pair<String, String>> = buildL
             }
         }
         if (items.size < total) item(span = { GridItemSpan(maxLineSpan) }) { OutlinedButton(enabled = !busy, onClick = onMore, modifier = Modifier.fillMaxWidth()) { Text(if (busy) "正在加载…" else "加载更多 · 已显示 ${items.size} 本") } }
+    }
+    if (managing) Surface(tonalElevation = 3.dp) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+            Text("已选 ${selected.size} 本 · 跨页保留，最多 500 本", style = MaterialTheme.typography.labelMedium)
+            FlowRow {
+                TextButton(enabled = !busy && !applying && !selecting, onClick = { selected = (selected + items.map { it.getString("id") }).take(500).toSet() }) { Text("选择已显示") }
+                if (artwork != null) TextButton(enabled = !busy && !selecting && !applying, onClick = {
+                    selecting = true; selectionError = null
+                    selectionScope.launch {
+                        try { selected = artwork.repository.live(artwork.connection, listOf("library", "books", "selection"), query.copy(view = view).parameters()).novelStrings("work_ids").toSet() }
+                        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                        catch (e: Exception) { selectionError = e.message ?: "选择失败" }
+                        finally { selecting = false }
+                    }
+                }) { Text(if (selecting) "选择中…" else "选择全部匹配") }
+                TextButton(enabled = !applying && !selecting, onClick = { selected = emptySet() }) { Text("清空选择") }
+                TextButton(enabled = !applying, onClick = { review = !review }) { Text("查看已选") }
+            }
+            FlowRow {
+                if (view != "trash") TextButton(enabled = selected.isNotEmpty() && !busy && !applying && !selecting,
+                    onClick = { applyDirect(if (isShelf) "shelf_remove" else "shelf_add") }) { Text(if (isShelf) "移出书架" else "加入书架") }
+                TextButton(enabled = selected.isNotEmpty() && !busy && !applying && !selecting,
+                    onClick = { applyDirect(if (view == "trash") "restore" else "delete") },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text(if (view == "trash") "恢复作品" else "删除作品") }
+                TextButton(enabled = selected.isNotEmpty() && !busy && !applying && !selecting, onClick = { actions = true }) { Text("整理 ${selected.size} 本") }
+            }
+            if (review) androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 100.dp)) {
+                items(selected.toList(), key = { it }) { id -> Text(names[id] ?: "已选作品 ${id.take(8)}", style = MaterialTheme.typography.bodySmall) }
+            }
+            selectionError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        }
+    }
     }
 }
 

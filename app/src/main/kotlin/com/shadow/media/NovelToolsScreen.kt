@@ -193,6 +193,7 @@ internal fun novelJobSummary(job: JSONObject) = when (job.optString("state")) {
     var action by remember { mutableStateOf("enable") }; var query by remember { mutableStateOf("") }
     var recipe by remember { mutableStateOf<String?>(null) }
     var currentJob by remember { mutableStateOf<String?>(null) }
+    var removed by remember { mutableStateOf<Set<String>>(emptySet()) }
     LaunchedEffect(Unit) { task.run { groups = repository.live(c, listOf("source-groups")).novelObjects("items"); tagOptions = repository.live(c, listOf("providers", "catalog"), listOf("limit" to "1")).optJSONObject("facets")?.novelObjects("tags").orEmpty().map { it.optString("value") } } }
     LazyColumn(Modifier.fillMaxSize().imePadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
@@ -202,7 +203,17 @@ internal fun novelJobSummary(job: JSONObject) = when (job.optString("state")) {
             FlowRow { TextButton(enabled = ids.isNotEmpty() && !task.busy, onClick = { onExport(NovelExport("novel-sources.json", listOf("providers", "export"), JSONObject().put("provider_ids", JSONArray(ids)))) }) { Text("导出原生规则") }
                 TextButton(enabled = !task.busy, onClick = onImport) { Text("导入规则文件") }
                 TextButton(enabled = ids.size == 1 && !task.busy, onClick = { recipe = ids.single() }) { Text("编辑选中规则") }
+                TextButton(enabled = ids.isNotEmpty() && !task.busy, onClick = { task.run {
+                    val selected = ids.toSet()
+                    val result = repository.mutate(c, listOf("providers", "bulk-action"), "POST", JSONObject().put("provider_ids", JSONArray(selected)).put("action", "delete"))
+                    removed = selected; ids = emptySet(); groups = repository.live(c, listOf("source-groups")).novelObjects("items")
+                    task.message = "已删除 ${result.optInt("changed")} 个书源；已收录作品、缓存与进度保留"
+                } }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("删除所选书源") }
             }
+            if (removed.isNotEmpty()) TextButton(enabled = !task.busy, onClick = { task.run {
+                repository.mutate(c, listOf("providers", "restore"), "POST", JSONObject().put("provider_ids", JSONArray(removed)))
+                ids = removed; removed = emptySet(); groups = repository.live(c, listOf("source-groups")).novelObjects("items"); task.message = "已撤销书源删除"
+            } }) { Text("撤销书源删除") }
             Text("导出为 Novel 原生规则 JSON，不是 Legado 格式。规则仅由服务端执行。", style = MaterialTheme.typography.bodySmall)
         }
         item {

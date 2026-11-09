@@ -14,6 +14,7 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import com.shadow.media.library.NovelQuery
+import com.shadow.media.library.novelObjects
 import com.shadow.media.ui.theme.ShadowMediaTheme
 import org.json.JSONArray
 import org.json.JSONObject
@@ -43,6 +44,60 @@ class NovelLibraryViewsTest {
             bitmap.recycle()
         }
     }
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun cityAndShelfDeleteSelectionDirectlyWithoutOpeningAnActionSheet() {
+        var view by mutableStateOf("city")
+        val changes = mutableListOf<Pair<Set<String>, String>>()
+        val data = JSONObject().put("total", 2).put("items", JSONArray().put(book("one", "山海来信")).put(book("two", "长夜与星河")))
+        compose.setContent { ShadowMediaTheme { Surface { NovelWorksPage(view, NovelQuery(view = view), "", JSONObject(), data, false,
+            {}, {}, {}, {}, {}, { error("Selection must not open details") }, { error("Selection must not read") },
+            onBulk = { ids, action, _, _ -> changes += ids to action }) } } }
+        compose.onNodeWithText("批量操作").performClick()
+        compose.onNodeWithText("选择已显示").performClick()
+        compose.onNodeWithText("删除作品").assertIsDisplayed().performClick()
+        compose.waitForIdle()
+        assertEquals(listOf(setOf("one", "two") to "delete"), changes)
+        compose.onNodeWithText("整理 0 本").assertIsNotEnabled()
+        compose.runOnIdle { view = "shelf" }
+        compose.onNodeWithText("选择已显示").performClick()
+        compose.onNodeWithText("移出书架").performClick()
+        compose.waitForIdle()
+        assertEquals(setOf("one", "two") to "shelf_remove", changes.last())
+        screenshot("novel-bulk-actions-320")
+    }
+
+    @Test fun deleteActionRunsOnFirstTapAndCanRetryAfterFailure() {
+        var calls = 0
+        compose.setContent { ShadowMediaTheme { Surface { NovelShelfActions(setOf("one"), JSONObject(), {}, onApply = { action, _, _ ->
+            assertEquals("delete", action); calls++; if (calls == 1) error("模拟断网，请重试")
+        }) } } }
+        compose.onNodeWithText("删除作品").performClick()
+        compose.waitForIdle()
+        assertEquals(1, calls)
+        compose.onNodeWithText("模拟断网，请重试").assertIsDisplayed()
+        compose.onNodeWithText("删除作品").performClick()
+        compose.waitForIdle()
+        assertEquals(2, calls)
+    }
+
+    @Test fun discoverySearchFindsColumnNamesAcrossProvidersAndRespectsKind() {
+        val source = JSONObject("""{"name":"原创来源","entries":[{"name":"玄幻","kind":"分类"},{"name":"玄幻月榜","kind":"排行榜"}]}""")
+        assertTrue(novelDiscoveryMatches(source, "月榜", "排行榜"))
+        assertFalse(novelDiscoveryMatches(source, "月榜", "分类"))
+        assertEquals(2, novelDiscoveryEntries(source, source.novelObjects("entries"), "原创", "").size)
+    }
+
+    @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun rankingPickerSearchesColumnsAndChoosesTheExactPeriod() {
+        var chosen: com.shadow.media.library.NovelRankingSelection? = null
+        val board = com.shadow.media.library.NovelRankingBoard("source", "原创来源", "fantasy-month", "玄幻月榜", "month", "玄幻", "点击")
+        compose.setContent { ShadowMediaTheme { Surface { NovelRankingPicker(listOf(board), com.shadow.media.library.NovelRankingSelection(), {}, { chosen = it }) } } }
+        compose.onNodeWithText("查找来源、榜名或分类").performTextInput("月榜")
+        compose.onNodeWithText("玄幻月榜").performClick()
+        compose.runOnIdle {
+            assertEquals("source", chosen?.provider)
+            assertEquals("fantasy-month", chosen?.key)
+            assertEquals("month", chosen?.period)
+        }
+    }
     @Test fun shelfManagementSelectsBooksAndUsesExistingGroupWithoutOpeningReader() {
         var appliedIds: Set<String> = emptySet()
         var appliedAction = ""
@@ -58,7 +113,7 @@ class NovelLibraryViewsTest {
         compose.onNodeWithText("应用", substring = false).performClick()
         compose.waitForIdle()
         assertEquals(setOf("one"), appliedIds)
-        compose.onNodeWithText("管理", substring = false).performClick()
+        compose.onNodeWithText("批量操作", substring = false).performClick()
         compose.onNodeWithText("选择已显示").performClick()
         compose.onNodeWithText("整理 1 本").performClick()
         compose.onAllNodesWithText("追更", substring = false).onLast().performClick()

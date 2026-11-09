@@ -96,6 +96,7 @@ internal class NovelBrowserState(initial: String = "") {
     var page by mutableIntStateOf(1)
     var discovery by mutableStateOf<JSONObject?>(null)
     var discoveryQuery by mutableStateOf("")
+    var discoveryKind by mutableStateOf("")
     var listIndex = 0
     var listOffset = 0
 }
@@ -120,6 +121,7 @@ internal class NovelBrowserState(initial: String = "") {
     var jobId by remember { mutableStateOf<String?>(null) }
     var choose by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(false) }
+    var showSavedColumns by remember(connection.id) { mutableStateOf(false) }
     var searchAfterChoices by remember { mutableStateOf(false) }
     val list = rememberLazyListState(state.listIndex, state.listOffset)
     val visibleChoices = state.choices.filter { state.selected.isEmpty() || it.optString("id") in state.selected }
@@ -190,12 +192,13 @@ internal class NovelBrowserState(initial: String = "") {
         recent = (listOf(visit) + recent.filterNot { it.optString("provider") == visit.optString("provider") && it.optString("entry") == visit.optString("entry") }).take(8)
         preferences.edit { putString(connection.id + ":recent", JSONObject().put("items", JSONArray(recent)).toString()) }
         val same = state.provider?.optString("id") == provider.optString("id") && state.entry?.optString("key") == entry.optString("key") && state.page == page
-        state.provider = provider; state.entry = entry; state.page = page
-        if (!same) state.discovery = null
         run {
             val path = listOf("source-browser", provider.getString("id"), entry.getString("key"))
             val cached = repository.live(connection, path, listOf("page" to page.toString()))
+            if (provider.has("entries")) state.entries = provider.novelObjects("entries")
+            state.provider = provider; state.entry = entry; state.page = page
             state.discovery = cached
+            if (!same) list.scrollToItem(0)
             if (refresh || cached.optBoolean("stale")) {
                 val receipt = repository.mutate(connection, path + "refresh", "POST", JSONObject().put("page", page))
                 receipt.novelId("job_id")?.let { jobId = it; repository.sourceSearch.awaitJob(connection, it) {} }
@@ -296,7 +299,7 @@ internal class NovelBrowserState(initial: String = "") {
                 } else Text("为《${bindingWork.optString("title")}》查找其他来源", style = MaterialTheme.typography.titleMedium)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AssistChip(onClick = { choose = true }, label = { Text("范围 · ${visibleChoices.size} 源") })
-                    TextButton(onClick = { settings = true }) { Text("搜索设置与历史") }
+                    if (!state.explore) TextButton(onClick = { settings = true }) { Text("搜索设置与历史") }
                     TextButton(onClick = onManage) { Text("管理书源") }
                 }
                 if (bindingWork != null && !state.explore) {
@@ -335,8 +338,16 @@ internal class NovelBrowserState(initial: String = "") {
             if (state.explore) {
                 if (state.entry == null) {
                     item { OutlinedTextField(state.discoveryQuery, { state.discoveryQuery = it.take(100) }, singleLine = true,
-                        label = { Text("查找发现书源") }, modifier = Modifier.fillMaxWidth()) }
-                    items((favorites + recent).distinctBy { it.optString("provider") + ":" + it.optString("entry") }, key = { it.optString("provider") + ":" + it.optString("entry") }) { favorite ->
+                        label = { Text("查找书源或栏目，如玄幻、月榜") }, modifier = Modifier.fillMaxWidth())
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            (listOf("") + visibleChoices.flatMap { it.novelObjects("entries") }.map { it.optString("kind") }.distinct()).forEach { kind ->
+                                FilterChip(state.discoveryKind == kind, onClick = { state.discoveryKind = kind }, label = { Text(kind.ifBlank { "全部栏目" }) })
+                            }
+                        }
+                    }
+                    val savedColumns = (favorites + recent).distinctBy { it.optString("provider") + ":" + it.optString("entry") }
+                    if (savedColumns.isNotEmpty()) item { TextButton(onClick = { showSavedColumns = !showSavedColumns }) { Text("${if (showSavedColumns) "收起" else "展开"}收藏与最近 · ${savedColumns.size}") } }
+                    items(if (showSavedColumns) savedColumns else emptyList(), key = { it.optString("provider") + ":" + it.optString("entry") }) { favorite ->
                         Row {
                             TextButton(enabled = !busy, onClick = {
                                 val provider = state.choices.firstOrNull { it.optString("id") == favorite.optString("provider") }
@@ -354,21 +365,26 @@ internal class NovelBrowserState(initial: String = "") {
                         }
                     }
                     item { Text("选择书源与栏目；发现开关独立于搜索开关。", style = MaterialTheme.typography.bodySmall) }
-                    items(visibleChoices.filter { it.optString("name").contains(state.discoveryQuery.trim(), true) }
+                    items(visibleChoices.filter { provider -> novelDiscoveryMatches(provider, state.discoveryQuery, state.discoveryKind) }
                         .sortedByDescending { it.optString("id") in pinned }, key = { it.getString("id") }) { provider ->
                         val id = provider.getString("id")
                         TextButton(onClick = {
                             pinned = if (id in pinned) pinned - id else pinned + id
                             preferences.edit { putStringSet(connection.id + ":pinned", pinned) }
                         }) { Text(if (id in pinned) "取消发现置顶" else "置顶发现") }
-                        TextButton(enabled = !busy, onClick = { state.provider = provider; state.entries = emptyList(); run {
-                            state.entries = repository.live(connection, listOf("source-browser", provider.getString("id"), "entries")).novelObjects("items")
-                        } }) { Text("${provider.optString("name")} · ${provider.optInt("entry_count")} 栏目") }
-                        if (state.provider?.optString("id") == provider.optString("id")) FlowRow {
-                            state.entries.forEach { entry -> AssistChip(onClick = { discover(provider, entry, 1) }, label = { Text("${entry.optString("kind")} · ${entry.optString("name")}") }) }
+                        TextButton(enabled = !busy, onClick = {
+                            if (state.provider?.optString("id") == id) { state.provider = null; state.entries = emptyList() }
+                            else { state.provider = provider; state.entries = provider.novelObjects("entries")
+                                if (!provider.has("entries")) run { state.entries = repository.live(connection, listOf("source-browser", id, "entries")).novelObjects("items") }
+                            }
+                        }) { Text("${provider.optString("name")} · ${provider.optInt("entry_count")} 栏目") }
+                        if (state.provider?.optString("id") == id || state.discoveryQuery.isNotBlank() || state.discoveryKind.isNotBlank()) FlowRow {
+                            novelDiscoveryEntries(provider, if (state.provider?.optString("id") == id) state.entries else provider.novelObjects("entries"), state.discoveryQuery, state.discoveryKind)
+                                .forEach { entry -> AssistChip(enabled = !busy, onClick = { discover(provider, entry, 1) }, label = { Text("${entry.optString("kind")} · ${entry.optString("name")}") }) }
                         }
                     }
                     if (!busy && visibleChoices.isEmpty() && error == null) item { Text("当前范围没有启用发现的来源，或来源尚无发现能力。") }
+                    else if (visibleChoices.none { novelDiscoveryMatches(it, state.discoveryQuery, state.discoveryKind) }) item { Text("没有匹配栏目，试试其他关键词或全部栏目。") }
                 } else {
                     item { Text("${state.provider?.optString("name")} · ${state.entry?.optString("name")} · 第 ${state.page} 页")
                         FlowRow { TextButton(onClick = { state.backWithinBrowser() }) { Text("选择其他栏目") }
@@ -383,6 +399,7 @@ internal class NovelBrowserState(initial: String = "") {
                         if (state.discovery?.optBoolean("stale") == true) Text("显示上次成功内容，更新失败时继续保留。", style = MaterialTheme.typography.bodySmall)
                     }
                     items(state.discovery?.novelObjects("items").orEmpty(), key = ::novelResultKey) { row -> NovelSourceResultCard(row) { state.detail = row } }
+                    if (!busy && state.discovery?.novelObjects("items").isNullOrEmpty()) item { Text("本页没有作品，可刷新、返回上一页或选择其他栏目。") }
                 }
             } else {
                 if (state.rows.isEmpty() && !busy && state.submitted.isNotBlank() && error == null) item { Text("本批未找到匹配项；仍可继续其他书源或单源下一页。") }
@@ -418,6 +435,14 @@ internal class NovelBrowserState(initial: String = "") {
         if (state.explore) { searchAfterChoices = true; state.selectMode(false) } else search()
     }, onWork = onWork, onBound = onBound, features = state.features, automaticReceipt = state.autoReceipts[novelSourceIdentity(row)], onRead = { state.detail = null; onRead(it) }) }
 }
+
+internal fun novelDiscoveryEntries(provider: JSONObject, entries: List<JSONObject>, query: String, kind: String): List<JSONObject> =
+    entries.filter { entry -> (kind.isBlank() || entry.optString("kind") == kind) &&
+        (provider.optString("name") + " " + entry.optString("name") + " " + entry.optString("kind")).contains(query.trim(), true) }
+
+internal fun novelDiscoveryMatches(provider: JSONObject, query: String, kind: String): Boolean =
+    if (!provider.has("entries")) provider.optString("name").contains(query.trim(), true)
+    else novelDiscoveryEntries(provider, provider.novelObjects("entries"), query, kind).isNotEmpty()
 
 @Composable internal fun NovelSourceResultCard(row: JSONObject, onClick: () -> Unit) {
     Card(onClick = onClick) { Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {

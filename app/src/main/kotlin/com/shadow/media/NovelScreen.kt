@@ -358,12 +358,12 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
             }
             else if (route.kind == "notes") NovelNotesLibrary(repository, novelScope(c), route.id.takeIf(String::isNotBlank))
             else if (route.kind == "offline") NovelOfflineLibrary(repository, novelScope(c)) { asset -> context.startActivity(Intent(context, ReaderActivity::class.java).putExtra("assetId", asset.id)) }
-            else if (route.kind == "sources") NovelSourceBrowser(repository, c, browserState, onWork = { navigate(NovelRoute("work", it)) }, onManage = { navigate(NovelRoute("tools")) },
+            else if (route.kind == "sources") NovelSourceBrowser(repository, c, browserState, onWork = { navigate(NovelRoute("work", it)) }, onManage = { navigate(NovelRoute("tools", "sources")) },
                 onRead = { open(it.workId, it.versionId, it.chapterId) })
-            else if (route.kind == "tools") NovelToolsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = {
+            else if (route.kind == "tools") NovelToolsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, initialPage = route.id, onSearch = {
                 rememberSearch(it); navigate(NovelRoute("works", "search"), NovelQuery(q = it), it)
             })
-            else if (route.kind == "rankings") NovelRankingsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = { title -> browserState.requestSearch(title); navigate(NovelRoute("sources")) }, onLogin = { signIn(c.name, c.url, c) }) else if (route.kind == "contents") {
+            else if (route.kind == "rankings") NovelRankingsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = { title -> browserState.requestSearch(title); navigate(NovelRoute("sources")) }, onLogin = { signIn(c.name, c.url, c) }, onExplore = { browserState.selectMode(true); browserState.discoveryKind = "排行榜"; browserState.entry = null; navigate(NovelRoute("sources")) }) else if (route.kind == "contents") {
                 NovelContentsPanel(repository, c, route.id, route.version, !busy, onOpen = { open(route.id, route.version, it.getString("id")) },
                     modifier = Modifier.weight(1f).fillMaxWidth().imePadding().padding(horizontal = 20.dp))
             } else if (route.kind == "works") {

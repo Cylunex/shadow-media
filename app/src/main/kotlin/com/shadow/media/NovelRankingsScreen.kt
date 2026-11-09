@@ -19,7 +19,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** Native discovery only. Neither server page URLs nor external site pages are navigation targets. */
-@Composable internal fun NovelRankingsScreen(repository: NovelRepository, connection: CatalogConnection, onWork: (String) -> Unit, onSearch: (String) -> Unit, onLogin: () -> Unit) {
+@Composable internal fun NovelRankingsScreen(repository: NovelRepository, connection: CatalogConnection, onWork: (String) -> Unit, onSearch: (String) -> Unit, onLogin: () -> Unit, onExplore: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     val preferences = androidx.compose.ui.platform.LocalContext.current.getSharedPreferences("novel_rankings_ui", 0)
     val saved = remember(connection.id) { runCatching { JSONObject(preferences.getString(connection.id, "{}") ?: "{}") }.getOrDefault(JSONObject()) }
@@ -30,7 +30,7 @@ import org.json.JSONObject
     var boardKey by rememberSaveable(connection.id) { mutableStateOf(saved.optString("key")) }
     var period by rememberSaveable(connection.id) { mutableStateOf(saved.optString("period", "total")) }
     var category by rememberSaveable(connection.id) { mutableStateOf(saved.optString("category")) }
-    var sourceQuery by rememberSaveable(connection.id) { mutableStateOf("") }
+    var choosing by remember { mutableStateOf(false) }
     var index by remember { mutableStateOf<JSONObject?>(null) }
     var indexError by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
@@ -114,22 +114,21 @@ import org.json.JSONObject
             snapshot = NovelRankingPage(selection, result); loading = false
             val current = result
             if (!selection.local && !LibraryResources.offlineOnly && !current.has("_cached_at") && current.optBoolean("stale") &&
-                System.currentTimeMillis() / 1000 - current.optDouble("attempted_at", 0.0) > 30) notice = "榜单有待更新内容，点刷新获取。"
+                System.currentTimeMillis() / 1000 - current.optDouble("attempted_at", 0.0) > 30) {
+                if (current.novelObjects("items").isEmpty()) refreshBoard(selection)
+                else notice = "榜单有待更新内容，点刷新获取。"
+            }
         } catch (e: TimeoutCancellationException) { notice = "服务端仍在更新，稍后点刷新查看；已保留当前榜单" }
         catch (e: CancellationException) { throw e }
         catch (e: Exception) { authenticationRequired = e is NovelApiException && e.status == 401; error = e.message ?: "榜单读取失败，请重试" }
         finally { loading = false; working = false }
     }
     Column(Modifier.fillMaxSize()) {
-        if (boards.map { it.providerId }.distinct().size > 5 || sourceQuery.isNotBlank()) OutlinedTextField(sourceQuery,
-            { sourceQuery = it.take(100) }, label = { Text("查找榜单来源或栏目") }, singleLine = true,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp))
-        LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            item { FilterChip(provider == "local", enabled = !working, onClick = { provider = "local"; boardKey = ""; period = "total" }, label = { Text("我的书库") }) }
-            items(boards.filter { it.providerId == provider || (it.providerName + " " + it.name + " " + it.category).contains(sourceQuery.trim(), true) }.distinctBy { it.providerId }, key = { it.providerId }) { source ->
-                FilterChip(provider == source.providerId, enabled = !working, onClick = { provider = source.providerId; boardKey = ""; period = "total"; category = "" }, label = { Text(source.providerName) })
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(enabled = !working && !loading, onClick = { choosing = true }, modifier = Modifier.weight(1f)) {
+                Text("选择榜单 · " + if (selection.local) "我的书库" else boards.firstOrNull { it.providerId == selection.provider }?.providerName.orEmpty(), maxLines = 1)
             }
-            item { TextButton(enabled = !working && !LibraryResources.offlineOnly, onClick = { sourceEditor = true; error = null }) { Text("添加来源") } }
+            TextButton(enabled = !working, onClick = onExplore) { Text("书源排行榜") }
         }
         if (selection.local) {
             RankingChoices(kind, NOVEL_LOCAL_RANKINGS.toList(), !working) { kind = it }
@@ -144,6 +143,13 @@ import org.json.JSONObject
             }
             RankingChoices(selection.key, external.filter { it.period == selection.period }.map { it.key to listOf(it.name, it.category).filter(String::isNotBlank).joinToString(" · ") }, !working) { boardKey = it }
         }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(enabled = !loading && !working && !LibraryResources.offlineOnly, onClick = {
+                if (selection.local || page?.has("_cached_at") == true) scope.launch { listState.scrollToItem(0); reload++ } else operation { refreshBoard(selection) }
+            }) { Text(if (working) "更新中…" else "刷新榜单") }
+            TextButton(enabled = page != null && !loading, onClick = { scope.launch { listState.scrollToItem(0) } }) { Text("回到榜首") }
+            TextButton(enabled = !working && !LibraryResources.offlineOnly, onClick = { sourceEditor = true; error = null }) { Text("添加来源") }
+        }
         if (loading || working) LinearProgressIndicator(Modifier.fillMaxWidth())
         if (page == null) Column(Modifier.weight(1f).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(if (loading) "正在读取榜单…" else "暂无可用榜单，可切换来源或刷新。", style = MaterialTheme.typography.bodyMedium)
@@ -156,9 +162,7 @@ import org.json.JSONObject
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(if (selection.local) NOVEL_LOCAL_RANKINGS[selection.kind].orEmpty() else page?.optString("name").orEmpty(),
                         Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                    TextButton(enabled = !loading && !working && !LibraryResources.offlineOnly, onClick = {
-                        if (selection.local || page?.has("_cached_at") == true) scope.launch { listState.scrollToItem(0); reload++ } else operation { refreshBoard(selection) }
-                    }) { Text("刷新") }
+
                 }
                 Text(if (selection.local) "仅统计自己的书库与评分 · 总榜" else "${NOVEL_RANKING_PERIODS[selection.period]} · 保留来源原始排名与指标",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -231,6 +235,9 @@ import org.json.JSONObject
             }
         }
     }
+    if (choosing) NovelRankingPicker(boards, selection, { choosing = false }) { chosen ->
+        provider = chosen.provider; kind = chosen.kind; boardKey = chosen.key; period = chosen.period; category = chosen.category; choosing = false
+    }
     if (sourceEditor) RankingSourceSheet(working, error, onDismiss = { sourceEditor = false }, onSave = { body -> operation {
         val result = repository.mutate(connection, listOf("rankings", "websites"), "POST", body)
         index = repository.get(connection, listOf("rankings"))
@@ -264,6 +271,35 @@ import org.json.JSONObject
             item { Button(enabled = !busy && values["name"].orEmpty().isNotBlank() && values["base_url"].orEmpty().isNotBlank() &&
                 NOVEL_RANKING_PERIODS.keys.any { values[it].orEmpty().isNotBlank() }, onClick = { onSave(JSONObject(values.toMap()).put("template", template)) },
                 modifier = Modifier.fillMaxWidth()) { Text(if (busy) "正在保存…" else "保存榜单来源") } }
+        }
+    }
+}
+
+@Composable internal fun NovelRankingPicker(boards: List<NovelRankingBoard>, selected: NovelRankingSelection,
+    onDismiss: () -> Unit, onSelect: (NovelRankingSelection) -> Unit) {
+    var query by remember { mutableStateOf("") }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight(.85f).imePadding()) {
+            Text("选择排行榜", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.titleLarge)
+            OutlinedTextField(query, { query = it.take(100) }, Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                singleLine = true, label = { Text("查找来源、榜名或分类") })
+            LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val matches = boards.filter { (it.providerName + " " + it.name + " " + it.category + " " + NOVEL_RANKING_PERIODS[it.period]).contains(query.trim(), true) }
+                items(matches, key = { it.providerId + ":" + it.key }) { board ->
+                    OutlinedCard(onClick = { onSelect(NovelRankingSelection(provider = board.providerId, key = board.key, period = board.period)) }, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(board.name + if (selected.provider == board.providerId && selected.key == board.key) " · 当前" else "", style = MaterialTheme.typography.titleSmall)
+                            Text(listOf(board.providerName, NOVEL_RANKING_PERIODS[board.period].orEmpty(), board.category).filter(String::isNotBlank).joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                items(NOVEL_LOCAL_RANKINGS.toList().filter { ("我的书库 " + it.second).contains(query.trim(), true) }, key = { "local:" + it.first }) { (kind, name) ->
+                    OutlinedCard(onClick = { onSelect(NovelRankingSelection(kind = kind)) }, modifier = Modifier.fillMaxWidth()) {
+                        Text("我的书库 · $name${if (selected.local && selected.kind == kind) " · 当前" else ""}", Modifier.padding(16.dp))
+                    }
+                }
+                if (matches.isEmpty() && query.isNotBlank()) item { Text("没有匹配的外站榜单，试试来源名称或其他关键词。") }
+            }
         }
     }
 }
