@@ -5,6 +5,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import com.shadow.media.library.SearchText
 
 internal data class NativeSearchEntry(
     val assetId: String,
@@ -25,7 +26,7 @@ internal data class NativeSearchResult(
 
 internal fun searchNativeText(entries: List<NativeSearchEntry>, query: String, limit: Int = 200, before: Pair<Int, Int>? = null) = flow {
     require(limit > 0)
-    val term = query.trim()
+    val term = SearchText.fold(query.trim())
     val hits = mutableListOf<NativeSearchHit>()
     var scanned = 0
     var skipped = 0
@@ -39,7 +40,8 @@ internal fun searchNativeText(entries: List<NativeSearchEntry>, query: String, l
         if (content != null) {
             val searchable = if (before != null && entry.ref.ordinal == before.first)
                 content.text.take(safeTextOffset(content.text, before.second)) else content.text
-            var index = if (before == null) searchable.indexOf(term, ignoreCase = true) else searchable.lastIndexOf(term, ignoreCase = true)
+            val folded = SearchText.fold(searchable)
+            var index = if (before == null) folded.indexOf(term, ignoreCase = true) else folded.lastIndexOf(term, ignoreCase = true)
             while (index >= 0) {
                 currentCoroutineContext().ensureActive()
                 val start = safeTextOffset(searchable, (index - 20).coerceAtLeast(0))
@@ -49,7 +51,7 @@ internal fun searchNativeText(entries: List<NativeSearchEntry>, query: String, l
                     emit(NativeSearchResult(hits.toList(), scanned + 1, selected.size, skipped, complete = true, limited = true))
                     return@flow
                 }
-                index = if (before == null) searchable.indexOf(term, index + term.length, ignoreCase = true) else if (index == 0) -1 else searchable.lastIndexOf(term, index - 1, ignoreCase = true)
+                index = if (before == null) folded.indexOf(term, index + term.length, ignoreCase = true) else if (index == 0) -1 else folded.lastIndexOf(term, index - 1, ignoreCase = true)
             }
         }
         scanned++

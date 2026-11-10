@@ -38,7 +38,7 @@ internal fun NovelDownloadPanel(repository: NovelRepository, connection: Catalog
             Column(Modifier.padding(20.dp)) {
                 OutlinedTextField(chapterQuery, { chapterQuery = it }, label = { Text("查找章节") }, singleLine = true)
                 androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                    val chapters = directory?.novelObjects("items").orEmpty().filter { it.optBoolean("readable") && it.optString("title").contains(chapterQuery, true) }
+                    val chapters = directory?.novelObjects("items").orEmpty().filter { it.optBoolean("readable") && SearchText.contains(it.optString("title"), chapterQuery) }
                     items(chapters.size) { index -> val chapter = chapters[index]
                         TextButton(onClick = { if (target == "start") start = (chapter.getInt("ordinal") + 1).toString() else end = (chapter.getInt("ordinal") + 1).toString(); choosing = null }) { Text(chapter.optString("title")) }
                     }

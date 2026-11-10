@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -13,6 +14,8 @@ import com.shadow.media.database.NovelPublicationEntity
 import com.shadow.media.library.*
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.*
 import org.json.JSONObject
 import org.junit.*
@@ -49,6 +52,39 @@ class NovelReaderToolsUiTest {
                 Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888).also { view.draw(Canvas(it)) } }
             File(path).mkdirs(); File(path, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }; bitmap.recycle()
         }
+    }
+
+    @Test fun reopeningSourcesKeepsRemoteRowsAndStableScrollWhileRefreshFails() {
+        var shown by mutableStateOf(true)
+        var failRefresh = false
+        val versions = (1..40).joinToString(",") { """{"id":"v$it","state":"ready","label":"来源 $it"}""" }
+        handler = { request -> if (request.path == "/api/v1/works/work") {
+            if (failRefresh) MockResponse().setResponseCode(503).setBody("{}").setBodyDelay(1, TimeUnit.SECONDS)
+            else json("""{"id":"work","versions":[$versions]}""")
+        } else json("{}") }
+        val repo = repository(); val state = NovelReaderSourceState(); val pub = publication()
+        compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize()) {
+            if (shown) NovelReaderSourcesPanel(repo, pub, "示例小说", "当前章", true, state) { _, _ -> }
+        } } } }
+        compose.waitUntil(10_000) { state.catalogs[pub.scope to pub.workId]?.versions?.size == 40 }
+        val catalog = state.catalogs.getValue(pub.scope to pub.workId)
+        compose.runOnIdle { runBlocking { catalog.list.scrollToItem(20, 7) } }
+        val initialKey = compose.runOnIdle { catalog.list.layoutInfo.visibleItemsInfo.first().key }
+        compose.onNodeWithText("来源 20").performClick()
+        waitText("返回书源列表")
+        compose.onNodeWithText("返回书源列表").performClick()
+        compose.waitForIdle()
+        assertEquals(initialKey, compose.runOnIdle { catalog.list.layoutInfo.visibleItemsInfo.first().key })
+        compose.runOnIdle { shown = false; failRefresh = true }
+        compose.waitForIdle()
+        compose.runOnIdle { shown = true }
+        compose.waitForIdle()
+        assertEquals(40, compose.runOnIdle { catalog.versions.size })
+        assertEquals(initialKey, compose.runOnIdle { catalog.list.layoutInfo.visibleItemsInfo.first().key })
+        waitText("HTTP 503")
+        assertEquals(40, compose.runOnIdle { catalog.versions.size })
+        assertEquals(initialKey, compose.runOnIdle { catalog.list.layoutInfo.visibleItemsInfo.first().key })
+        assertFalse(requests.any { it.first.contains("progress") && it.second.isNotBlank() })
     }
 
     @Test fun readingShortcutsAreAvailableDirectlyInTheHeader() {

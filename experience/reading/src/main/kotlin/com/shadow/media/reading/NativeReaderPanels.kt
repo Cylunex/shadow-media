@@ -90,7 +90,7 @@ internal fun ColumnScope.NativeContentsBody(
     var more by remember { mutableStateOf(false) }
     val focus = LocalFocusManager.current
     val listState = rememberLazyListState()
-    val visible = remember(entries, allEntries, filter) { if (filter.isBlank()) entries else allEntries.filter { it.title.contains(filter.trim(), ignoreCase = true) } }
+    val visible = remember(entries, allEntries, filter) { if (filter.isBlank()) entries else allEntries.filter { SearchText.contains(it.title, filter) } }
     val target = number.toIntOrNull()?.takeIf { it in 1..total }
     var needsPosition by rememberSaveable(requested, filter) { mutableStateOf(true) }
     fun locate(ordinal: Int) { filter = ""; focus.clearFocus(); onRequest(ordinal); needsPosition = true }
@@ -241,9 +241,10 @@ internal fun ColumnScope.NativeSearchBody(query: String, result: NativeSearchRes
                         Text(hit.title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(buildAnnotatedString {
                             var from = 0
-                            val term = query.trim()
+                            val term = SearchText.fold(query.trim())
+                            val folded = SearchText.fold(hit.preview)
                             if (term.isNotEmpty()) while (from < hit.preview.length) {
-                                val match = hit.preview.indexOf(term, from, ignoreCase = true)
+                                val match = folded.indexOf(term, from, ignoreCase = true)
                                 if (match < 0) break
                                 append(hit.preview.substring(from, match))
                                 withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)) { append(hit.preview.substring(match, match + term.length)) }

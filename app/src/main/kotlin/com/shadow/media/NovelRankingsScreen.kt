@@ -1,6 +1,8 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package com.shadow.media
 
+import com.shadow.media.reading.ReaderModalBottomSheet
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -278,8 +280,8 @@ import org.json.JSONObject
 @Composable internal fun NovelRankingPicker(boards: List<NovelRankingBoard>, selected: NovelRankingSelection,
     onDismiss: () -> Unit, onSelect: (NovelRankingSelection) -> Unit) {
     var query by remember { mutableStateOf("") }
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.fillMaxWidth().fillMaxHeight(.85f).imePadding()) {
+    ReaderModalBottomSheet(onDismissRequest = onDismiss, heightFraction = .85f) {
+        Column(Modifier.fillMaxSize()) {
             Text("选择排行榜", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.titleLarge)
             OutlinedTextField(query, { query = it.take(100) }, Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                 singleLine = true, label = { Text("查找来源、榜名或分类") })

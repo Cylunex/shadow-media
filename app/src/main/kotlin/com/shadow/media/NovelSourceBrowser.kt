@@ -54,7 +54,7 @@ internal class NovelBrowserState(initial: String = "") {
         val result = job.optJSONObject("result") ?: return
         val updates = result.novelObjects("sources")
         rows = (baseRows + result.novelObjects("items")).associateBy(::novelResultKey).values.toList()
-            .sortedByDescending { row -> searchOptions.precise && listOf("name", "author", "kind").any { row.optString(it).equals(submitted, true) } }
+            .sortedByDescending { row -> searchOptions.precise && listOf("name", "author", "kind").any { SearchText.fold(row.optString(it)).equals(SearchText.fold(submitted), true) } }
         sources = baseSources.filterNot { old -> updates.any { it.optString("provider_id") == old.optString("provider_id") } } + updates
         val unfinished = jobIds.filterNot { id -> updates.any { it.optString("provider_id") == id } }
         pendingIds = if (searchJobState == "succeeded") emptyList() else unfinished
@@ -266,7 +266,7 @@ internal class NovelBrowserState(initial: String = "") {
     }
     BackHandler(state.detail != null || state.explore && state.entry != null) { state.backWithinBrowser() }
     Column(Modifier.fillMaxSize()) {
-        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        Box(Modifier.fillMaxWidth().height(4.dp)) { if (busy) LinearProgressIndicator(Modifier.fillMaxWidth()) }
         if (state.explore && state.entry != null) Surface(tonalElevation = 2.dp) {
             FlowRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
                 TextButton(enabled = !busy, onClick = { state.backWithinBrowser() }) { Text("返回栏目") }

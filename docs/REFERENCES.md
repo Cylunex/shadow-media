@@ -1,5 +1,8 @@
 # 参考实现与取舍
 
+十一月新增 FnReader、yyx-library、Registrum、Bookshelf、Lumi Books 与 LocalReader 的取舍、
+简繁检索字表声明和书源面板修复见[阅读检索与书源面板改进](READING_RESEARCH_2026_11_10.md)。
+
 本项目优先使用 AndroidX Media3 官方 API 和示例。以下项目只用于比较交互与生命周期方案，
 除单独声明的 ISO 后端外，没有复制其源码：
 

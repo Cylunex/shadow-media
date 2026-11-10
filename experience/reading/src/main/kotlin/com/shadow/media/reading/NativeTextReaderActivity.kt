@@ -542,14 +542,14 @@ class NativeTextReaderActivity : ComponentActivity() {
                     .navigationBarsPadding().padding(12.dp))
             }
             val browsingContents = panel == "目录" || (panel == "书源" && sourceState.selectedVersion != null)
-            if (panel != null) ModalBottomSheet(
-                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            if (panel != null) ReaderModalBottomSheet(
+                heightFraction = if (panel == "排版") .58f else .92f,
                 sheetGesturesEnabled = !browsingContents,
                 dragHandle = if (browsingContents) null else ({ BottomSheetDefaults.DragHandle() }),
                 onDismissRequest = { panel = null; applyWindow() },
             ) {
-                Box {
-                    Column(Modifier.fillMaxWidth().fillMaxHeight(if (panel == "排版") .58f else .92f).padding(horizontal = 20.dp).navigationBarsPadding().imePadding()) {
+                Box(Modifier.fillMaxSize()) {
+                    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
                         Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(panel.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                             IconButton(onClick = { panel = null; applyWindow() }) { Icon(Icons.Rounded.Close, "关闭面板") }
@@ -604,12 +604,11 @@ class NativeTextReaderActivity : ComponentActivity() {
                             }
                         }
                         Spacer(Modifier.height(8.dp))
-                        if (!browsingContents) SnackbarHost(snackbar)
                     }
                     // Transient feedback must not resize the chapter list under the reader’s finger.
-                    if (browsingContents) SnackbarHost(snackbar, Modifier.align(Alignment.TopStart).padding(start = 12.dp, end = 72.dp))
+                    SnackbarHost(snackbar, Modifier.align(Alignment.TopStart).padding(start = 12.dp, end = 72.dp))
                     if (acquiring) ReaderChapterLoading(onCancel = { navigationJob?.cancel() },
-                        modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding().padding(12.dp))
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp))
                 }
             }
             excerpt?.let { (text, position) -> AlertDialog(onDismissRequest = { excerpt = null }, title = { Text("摘录") }, text = { androidx.compose.foundation.text.selection.SelectionContainer { Text(if (text.length > 1000) "最多保存 1000 字，请返回缩短选区。\n\n$text" else text) } },

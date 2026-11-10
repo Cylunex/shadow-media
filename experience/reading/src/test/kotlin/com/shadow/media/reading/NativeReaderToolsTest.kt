@@ -16,6 +16,20 @@ class NativeReaderToolsTest {
         NativeChapterRef("c$index", "第 $index 章", index, "chapters/c$index.xhtml"), text, "v1", 5_000)
     private fun location(index: Int, offset: Int = 0) = NativeReaderLocation("window-$index", chapter(index, "正文".repeat(100)).locator(offset).toString())
 
+    @Test fun chineseSearchAndBackwardSearchKeepOriginalTextAndUtf16Locator() = runBlocking {
+        val text = "𠀀😀前言 龍門ＡＢＣ 歸來，龙门abc 再現"
+        val content = chapter(0, text)
+        val entries = listOf(NativeSearchEntry("a", content.ref) { content })
+        val forward = searchNativeText(entries, "龙门abc").last().hits
+        assertEquals(2, forward.size)
+        assertEquals(text.indexOf("龍門"), content.restore(JSONObject(forward[0].locator)))
+        assertEquals(text.indexOf("龙门"), content.restore(JSONObject(forward[1].locator)))
+        assertTrue(forward[0].preview.contains("龍門ＡＢＣ"))
+        val backward = searchNativeText(entries, "龍門ＡＢＣ", before = 0 to text.indexOf("再現")).last().hits
+        assertEquals(forward.map { it.locator }.reversed(), backward.map { it.locator })
+        assertEquals(text, content.text)
+    }
+
     @Test fun searchStopsLoadingChaptersAtTheResultLimitAndKeepsExactUnicodeAnchors() = runBlocking {
         val text = "𠀀😀开始" + "找到了𠀀".repeat(300)
         var loads = 0
