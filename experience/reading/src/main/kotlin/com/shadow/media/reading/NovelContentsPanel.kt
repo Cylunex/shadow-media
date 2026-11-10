@@ -41,14 +41,18 @@ fun NovelContentsPanel(
     currentId: String? = null, currentOrdinal: Int? = null,
     downloadedChapters: suspend () -> List<JSONObject> = { emptyList() },
     contentScope: String? = connection?.let(::novelScope),
+    retainedPages: MutableMap<Pair<NovelContentsQuery, String?>, JSONObject>? = null,
+    currentLabel: String = "正在阅读",
 ) {
     key(connection?.id, workId, versionId) {
         var term by rememberSaveable { mutableStateOf("") }
         var descending by rememberSaveable { mutableStateOf(false) }
         var offset by rememberSaveable { mutableIntStateOf((currentOrdinal ?: 0).coerceAtLeast(0) / 100 * 100) }
         var anchorId by rememberSaveable { mutableStateOf(currentId) }
+        var positionInitialized by rememberSaveable { mutableStateOf(currentId != null) }
         val query = NovelContentsQuery(versionId, term, descending, offset)
-        var page by remember(query, anchorId) { mutableStateOf<JSONObject?>(null) }
+        val pageKey = query to anchorId
+        var page by remember(pageKey) { mutableStateOf<JSONObject?>(retainedPages?.get(pageKey)) }
         var downloaded by remember { mutableStateOf<Set<String>>(emptySet()) }
         var loading by remember(query, anchorId) { mutableStateOf(true) }
         var error by remember(query, anchorId) { mutableStateOf<String?>(null) }
@@ -61,6 +65,9 @@ fun NovelContentsPanel(
             }
             downloaded = cached.map { it.getString("id") }.toSet()
         }
+        LaunchedEffect(currentId) {
+            if (!positionInitialized && currentId != null) { anchorId = currentId; positionInitialized = true }
+        }
         LaunchedEffect(query, retry, anchorId) {
             loading = true; error = null
             try {
@@ -69,7 +76,7 @@ fun NovelContentsPanel(
                 }
                 try {
                     requireNotNull(connection) { "连接已移除" }
-                    page = repository.get(connection, listOf("works", workId, "contents"), query.parameters()).also {
+                    page = repository.get(connection, listOf("works", workId, "contents"), query.parameters() + listOfNotNull(anchorId?.let { "anchor_id" to it })).also {
                         require(it.optString("version_id") == versionId) { "目录版本已变化，请返回作品重新选择" }
                     }
                 } catch (e: CancellationException) { throw e }
@@ -83,7 +90,11 @@ fun NovelContentsPanel(
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { error = e.message ?: "目录加载失败，请重试" }
-            finally { loading = false }
+            finally {
+                page?.let { retainedPages?.put(pageKey, it) }
+                if (retainedPages != null && retainedPages.size > 12) retainedPages.keys.firstOrNull { it != pageKey }?.let(retainedPages::remove)
+                loading = false
+            }
         }
         Column(modifier) {
             if (contentScope != null) {
@@ -106,7 +117,7 @@ fun NovelContentsPanel(
                     val chapter = page?.novelObjects("items")?.firstOrNull { it.optString("id") == id }
                         ?: page?.optJSONObject("latest")?.takeIf { it.optString("id") == id }
                     chapter?.let(onOpen)
-                })
+                }, currentLabel = currentLabel)
         }
     }
 }
@@ -116,6 +127,7 @@ internal fun ColumnScope.NovelContentsBody(
     query: NovelContentsQuery, page: JSONObject?, loading: Boolean, error: String?, downloaded: Set<String>,
     currentId: String?, currentOrdinal: Int?, enabled: Boolean,
     onQuery: (NovelContentsQuery, ContentsPosition) -> Unit, onRetry: () -> Unit, onOpen: (String) -> Unit,
+    currentLabel: String = "正在阅读",
 ) {
     var draft by rememberSaveable(query.q) { mutableStateOf(query.q) }
     var jump by rememberSaveable { mutableStateOf(false) }
@@ -148,7 +160,7 @@ internal fun ColumnScope.NovelContentsBody(
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(if (localOnly) "已下载 · $total 节" else if (query.q.isNotBlank()) "找到 $total 节" else "共 $total 节",
             Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (currentOrdinal != null) TextButton(onClick = { draft = ""; navigate(query.locate(currentOrdinal), ContentsPosition.CURRENT_CHAPTER) }) { Text("当前章") }
+        if (currentOrdinal != null || currentId != null) TextButton(onClick = { draft = ""; navigate(query.locate(currentOrdinal ?: 0), ContentsPosition.CURRENT_CHAPTER) }) { Text("当前章") }
         TextButton(onClick = { navigate(query.reverse()) }) { Text(if (query.descending) "倒序" else "正序") }
         Box {
             IconButton(onClick = { more = true }) { Icon(Icons.Rounded.MoreVert, "更多目录操作") }
@@ -200,7 +212,7 @@ internal fun ColumnScope.NovelContentsBody(
                         }
                         Text(entry.optString("title"), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
                         if (missingDownload) Text("本机缓存已移除", style = MaterialTheme.typography.labelSmall)
-                        else if (active || !readable) Text(if (active) "正在阅读" else "卷标题", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        else if (active || !readable) Text(if (active) currentLabel else "卷标题", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                     }
                     if (id in downloaded) Icon(Icons.Rounded.OfflinePin, "已下载", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }

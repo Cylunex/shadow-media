@@ -28,6 +28,21 @@ class NovelToolsContractTest {
         assertEquals("星河", body.getString("q"))
         assertEquals(3, novelSourceNextPage(result.getJSONObject("result").novelObjects("sources").single(), true))
     }
+    @Test fun searchScopeIntersectsUsableBrowserAndAndTagSelectionWithoutExpandingEmptyScope() = server { s ->
+        val browser = """{"items":[{"id":"a"},{"id":"b"},{"id":"b"}]}"""
+        s.enqueue(MockResponse().setBody(browser)); s.enqueue(MockResponse().setBody("""{"provider_ids":["b","disabled"]}"""))
+        val search = NovelSourceSearch(NovelApi())
+        val filter = NovelSourceFilter(groups = listOf("g1", "g2"), tags = listOf("稳定", "快速"), enabled = "true", capability = "search")
+        assertEquals(listOf("b"), search.scope(connection(s), filter))
+        assertEquals(listOf("g1", "g2"), s.takeRequest().requestUrl!!.queryParameterValues("group_id"))
+        val selected = s.takeRequest().requestUrl!!
+        assertEquals(listOf("稳定", "快速"), selected.queryParameterValues("tag"))
+        assertEquals("true", selected.queryParameter("enabled"))
+        s.enqueue(MockResponse().setBody(browser)); s.enqueue(MockResponse().setBody("""{"provider_ids":[]}"""))
+        assertTrue(search.scope(connection(s), filter).isEmpty())
+        assertEquals(4, s.requestCount)
+    }
+
     @Test fun paginationDoesNotConfuseEmptyMatchesWithEndOrFailedPage() {
         assertEquals(2, novelSourceNextPage(JSONObject("""{"ok":true,"page":1,"raw_count":5,"count":0}"""), true))
         assertNull(novelSourceNextPage(JSONObject("""{"ok":false,"page":1,"raw_count":5}"""), true))

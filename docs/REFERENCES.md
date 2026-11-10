@@ -53,3 +53,7 @@ Emby/MediaWarp/115 链路完成兼容性与资源占用采样后，再决定是�
 
 阅读部分另见 [沉浸阅读与交互](READING_EXPERIENCE.md)：参考 Legado、Readest、KOReader、
 android-pagecurl 与 Readium 的公开交互/API，独立实现主题、手势、菜单和 Canvas 翻页。
+
+阅读换源的固定源码、许可证、采用机制与未采用行为见
+[换源范围与会话保留](SOURCE_SWITCHING_2026_11_10.md)：新增 hadc188/reader（MIT），
+复核 FnReader（Apache-2.0）、LNReader（MIT）；保留独立实现与进度边界。

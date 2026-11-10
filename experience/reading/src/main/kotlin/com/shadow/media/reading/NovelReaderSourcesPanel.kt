@@ -7,7 +7,10 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.activity.compose.BackHandler
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.SaveableStateHolder
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.shadow.media.database.NovelPublicationEntity
@@ -18,16 +21,25 @@ import org.json.JSONObject
 
 /** Retained by the reader while the sheet is closed; source URLs never leave memory. */
 internal class NovelReaderSourceState {
+    var contentsHolder: SaveableStateHolder? = null
+    val contentsPages = mutableMapOf<String, MutableMap<Pair<NovelContentsQuery, String?>, JSONObject>>()
     val catalogs = mutableMapOf<Pair<String, String>, NovelReaderSourceCatalog>()
     var autoReceipts by mutableStateOf<Map<String, JSONObject>>(emptyMap())
     var autoFailures by mutableStateOf<Map<String, String>>(emptyMap())
     var autoRetry by mutableIntStateOf(0)
     var matchingOnly by mutableStateOf(false)
+    var filter by mutableStateOf(NovelSourceFilter(enabled = "true", capability = "search"))
+    var scopeLoaded = false
+    var scopeCatalog by mutableStateOf<JSONObject?>(null)
+    var searchOptions: NovelSearchOptions? = null
+    var searchCandidates: List<String>? = null
+    var submittedScope by mutableStateOf("")
     var query by mutableStateOf("")
     var submitted by mutableStateOf("")
     var jobId by mutableStateOf<String?>(null)
     var jobState by mutableStateOf("")
     val searchRunning get() = jobId != null && jobState !in setOf("succeeded", "failed", "cancelled")
+    var previousResult by mutableStateOf<JSONObject?>(null)
     var result by mutableStateOf<JSONObject?>(null)
     var searchBase: JSONObject? = null
     var selectedVersion by mutableStateOf<String?>(null)
@@ -42,8 +54,14 @@ internal class NovelReaderSourceCatalog {
 
 @Composable
 internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, publication: NovelPublicationEntity,
-    title: String, currentTitle: String, enabled: Boolean, state: NovelReaderSourceState, onOpen: (String, String?) -> Unit) {
+    title: String, currentTitle: String, enabled: Boolean, state: NovelReaderSourceState,
+    currentChapterId: String? = null, currentOrdinal: Int? = null, onOpen: (String, String?) -> Unit) {
     val coroutine = rememberCoroutineScope()
+    val newHolder = rememberSaveableStateHolder()
+    val contentsHolder = state.contentsHolder ?: newHolder.also { state.contentsHolder = it }
+    val context = LocalContext.current
+    val scopeStore = remember(context) { NovelSourceScopeStore(context) }
+    var showScope by remember { mutableStateOf(false) }
     val catalog = remember(state, publication.scope, publication.workId) {
         state.catalogs.getOrPut(publication.scope to publication.workId) { NovelReaderSourceCatalog() }
     }
@@ -62,6 +80,9 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
     var stopping by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<String?>(null) }
     var recommendation by remember(state.selectedVersion) { mutableStateOf<JSONObject?>(null) }
+    var locating by remember(state.selectedVersion) { mutableStateOf(false) }
+    var locateError by remember(state.selectedVersion) { mutableStateOf<String?>(null) }
+    var locateRetry by remember { mutableIntStateOf(0) }
     val online = c != null && !LibraryResources.offlineOnly
     suspend fun load() {
         val cached = repository.dao.publications(publication.scope).filter { it.workId == publication.workId }.distinctBy { it.versionId }
@@ -90,7 +111,15 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
     }
     fun update(job: JSONObject) {
         state.jobState = job.optString("state")
-        job.optJSONObject("result")?.let { state.result = mergeNovelSourceRetry(state.searchBase, it) }
+        job.optJSONObject("result")?.let {
+            if (it.novelObjects("items").isNotEmpty() || state.jobState == "succeeded") state.previousResult = null
+            state.result = mergeNovelSourceRetry(state.searchBase, it).also { merged ->
+                state.searchCandidates?.let { candidates ->
+                    val completed = merged.novelObjects("sources").mapNotNull { row -> row.novelId("provider_id") }.toSet()
+                    merged.put("remaining", candidates.count { id -> id !in completed })
+                }
+            }
+        }
     }
     fun runSearch(stop: Boolean = false, block: suspend ((JSONObject) -> Unit) -> Unit) {
         searchAction?.cancel()
@@ -108,17 +137,42 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
     }
     fun searchSources(providerIds: List<String>? = null, more: Boolean = false) = runSearch { receive ->
         val connection = requireNotNull(c)
-        if (state.searchRunning) repository.sourceSearch.cancel(connection, requireNotNull(state.jobId))
+        val fresh = providerIds == null && !more
+        val requestedFilter = state.filter
+        val scopeLabel = novelReaderScopeLabel(requestedFilter, state.scopeCatalog)
         val features = repository.sourceSearch.features(connection)
-        if (providerIds == null && !more) state.submitted = state.query.trim()
-        state.searchBase = state.result.takeIf { providerIds != null || more }
-        state.result = state.searchBase; state.jobId = null; state.jobState = ""
-        if (features.autoBind && providerIds == null && !more) state.autoReceipts = emptyMap()
-        repository.sourceSearch.search(connection, state.submitted,
-            NovelSearchOptions(mode = if (features.searchModes) { if (providerIds == null) "auto" else "all" } else null,
-                providerIds = providerIds, excludeIds = if (more) state.searchBase?.novelObjects("sources").orEmpty().mapNotNull { it.novelId("provider_id") }.distinct() else emptyList(), workId = publication.workId.takeIf { features.autoBind }),
-            onJob = { state.jobId = it; state.jobState = "queued" }, onUpdate = receive)
+        val options = if (fresh) NovelSearchOptions(groups = requestedFilter.groups,
+            mode = "auto".takeIf { features.searchModes }, workId = publication.workId.takeIf { features.autoBind })
+            else state.searchOptions ?: NovelSearchOptions(mode = "auto".takeIf { features.searchModes }, workId = publication.workId.takeIf { features.autoBind })
+        // Resolve tags through the same selection API as the source browser. Never treat an empty scope as all sources.
+        val candidates = if (fresh) repository.sourceSearch.scope(connection, requestedFilter) else state.searchCandidates
+        val completed = state.result?.novelObjects("sources").orEmpty().mapNotNull { it.novelId("provider_id") }.toSet()
+        val requested = providerIds ?: candidates?.filter { fresh || it !in completed }
+        require(requested == null || requested.isNotEmpty()) { "当前范围没有可搜索书源，请调整标签或分组" }
+        val batch = if (options.mode == null) requested?.take(options.limit) else requested
+        val keyword = if (fresh) state.query.trim() else state.submitted
+        val base = state.result.takeUnless { fresh }
+        if (state.searchRunning) repository.sourceSearch.cancel(connection, requireNotNull(state.jobId))
+        repository.sourceSearch.search(connection, keyword,
+            options.copy(mode = if (providerIds != null && options.mode != null) "all" else options.mode,
+                providerIds = batch, excludeIds = if (more && batch == null) completed.toList() else emptyList()),
+            onJob = {
+                state.submitted = keyword
+                state.searchOptions = options; state.searchCandidates = candidates
+                if (fresh) { state.submittedScope = scopeLabel; state.autoReceipts = emptyMap() }
+                if (fresh) state.previousResult = state.result
+                state.searchBase = base; state.result = base
+                state.jobId = it; state.jobState = "queued"
+            }, onUpdate = receive)
     }
+
+    fun retrySearch() {
+        if (state.searchRunning) { resumeSearch(); return }
+        val statuses = state.result?.novelObjects("sources").orEmpty().associateBy { it.optString("provider_id") }
+        val ids = state.searchCandidates?.filter { id -> statuses[id]?.let(::novelSourceNeedsRetry) != false }
+        if (!ids.isNullOrEmpty()) searchSources(ids) else searchSources()
+    }
+
     fun stopSearch() = runSearch(stop = true) { receive ->
         val connection = requireNotNull(c); val id = requireNotNull(state.jobId)
         receive(repository.sourceSearch.cancel(connection, id))
@@ -126,6 +180,10 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
         notice = if (state.jobState == "cancelled") "搜索已停止，已返回结果保留" else "搜索已完成，结果已保留"
     }
     LaunchedEffect(publication.scope, publication.workId) {
+        if (!state.scopeLoaded) {
+            c?.let { scopeStore.load("${it.id}:reader")?.let { saved -> state.filter = saved.filter } }
+            state.scopeLoaded = true
+        }
         if (state.query.isBlank()) state.query = title
         try { load() }
         catch (e: CancellationException) { throw e }
@@ -157,16 +215,25 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
         }
     }
     DisposableEffect(state) { onDispose { action?.cancel(); searchGeneration++; searchAction?.cancel() } }
-    LaunchedEffect(state.selectedVersion, currentTitle) {
-        recommendation = null
+    LaunchedEffect(state.selectedVersion, currentTitle, locateRetry) {
+        recommendation = null; locateError = null; locating = false
         val version = state.selectedVersion ?: return@LaunchedEffect
         if (version == publication.versionId || currentTitle.isBlank()) return@LaunchedEffect
+        locating = online
         try {
             if (online && c != null) {
                 recommendation = repository.get(c, listOf("works", publication.workId, "open"), listOf("version_id" to version, "compact" to "true"))
             }
-        } catch (e: CancellationException) { throw e } catch (_: Exception) { /* Explicit TOC selection remains available. */ }
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { locateError = "暂未定位当前章，可从目录选章。" }
+        finally { locating = false }
     }
+    if (showScope && c != null) NovelReaderSourceScope(repository, c, state.filter, state.scopeCatalog,
+        onCatalog = { state.scopeCatalog = it }, onDismiss = { showScope = false }, onApply = { filter ->
+            state.filter = filter
+            scopeStore.save("${c.id}:reader", NovelSavedSourceScope(filter, emptySet()))
+            showScope = false
+        })
     Column(Modifier.fillMaxWidth().height(48.dp)) {
         Box(Modifier.fillMaxWidth().height(4.dp)) {
             if (busy || searching) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -179,7 +246,7 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
         TextButton(onClick = { state.selectedVersion = null }) { Text("返回书源列表") }
         Text(versions.firstOrNull { it.getString("id") == version }?.optString("label") ?: "所选来源", style = MaterialTheme.typography.titleSmall)
         Row {
-            TextButton(enabled = enabled && !busy, onClick = { onOpen(version, null) }) { Text("续读此来源") }
+            TextButton(enabled = enabled && !busy && !locating && recommendation?.optString("quality") != "needs_selection", onClick = { onOpen(version, null) }) { Text("续读此来源") }
             recommendation?.let { opening ->
                 val position = opening.optJSONObject("position")
                 val label = when (opening.optString("mapping_basis")) {
@@ -195,10 +262,26 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
                 if (opening.optString("quality") == "needs_selection") Text("此来源章节无法唯一定位，请从目录选择。", style = MaterialTheme.typography.bodySmall)
             }
         }
+        if (locating) Text("正在定位当前章，目录可先浏览。", style = MaterialTheme.typography.bodySmall)
+        locateError?.let { TextButton(onClick = { locateRetry++ }) { Text("$it 重试定位") } }
         Text("也可从目录选择章节。换源后可返回原位置。", style = MaterialTheme.typography.bodySmall)
-        NovelContentsPanel(repository, c, publication.workId, version, enabled && !busy,
-            onOpen = { onOpen(version, it.getString("id")) }, modifier = Modifier.weight(1f), contentScope = publication.scope)
+        val position = recommendation?.optJSONObject("position")
+        val locatedId = if (version == publication.versionId) currentChapterId else position?.novelId("chapter_id")
+        val locatedOrdinal = if (version == publication.versionId) currentOrdinal else recommendation?.takeIf { locatedId != null && it.has("chapter_ordinal") && !it.isNull("chapter_ordinal") }?.optInt("chapter_ordinal")
+        contentsHolder.SaveableStateProvider(version) {
+            NovelContentsPanel(repository, c, publication.workId, version, enabled && !busy,
+                onOpen = { onOpen(version, it.getString("id")) }, modifier = Modifier.weight(1f), contentScope = publication.scope,
+                currentId = locatedId, currentOrdinal = locatedOrdinal,
+                currentLabel = if (version == publication.versionId) "正在阅读" else "对应阅读位置",
+                retainedPages = state.contentsPages.getOrPut(version) { linkedMapOf() })
+        }
         return
+    }
+    Row(Modifier.fillMaxWidth()) {
+        TextButton(enabled = online, modifier = Modifier.weight(1f), onClick = { showScope = true }) {
+            Text("搜索范围 · ${novelReaderScopeLabel(state.filter, state.scopeCatalog)}", maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        TextButton(onClick = { coroutine.launch { list.scrollToItem(versions.size + 1) } }) { Text("在线搜索") }
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         val remaining = state.result?.optInt("remaining", 0) ?: 0
@@ -207,9 +290,10 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
         if (searching && state.searchRunning) TextButton(enabled = !stopping, onClick = ::stopSearch) { Text(if (stopping) "正在停止" else "停止搜索") }
         TextButton(onClick = { coroutine.launch { list.scrollToItem(0) } }) { Text("回到顶部") }
     }
+    val visibleResult = state.previousResult ?: state.result
     LazyColumn(Modifier.weight(1f), state = list, verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
         item(key = "versions-header") {
-            Text("切换阅读书源", style = MaterialTheme.typography.titleMedium)
+            Text("已关联来源 · ${versions.size}", style = MaterialTheme.typography.titleMedium)
             val binding = versions.firstOrNull { it.getString("id") == publication.versionId }?.novelId("binding_id")
             if (binding != null) TextButton(enabled = online && enabled && !busy, onClick = { execute {
                 val connection = requireNotNull(c)
@@ -231,10 +315,14 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
             Text("搜索其他书源", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
             Text("书名和作者一致的来源自动关联，选择后再切换阅读。", style = MaterialTheme.typography.bodySmall)
             FilterChip(state.matchingOnly, { state.matchingOnly = !state.matchingOnly }, label = { Text("只看同名同作者") })
+            Text("标签和分组决定搜索范围；同名同作者只筛选结果，不扩大关联条件。", style = MaterialTheme.typography.bodySmall)
+            if (state.submitted.isNotBlank()) Text("当前结果：${state.submitted} · ${state.submittedScope.ifBlank { "原搜索范围" }}；修改范围后重新搜索生效。", style = MaterialTheme.typography.labelSmall)
+            if (state.previousResult != null) Text(if (searching || state.searchRunning) "等待本次搜索结果，暂显上次结果。" else "本次暂无新结果，保留上次结果。", style = MaterialTheme.typography.bodySmall)
             if (searching) Text("正在搜索，可直接选择已找到的来源。", style = MaterialTheme.typography.bodySmall)
             if (state.autoReceipts.isNotEmpty()) Text("已自动关联 ${state.autoReceipts.size} 个来源", style = MaterialTheme.typography.labelSmall)
             if (state.autoFailures.isNotEmpty()) TextButton(enabled = online && !busy && !searching, onClick = {
-                if (state.result?.novelObjects("items")?.any { it.has("auto_bind") } == true) searchSources() else state.autoRetry++
+                val ids = state.result?.novelObjects("sources").orEmpty().filter(::novelSourceNeedsRetry).mapNotNull { it.novelId("provider_id") }.distinct()
+                if (state.result?.novelObjects("items")?.any { it.has("auto_bind") } == true && ids.isNotEmpty()) searchSources(ids) else state.autoRetry++
             }) { Text("${state.autoFailures.size} 个来源未关联，重试") }
             OutlinedTextField(state.query, { state.query = it.take(200) }, singleLine = true, label = { Text("书名或作者") }, modifier = Modifier.fillMaxWidth(), enabled = !busy && !searching)
             Row {
@@ -242,11 +330,13 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
             }
             searchError?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                TextButton(enabled = online && !searching, onClick = { if (state.searchRunning) resumeSearch() else searchSources() }) {
-                    Text(if (state.searchRunning) "继续获取结果" else "重新搜索")
+                TextButton(enabled = online && !searching, onClick = ::retrySearch) {
+                    Text(if (state.searchRunning) "继续获取结果" else if (state.jobState == "failed") "重试原搜索" else "重新搜索")
                 }
             }
             state.result?.let { result ->
+                if (!searching && result.novelObjects("items").none(::readableNovelSource)) Text("本批暂无可读来源，可继续搜索或调整范围。", style = MaterialTheme.typography.bodySmall)
+                state.searchCandidates?.let { Text("已查 ${result.novelObjects("sources").size} / ${it.size} 个书源", style = MaterialTheme.typography.labelSmall) }
                 Text("找到 ${result.novelObjects("items").count(::readableNovelSource)} 个可读来源" +
                     if (result.optBoolean("truncated")) " · 当前为部分结果，可缩小关键词继续查找" else "", style = MaterialTheme.typography.labelSmall)
                 val retrySources = result.novelObjects("sources").filter(::novelSourceNeedsRetry)
@@ -263,7 +353,7 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
                 load(); state.receipt = null; state.selectedVersion = version
             } }) { Text("重试获取已关联书源目录") } }
         }
-        items(novelWorkSourceResults(work, state.result?.novelObjects("items").orEmpty().filter(::readableNovelSource), state.matchingOnly)
+        items(novelWorkSourceResults(work, visibleResult?.novelObjects("items").orEmpty().filter(::readableNovelSource), state.matchingOnly)
             .distinctBy(::novelSourceIdentity), key = { "result:" + novelSourceIdentity(it) }) { row ->
             OutlinedButton(enabled = enabled && online && !busy, onClick = { execute {
                 val connection = requireNotNull(c)

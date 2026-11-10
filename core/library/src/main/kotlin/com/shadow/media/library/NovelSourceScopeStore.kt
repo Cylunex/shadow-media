@@ -1,16 +1,14 @@
-package com.shadow.media
+package com.shadow.media.library
 
 import android.content.Context
 import androidx.core.content.edit
-import com.shadow.media.library.NovelSourceFilter
-import com.shadow.media.library.novelStrings
 import org.json.JSONArray
 import org.json.JSONObject
 
-internal data class NovelSavedSourceScope(val filter: NovelSourceFilter, val selected: Set<String>)
+data class NovelSavedSourceScope(val filter: NovelSourceFilter, val selected: Set<String>)
 
 /** Store choices, not source responses: availability is checked again before every search. */
-internal class NovelSourceScopeStore(context: Context) {
+class NovelSourceScopeStore(context: Context) {
     private val preferences = context.getSharedPreferences("novel_source_scope", Context.MODE_PRIVATE)
 
     fun load(key: String): NovelSavedSourceScope? = runCatching {

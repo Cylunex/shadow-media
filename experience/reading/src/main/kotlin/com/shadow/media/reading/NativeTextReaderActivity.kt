@@ -581,7 +581,7 @@ class NativeTextReaderActivity : ComponentActivity() {
                                 NativeReaderContentsPanel(item, publication, content, source, novel, !busy, ::openChapter)
                             } }
                             "书源" -> publication?.let { pub -> chapter?.let { content ->
-                                NovelReaderSourcesPanel(novel, pub, asset?.title.orEmpty(), content.ref.title, !busy, sourceState, ::switchSource)
+                                NovelReaderSourcesPanel(novel, pub, asset?.title.orEmpty(), content.ref.title, !busy, sourceState, content.ref.id, content.ref.ordinal, ::switchSource)
                             } }
                             "替换" -> NovelTextRulesPanel(novel, publication?.scope,
                                 sample = view?.selectedText?.takeIf(String::isNotBlank) ?: chapter?.let { it.originalText ?: it.text }.orEmpty(),

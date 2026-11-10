@@ -22,6 +22,15 @@ class NovelSourceSearch(private val api: NovelApi) {
             caps?.optBoolean("source_chapter_open") == true, caps?.optBoolean("source_intake_reuse") == true, caps?.optBoolean("source_search_auto_bind") == true,
             caps?.optBoolean("source_version_prepare") == true, caps?.optBoolean("source_body_preview") == true)
     }
+    suspend fun scope(connection: CatalogConnection, filter: NovelSourceFilter): List<String> {
+        val browser = api.json(connection, listOf("source-browser"), listOf("mode" to "search") + filter.groups.map { "group_id" to it })
+        val defaultScope = NovelSourceFilter(enabled = "true", capability = "search")
+        val allowed = if (filter.copy(groups = emptyList()) == defaultScope) null else NovelLibraryTools(api).selection(connection, filter).toSet()
+        return browser.novelObjects("items").mapNotNull { it.novelId("id") }.filter { allowed == null || it in allowed }.distinct().also {
+            require(it.size <= 5000) { "一次最多搜索 5000 个书源，请缩小范围" }
+        }
+    }
+
     suspend fun search(connection: CatalogConnection, query: String, onUpdate: (JSONObject) -> Unit): JSONObject {
         return search(connection, query, NovelSearchOptions(), onUpdate = onUpdate)
     }

@@ -33,11 +33,12 @@ class NovelReaderToolsUiTest {
     private val server = MockWebServer()
     private val requests = CopyOnWriteArrayList<Pair<String, String>>()
     private lateinit var c: CatalogConnection
+    private var browserData = """{"items":[{"id":"s"}],"groups":[],"tags":[]}"""
     private var handler: (RecordedRequest) -> MockResponse = { MockResponse().setBody("{}") }
     @Before fun setup() {
         server.dispatcher = object : Dispatcher() { override fun dispatch(request: RecordedRequest): MockResponse {
             requests += request.path.orEmpty() to request.body.clone().readUtf8()
-            return handler(request)
+            return if (request.path.orEmpty().startsWith("/api/v1/source-browser")) json(browserData) else handler(request)
         } }; server.start()
         c = CatalogConnection(name = "测试书库", kind = CatalogKind.OPDS, url = server.url("/").toString(), allowHttp = true)
     }
@@ -85,6 +86,119 @@ class NovelReaderToolsUiTest {
         assertEquals(40, compose.runOnIdle { catalog.versions.size })
         assertEquals(initialKey, compose.runOnIdle { catalog.list.layoutInfo.visibleItemsInfo.first().key })
         assertFalse(requests.any { it.first.contains("progress") && it.second.isNotBlank() })
+    }
+
+    @Test fun tagsAndGroupsPersistWhileRetryAndContinuationKeepSubmittedScope() {
+        browserData = """{"items":[{"id":"s"},{"id":"s2"}],"groups":[{"id":"a","name":"常用"},{"id":"b","name":"备用"}],"tags":["稳定","快速"]}"""
+        var jobs = 0
+        handler = { request -> when {
+            request.path == "/api/v1/works/work" -> json("""{"id":"work","title":"山海来信","author":"行舟","versions":[]}""")
+            request.path == "/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true}}""")
+            request.path.orEmpty().startsWith("/api/v1/source-selection") -> json("""{"provider_ids":["s","s2"]}""")
+            request.path == "/api/v1/search-jobs" -> json("""{"job_id":"job${++jobs}"}""")
+            request.path == "/api/v1/jobs/job1" -> json("""{"state":"succeeded","result":{"remaining":1,"items":[],"sources":[{"provider_id":"s","ok":false}]}}""")
+            request.path == "/api/v1/jobs/job2" -> json("""{"state":"succeeded","result":{"remaining":0,"items":[],"sources":[{"provider_id":"s","ok":true}]}}""")
+            else -> json("""{"state":"succeeded","result":{"remaining":0,"items":[],"sources":[{"provider_id":"s2","ok":true}]}}""")
+        } }
+        var shown by mutableStateOf(true)
+        val state = NovelReaderSourceState(); val repo = repository()
+        compose.setContent { MaterialTheme { Column(Modifier.fillMaxSize()) {
+            if (shown) NovelReaderSourcesPanel(repo, publication(), "山海来信", "当前章", true, state) { _, _ -> fail("Scope must not open reading") }
+        } } }
+        waitText("搜索范围 ·")
+        compose.onNodeWithText("搜索范围 ·", substring = true).performClick()
+        waitText("稳定")
+        compose.onNodeWithText("常用", substring = false).performClick()
+        compose.onNodeWithText("稳定", substring = false).performScrollTo().performClick()
+        compose.onNodeWithText("应用范围").performClick()
+        compose.onNodeWithText("搜索可用书源").performScrollTo().performClick()
+        compose.waitUntil(10_000) { state.jobState == "succeeded" }
+        assertEquals(1, state.result!!.getInt("remaining"))
+        val selection = requests.single { it.first.startsWith("/api/v1/source-selection") }.first
+        assertTrue(selection.contains("group_id=a")); assertTrue(selection.contains("tag="))
+        compose.onNodeWithText("搜索范围 ·", substring = true).performClick()
+        compose.onNodeWithText("常用", substring = false).performClick()
+        compose.onNodeWithText("备用", substring = false).performClick()
+        compose.onNodeWithText("应用范围").performClick()
+        compose.onNodeWithText("书名或作者").performScrollTo().performTextReplacement("新的关键词")
+        compose.onNodeWithText("重试未完成的 1 个来源").performScrollTo().performClick()
+        compose.waitUntil(10_000) { state.jobId == "job2" && state.jobState == "succeeded" }
+        assertEquals(1, state.result!!.getInt("remaining"))
+        compose.onNodeWithText("继续搜索 1 源").performClick()
+        compose.waitUntil(10_000) { state.jobId == "job3" && state.jobState == "succeeded" }
+        val bodies = requests.filter { it.first == "/api/v1/search-jobs" }.map { JSONObject(it.second) }
+        bodies.forEach { assertEquals("山海来信", it.getString("q")); assertEquals(listOf("a"), it.novelStrings("group_ids")) }
+        assertEquals(listOf("s"), bodies[1].novelStrings("provider_ids"))
+        assertEquals(listOf("s2"), bodies[2].novelStrings("provider_ids"))
+        assertEquals(setOf("s", "s2"), state.result!!.novelObjects("sources").map { it.getString("provider_id") }.toSet())
+        compose.runOnIdle { shown = false }; compose.waitForIdle(); compose.runOnIdle { shown = true }
+        waitText("搜索范围 ·")
+        assertEquals(listOf("b"), state.filter.groups); assertEquals(listOf("稳定"), state.filter.tags)
+        assertEquals(listOf("b"), NovelSourceScopeStore(compose.activity).load("${c.id}:reader")!!.filter.groups)
+        assertEquals(3, requests.count { it.first == "/api/v1/search-jobs" })
+        assertFalse(requests.any { it.first.contains("progress") || it.first.endsWith("/collect") })
+    }
+
+    @Test fun sourceDirectoryKeepsPageAndScrollAcrossReturnAndSheetClose() {
+        handler = { request -> if (request.path == "/api/v1/works/work") json("""{"id":"work","versions":[{"id":"v1","state":"ready","label":"主书源"}]}""")
+            else {
+                val offset = request.requestUrl?.queryParameter("offset")?.toIntOrNull() ?: 0
+                val rows = (offset until offset + 100).joinToString(",") { """{"id":"c$it","title":"章节 $it","ordinal":$it,"readable":true}""" }
+                json("""{"version_id":"v1","total":200,"offset":$offset,"limit":100,"next_offset":${if (offset == 0) "100" else "null"},"items":[$rows]}""")
+            }
+        }
+        var shown by mutableStateOf(true)
+        val state = NovelReaderSourceState(); val repo = repository()
+        compose.setContent { MaterialTheme { Column(Modifier.fillMaxSize()) {
+            if (shown) NovelReaderSourcesPanel(repo, publication(), "示例小说", "章节 0", true, state, "c0", 0) { _, _ -> fail("Preview must not open reading") }
+        } } }
+        waitText("主书源")
+        compose.onNodeWithText("主书源 · 当前").performClick()
+        waitText("章节 0")
+        compose.onNodeWithContentDescription("下一页目录").performClick()
+        waitText("章节 100")
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText("章节 120"))
+        compose.onNodeWithText("返回书源列表").performClick()
+        compose.onNodeWithText("主书源 · 当前").performClick()
+        waitText("章节 120")
+        compose.onNodeWithText("章节 120").assertIsDisplayed()
+        compose.runOnIdle { shown = false }; compose.waitForIdle(); compose.runOnIdle { shown = true }
+        waitText("章节 120")
+        compose.onNodeWithText("章节 120").assertIsDisplayed()
+        val contents = requests.filter { it.first.contains("/contents?") }
+        assertTrue(contents.last().first.contains("offset=100"))
+        assertFalse(contents.last().first.contains("anchor_id="))
+        assertFalse(requests.any { it.first.contains("progress") })
+    }
+
+    @Test fun failedRefreshKeepsOldRowsAndEmptyTagScopeNeverSearchesAllSources() {
+        handler = { request -> when {
+            request.path == "/api/v1/works/work" -> json("""{"id":"work","title":"山海来信","author":"行舟","versions":[]}""")
+            request.path == "/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true}}""")
+            request.path.orEmpty().startsWith("/api/v1/source-selection") -> json("""{"provider_ids":[]}""")
+            request.path == "/api/v1/search-jobs" -> json("""{"job_id":"failed"}""")
+            else -> json("""{"state":"failed","error":"查询中断","result":{"items":[],"sources":[{"provider_id":"s","ok":false}]}}""")
+        } }
+        val state = NovelReaderSourceState().apply {
+            query = "新查询"; submitted = "旧查询"
+            result = JSONObject("""{"items":[{"provider_id":"old","bookUrl":"https://example.com/old","name":"旧结果","author":"另一作者","capabilities":["detail","toc","chapter"]}],"sources":[{"provider_id":"old","ok":true}]}""")
+        }
+        val repo = repository()
+        compose.setContent { MaterialTheme { Column(Modifier.fillMaxSize()) {
+            NovelReaderSourcesPanel(repo, publication(), "山海来信", "当前章", true, state) { _, _ -> fail("Search must not move reading") }
+        } } }
+        waitText("搜索可用书源")
+        compose.onNodeWithText("搜索可用书源").performScrollTo().performClick()
+        waitText("重试原搜索")
+        assertNotNull(state.previousResult)
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText("旧结果"))
+        compose.onNodeWithText("旧结果").assertIsDisplayed()
+        compose.runOnIdle { state.filter = state.filter.copy(tags = listOf("无匹配标签")) }
+        compose.onNodeWithText("搜索可用书源").performScrollTo().performClick()
+        waitText("当前范围没有可搜索书源")
+        assertEquals(1, requests.count { it.first == "/api/v1/search-jobs" })
+        assertNotNull(state.previousResult)
+        assertFalse(requests.any { it.first.contains("progress") || it.first.endsWith("/collect") })
     }
 
     @Test fun readingShortcutsAreAvailableDirectlyInTheHeader() {
@@ -165,7 +279,8 @@ class NovelReaderToolsUiTest {
         compose.waitUntil(10_000) { state.autoReceipts.size == 1 }
         assertFalse(requests.any { it.first.endsWith("/collect") || it.first == "/api/v1/jobs/toc" })
         assertEquals("work", JSONObject(requests.single { it.first == "/api/v1/search-jobs" }.second).getString("work_id"))
-        compose.onNodeWithText("已自动关联 · 选择章节").performScrollTo().performClick()
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText("已自动关联 · 选择章节"))
+        compose.onNodeWithText("已自动关联 · 选择章节").performClick()
         waitText("续读此来源")
         val body = JSONObject(requests.single { it.first == "/api/v1/source-results/collect" }.second)
         assertEquals("work", body.getString("work_id")); assertFalse(body.has("create_new"))
