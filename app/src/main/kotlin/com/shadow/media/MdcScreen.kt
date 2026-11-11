@@ -300,16 +300,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                             }
                         }
                     }
-                    val tags = facetData.optJSONArray("tags")
-                    if (tags != null) androidx.compose.foundation.lazy.LazyRow {
-                        items(tags.length()) { index ->
-                            val value = tags.getJSONObject(index)
-                            FilterChip(tag == value.getString("id"), {
-                                tag = if (tag == value.getString("id")) "" else value.getString("id")
-                                load()
-                            }, { Text(value.getString("name")) })
-                        }
-                    }
+                    MdcTagFilters(facetData.optJSONArray("tags"), tag) { tag = it; load() }
                     Row {
                         Checkbox(unknownYear, { unknownYear = it; year = ""; decade = ""; load() })
                         Text("发行年待补")
