@@ -46,6 +46,9 @@ internal fun MdcScreen(viewModel: MainViewModel) {
     var expandedFilters by rememberSaveable { mutableStateOf(false) }
     var total by remember { mutableStateOf(0) }
     var studio by rememberSaveable { mutableStateOf("") }
+    var series by rememberSaveable { mutableStateOf("") }
+    var label by rememberSaveable { mutableStateOf("") }
+    var platform by rememberSaveable { mutableStateOf("") }
     var tag by rememberSaveable { mutableStateOf("") }
     var sort by rememberSaveable { mutableStateOf("added") }
     var facetData by remember { mutableStateOf(org.json.JSONObject()) }
@@ -106,6 +109,9 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                     decade.toIntOrNull()?.let { filters.put("year_from", it).put("year_to", it + 9) }
                     year.toIntOrNull()?.let { filters.put("year_from", it).put("year_to", it) }
                     if (studio.isNotBlank()) filters.put("organizations", org.json.JSONArray().put(studio))
+                    if (series.isNotBlank()) filters.put("series", org.json.JSONArray().put(series))
+                    if (label.isNotBlank()) filters.put("labels", org.json.JSONArray().put(label))
+                    if (platform.isNotBlank()) filters.put("platforms", org.json.JSONArray().put(platform))
                     if (tag.isNotBlank()) filters.put("tags", org.json.JSONArray().put(tag))
                     if (actor.isNotBlank()) filters.put("actors", org.json.JSONArray().put(actor))
                     if (next != null) filters.put("cursor", next)
@@ -229,16 +235,19 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                         profile.optString("biography").takeUnless { it.isBlank() || it == "null" }?.let { Text(it) }
                         val years = profile.optJSONArray("years")
                         if (years != null && years.length() > 0) Text("本库作品年份：${years.getInt(years.length() - 1)}–${years.getInt(0)}")
-                        listOf("collaborators" to "合作演员", "organizations" to "合作机构").forEach { (key, label) ->
+                        listOf("collaborators" to "合作演员", "organizations" to "合作机构", "series" to "参演系列").forEach { (key, caption) ->
                             val values = profile.optJSONArray(key)
                             if (values != null && values.length() > 0) {
-                                Text(label, style = MaterialTheme.typography.titleSmall)
+                                Text(caption, style = MaterialTheme.typography.titleSmall)
                                 androidx.compose.foundation.lazy.LazyRow {
                                     items(values.length()) { index ->
                                         val value = values.getJSONObject(index)
                                         SuggestionChip(onClick = {
-                                            if (key == "collaborators") actor = value.getString("id")
-                                            else studio = value.getString("id")
+                                            when (key) {
+                                                "collaborators" -> actor = value.getString("id")
+                                                "series" -> series = value.getString("id")
+                                                else -> studio = value.getString("id")
+                                            }
                                             query = ""; load()
                                         }, label = { Text("${value.getString("name")} · ${value.getInt("count")}") })
                                     }
@@ -263,6 +272,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                         }
                     }
                     val organizations = facetData.optJSONArray("organizations")
+                    if (organizations != null && organizations.length() > 0) Text("片商及制作机构")
                     if (organizations != null) androidx.compose.foundation.lazy.LazyRow {
                         items(organizations.length()) { index ->
                             val value = organizations.getJSONObject(index)
@@ -270,6 +280,24 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                                 studio = if (studio == value.getString("id")) "" else value.getString("id")
                                 load()
                             }, { Text(value.getString("name")) })
+                        }
+                    }
+                    listOf("labels" to "厂牌", "platforms" to "发布平台", "series" to "作品系列").forEach { (key, caption) ->
+                        val choices = facetData.optJSONArray(key)
+                        if (choices != null && choices.length() > 0) {
+                            Text(caption, style = MaterialTheme.typography.titleSmall)
+                            androidx.compose.foundation.lazy.LazyRow {
+                                items(choices.length()) { index ->
+                                    val choice = choices.getJSONObject(index)
+                                    val id = choice.getString("id")
+                                    val current = when (key) { "labels" -> label; "platforms" -> platform; else -> series }
+                                    FilterChip(current == id, {
+                                        val next = if (current == id) "" else id
+                                        when (key) { "labels" -> label = next; "platforms" -> platform = next; else -> series = next }
+                                        load()
+                                    }, { Text("${choice.getString("name")} · ${choice.getInt("count")}") })
+                                }
+                            }
                         }
                     }
                     val tags = facetData.optJSONArray("tags")
