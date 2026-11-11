@@ -76,7 +76,7 @@ class NovelIntakeContractTest {
         val opened = api.openChapter(c, receipt, version, chapter.getString("chapter_url"))
         assertEquals(NovelSourceOpening("work", "fixed-version", "chapter-2"), opened)
         assertEquals("/novel/api/v1/source-results/collect", s.takeRequest().path)
-        assertEquals("/novel/api/v1/jobs/toc", s.takeRequest().path)
+        assertEquals("/novel/api/v1/jobs/toc", s.takeRequest().requestUrl!!.encodedPath)
         val request = s.takeRequest(); assertEquals("/novel/api/v1/source-results/open-chapter", request.path)
         val body = JSONObject(request.body.readUtf8()); assertEquals("binding", body.getString("binding_id"))
         assertEquals("fixed-version", body.getString("version_id")); assertEquals("https://example.com/second?part=2", body.getString("chapter_url"))
@@ -110,6 +110,6 @@ class NovelIntakeContractTest {
         val stopped = api.resumeSearch(c, "original") { last = it }
         assertEquals("cancelled", stopped.getString("state"))
         assertEquals("已返回", last!!.getJSONObject("result").novelObjects("items").single().getString("name"))
-        assertEquals("/novel/api/v1/jobs/original", s.takeRequest().path); assertEquals(1, s.requestCount)
+        assertEquals("/novel/api/v1/jobs/original", s.takeRequest().requestUrl!!.encodedPath); assertEquals(1, s.requestCount)
     }
 }

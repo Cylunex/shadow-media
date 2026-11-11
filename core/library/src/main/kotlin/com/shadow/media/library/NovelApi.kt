@@ -45,7 +45,8 @@ class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
         }.build()
 
     private fun sameOrigin(a: HttpUrl, b: HttpUrl) = a.scheme == b.scheme && a.host == b.host && a.port == b.port
-    private suspend fun <T> execute(c: CatalogConnection, url: HttpUrl, method: String, body: RequestBody?, consume: (Response) -> T): T = withContext(Dispatchers.IO) {
+    private suspend fun <T> execute(c: CatalogConnection, url: HttpUrl, method: String, body: RequestBody?,
+        headers: Map<String, String> = emptyMap(), allowNotModified: Boolean = false, consume: (Response) -> T): T = withContext(Dispatchers.IO) {
         check(!LibraryResources.offlineOnly) { "仅离线模式已开启" }
         require(sameOrigin(c.base(), url) && (url.isHttps || c.allowHttp) && url.username.isBlank() && url.password.isBlank()) { "拒绝跨源 Novel 请求" }
         val scoped = client.newBuilder().addNetworkInterceptor { chain ->
@@ -63,6 +64,7 @@ class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
             if (access.isNotBlank()) header("Authorization", "Bearer $access")
             else if (c.username.isNotBlank()) header("Authorization", Credentials.basic(c.username, c.password))
             header("Accept", "application/json, application/epub+zip")
+            headers.forEach { (name, value) -> header(name, value) }
             method(method, body
                 ?: if (method in setOf("POST", "PUT", "PATCH")) "{}".toRequestBody("application/json".toMediaType()) else null)
         }.build())
@@ -74,7 +76,7 @@ class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
         var response = request(false)
         if (response.code == 401 && c.oidcIssuer.isNotBlank()) { response.close(); response = request(true) }
         response.use {
-                if (!response.isSuccessful) {
+                if (!response.isSuccessful && !(allowNotModified && response.code == 304)) {
                     val value = response.body?.byteStream()?.use { SafeArchives.readBounded(it, 128 * 1024) }?.toString(Charsets.UTF_8)
                     val parsed = runCatching { JSONObject(value.orEmpty()) }.getOrNull()
                     val detail = parsed?.optJSONObject("detail") ?: if (parsed?.opt("detail") is String) JSONObject().put("message", parsed.getString("detail")) else parsed ?: JSONObject()
@@ -90,6 +92,23 @@ class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
             val text = response.body?.byteStream()?.use { SafeArchives.readBounded(it, 16L * 1024 * 1024) }?.toString(Charsets.UTF_8).orEmpty()
             if (text.isBlank() || text == "null") JSONObject() else JSONObject(text)
         }
+    internal suspend fun conditionalJson(c: CatalogConnection, path: List<String>, query: List<Pair<String, String>>,
+        previous: NovelConditionalJson?): NovelConditionalJson {
+        val target = url(c, path, query)
+        val retained = previous?.takeIf { it.connection == c && it.url == target.toString() && it.etag != null }
+        val headers = buildMap {
+            put("Cache-Control", "no-cache")
+            retained?.etag?.let { put("If-None-Match", it) }
+        }
+        return execute(c, target, "GET", null, headers, retained != null) { response ->
+            if (response.code == 304) requireNotNull(retained).copy(unchanged = true)
+            else {
+                val text = response.body?.byteStream()?.use { SafeArchives.readBounded(it, 16L * 1024 * 1024) }
+                    ?.toString(Charsets.UTF_8).orEmpty()
+                NovelConditionalJson(JSONObject(text), response.header("ETag"), c, target.toString())
+            }
+        }
+    }
     /** Streams SAF content; reopening the input also makes an OIDC refresh retry safe. */
     suspend fun upload(c: CatalogConnection, filename: String, input: () -> java.io.InputStream): JSONObject {
         require(filename.substringAfterLast('.').lowercase() in setOf("txt", "epub")) { "仅支持 TXT 或 EPUB 文件" }
@@ -145,6 +164,9 @@ class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
         } }
     }
 }
+
+internal data class NovelConditionalJson(val value: JSONObject, val etag: String?, val connection: CatalogConnection,
+    val url: String, val unchanged: Boolean = false)
 
 data class NovelQuery(
     val view: String = "city", val q: String = "", val sort: String = "recent",

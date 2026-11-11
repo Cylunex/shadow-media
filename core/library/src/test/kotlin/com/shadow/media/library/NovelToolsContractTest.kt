@@ -75,7 +75,7 @@ class NovelToolsContractTest {
         assertEquals(listOf("归来", "初见"), novelPreviewTitles(preview, "", true)); assertEquals(listOf("归来"), novelPreviewTitles(preview, "归", false))
         assertFalse(preview.getJSONObject("toc").getBoolean("complete"))
         assertTrue(JSONObject(s.takeRequest().body.readUtf8()).getBoolean("include_toc"))
-        assertEquals("/api/v1/jobs/preview", s.takeRequest().path); assertEquals(2, s.requestCount)
+        assertEquals("/api/v1/jobs/preview", s.takeRequest().requestUrl!!.encodedPath); assertEquals(2, s.requestCount)
     }
     @Test fun failedPreviewRefreshPreservesGoodSynopsisAndToc() {
         val previous = JSONObject("""{"detail":{"intro":"详情简介","word_count":"十万"},"toc":{"items":[{"title":"一"}],"complete":false}}""")

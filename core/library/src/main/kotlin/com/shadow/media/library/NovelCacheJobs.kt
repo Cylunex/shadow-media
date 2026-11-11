@@ -1,8 +1,5 @@
 package com.shadow.media.library
 
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -30,9 +27,7 @@ class NovelCacheJobs(private val api: NovelApi) {
             onJob(id)
         }
         val jobId = requireNotNull(id)
-        while (true) {
-            currentCoroutineContext().ensureActive()
-            val job = api.json(c, listOf("jobs", jobId))
+        NovelJobPoller(api).poll(c, jobId, includePayload = true) { job ->
             val payload = job.getJSONObject("payload")
             require(job.optString("kind") == "reading_cache" && payload.optString("version_id") == version &&
                 payload.novelStrings("chapter_ids").toSet() == chapters.toSet()) { "服务器缓存任务选择不匹配" }
@@ -50,9 +45,7 @@ class NovelCacheJobs(private val api: NovelApi) {
                     result.novelObjects("items").all { it.getString("chapter_id") in chapters }) { "服务器缓存任务进度不匹配" }
                 onProgress(completed, failed)
             }
-            if (job.optString("state") in setOf("succeeded", "failed", "cancelled")) return
-            require(job.optString("state") in setOf("queued", "running")) { "服务器缓存任务状态无效" }
-            delay(1_000)
+
         }
     }
 }

@@ -129,6 +129,7 @@ internal class NovelBrowserState(initial: String = "") {
         task?.cancel(); val ticket = ++generation; busy = true; error = null
         task = scope.launch {
             try { block() }
+            catch (e: NovelJobPendingException) { if (ticket == generation) notice = e.message }
             catch (e: TimeoutCancellationException) { if (ticket == generation) error = "等待超时，已返回的内容保留。可重试或稍后刷新。" }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { if (ticket == generation) error = novelToolError(e) }
@@ -136,17 +137,10 @@ internal class NovelBrowserState(initial: String = "") {
         }
     }
     suspend fun choices() {
-        state.features = repository.sourceSearch.features(connection)
-        val f = state.filter
-        val browser = repository.live(connection, listOf("source-browser"), listOf("mode" to if (state.explore) "explore" else "search") + f.groups.map { "group_id" to it })
-        // The browser already applies its mode and group scope. The bulk-selection endpoint
-        // has a 5000-source limit and is only needed for additional user filters.
-        val defaultScope = NovelBrowserState().apply { selectMode(state.explore) }.filter
-        val allowed = if (f.copy(groups = emptyList()) == defaultScope) null else repository.tools.selection(connection, f).toSet()
-        currentCoroutineContext().ensureActive()
-        state.choices = browser.novelObjects("items").filter { allowed == null || it.getString("id") in allowed }
-
+        if (state.features == null) state.features = repository.sourceSearch.features(connection)
+        state.choices = repository.sourceSearch.choices(connection, state.filter, state.explore)
     }
+
     suspend fun resumeSearch() {
         val id = state.searchJobId ?: return
         repository.sourceSearch.resumeSearch(connection, id, state::updateSearch)
@@ -186,6 +180,7 @@ internal class NovelBrowserState(initial: String = "") {
                 onJob = { state.searchJobId = it; state.searchJobState = "queued" }, onUpdate = state::updateSearch)
         }
     }
+    val discoveryJobs = remember(connection) { mutableStateMapOf<Triple<String, String, Int>, String>() }
     fun discover(provider: JSONObject, entry: JSONObject, page: Int, refresh: Boolean = false) {
         if (state.entry == null) { state.columnIndex = list.firstVisibleItemIndex; state.columnOffset = list.firstVisibleItemScrollOffset }
         val visit = JSONObject().put("provider", provider.getString("id")).put("entry", entry.getString("key")).put("name", provider.optString("name") + " · " + entry.optString("name"))
@@ -199,11 +194,18 @@ internal class NovelBrowserState(initial: String = "") {
             state.provider = provider; state.entry = entry; state.page = page
             state.discovery = cached
             if (!same) list.scrollToItem(0)
-            if (refresh || cached.optBoolean("stale")) {
-                val receipt = repository.mutate(connection, path + "refresh", "POST", JSONObject().put("page", page))
-                receipt.novelId("job_id")?.let { jobId = it; repository.sourceSearch.awaitJob(connection, it) {} }
+            val key = Triple(provider.getString("id"), entry.getString("key"), page)
+            if (refresh || cached.optBoolean("stale") || discoveryJobs.containsKey(key)) {
+                val id = discoveryJobs[key] ?: repository.mutate(connection, path + "refresh", "POST", JSONObject().put("page", page))
+                    .novelId("job_id")?.also { discoveryJobs[key] = it }
+                if (id != null) {
+                    jobId = id
+                    repository.sourceSearch.awaitJob(connection, id) { status ->
+                        if (status.optString("state") in setOf("succeeded", "failed", "cancelled")) discoveryJobs.remove(key)
+                    }
+                }
                 state.discovery = repository.live(connection, path, listOf("page" to page.toString()))
-                notice = receipt.novelId("message")
+                notice = null
             }
         }
     }

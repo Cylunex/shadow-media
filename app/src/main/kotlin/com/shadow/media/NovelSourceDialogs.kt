@@ -25,6 +25,7 @@ internal class NovelTask(private val scope: CoroutineScope) {
         cancel(); val ticket = generation; busy = true; error = null
         task = scope.launch {
             try { block() }
+            catch (e: NovelJobPendingException) { if (ticket == generation) { progress = e.latest; message = e.message; error = null } }
             catch (e: TimeoutCancellationException) { if (ticket == generation) error = "等待超时；已返回内容保留，可稍后刷新任务。" }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { if (ticket == generation) error = novelToolError(e) }
@@ -65,9 +66,13 @@ internal data class NovelIntakeAction(val read: Boolean = false, val chapterUrl:
     var pending by remember(row) { mutableStateOf(NovelIntakeAction()) }
     var tocQuery by remember(row) { mutableStateOf("") }
     var descending by remember(row) { mutableStateOf(false) }
+    val previewJobs = remember(row) { mutableStateMapOf<Pair<Boolean, Boolean>, String>() }
     fun load(toc: Boolean, body: Boolean = false) = task.run {
         if (supported == null) supported = repository.sourceSearch.features(connection)
-        preview = mergeNovelPreview(preview, repository.sourceSearch.preview(connection, row, toc, body))
+        val key = (toc || body) to body
+        preview = mergeNovelPreview(preview, repository.sourceSearch.preview(connection, row, toc, body,
+            previousJob = previewJobs[key], onJob = { id -> if (id == null) previewJobs.remove(key) else previewJobs[key] = id }))
+        task.message = null
     }
     LaunchedEffect(row) { load(false) }
     val detail = novelSourceDetail(row, preview)
@@ -114,6 +119,9 @@ internal data class NovelIntakeAction(val read: Boolean = false, val chapterUrl:
                 Text(detail.optString("provider_name"), style = MaterialTheme.typography.bodySmall)
                 TextButton(onClick = onDismiss) { Text("返回结果") }
                 NovelTaskStatus(task)
+                if (!task.busy && previewJobs.isNotEmpty()) TextButton(onClick = {
+                    val key = previewJobs.keys.first(); load(key.first, key.second)
+                }) { Text("继续查看预览任务") }
                 preview?.novelId("message")?.let { Text(it) }; preview?.novelId("error")?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (detail.optString("author").isNotBlank()) TextButton(onClick = { onAuthor(detail.optString("author")) }) { Text("作者：${detail.optString("author")} · 继续搜索") }
                 if (bindingWork != null) Text("关联到《${bindingWork.optString("title")}》，保留原版本、书架与进度。", style = MaterialTheme.typography.bodySmall)

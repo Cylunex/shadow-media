@@ -63,35 +63,33 @@ import org.json.JSONObject
         val (path, query) = selected.request(offset)
         return repository.get(connection, path, query)
     }
+    val pendingRefresh = remember(connection) { mutableStateMapOf<NovelRankingSelection, String>() }
     suspend fun refreshBoard(selected: NovelRankingSelection) {
         working = true
         try {
-            val result = repository.mutate(connection, listOf("rankings", selected.provider, selected.key, "refresh"), "POST")
-            val job = result.optString("job_id").takeUnless { it.isBlank() || it == "null" }
-            if (job != null) {
+            var id = pendingRefresh[selected]
+            if (id == null) {
+                val result = repository.mutate(connection, listOf("rankings", selected.provider, selected.key, "refresh"), "POST")
+                id = result.novelId("job_id")
+                if (id != null) pendingRefresh[selected] = id
+            }
+            if (id != null) {
                 notice = "正在更新榜单，保留上次结果…"
-                withTimeout(45_000) {
-                    while (true) {
-                        delay(1500)
-                        val status = repository.get(connection, listOf("jobs", job))
-                        check(!status.has("_cached_at")) { "网络暂不可用，榜单仍在服务端更新，可稍后刷新查看" }
-                        when (status.optString("state")) {
-                            "succeeded" -> break
-                            "failed", "cancelled" -> error(status.optString("error").ifBlank { "榜单更新未完成，已保留上次结果" })
-                        }
-                    }
+                repository.sourceSearch.awaitJob(connection, id) { status ->
+                    if (status.optString("state") in setOf("succeeded", "failed", "cancelled")) pendingRefresh.remove(selected)
                 }
             }
-            val refreshed = fetch(selected)
-            snapshot = NovelRankingPage(selected, refreshed)
-            notice = result.optString("message").takeIf(String::isNotBlank) ?: "榜单已更新"
+            snapshot = NovelRankingPage(selected, fetch(selected))
+            notice = "榜单已更新"
         } finally { working = false }
     }
+
     fun operation(block: suspend () -> Unit) {
         if (working || loading) return
         scope.launch {
             working = true; error = null
             try { block() }
+            catch (e: NovelJobPendingException) { notice = e.message }
             catch (e: TimeoutCancellationException) { notice = "服务端仍在更新，稍后点刷新查看；已保留当前榜单" }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { authenticationRequired = e is NovelApiException && e.status == 401; error = e.message ?: "操作失败，请重试" }
@@ -148,7 +146,7 @@ import org.json.JSONObject
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(enabled = !loading && !working && !LibraryResources.offlineOnly, onClick = {
                 if (selection.local || page?.has("_cached_at") == true) scope.launch { listState.scrollToItem(0); reload++ } else operation { refreshBoard(selection) }
-            }) { Text(if (working) "更新中…" else "刷新榜单") }
+            }) { Text(if (working) "更新中…" else if (pendingRefresh.containsKey(selection)) "继续查看榜单任务" else "刷新榜单") }
             TextButton(enabled = page != null && !loading, onClick = { scope.launch { listState.scrollToItem(0) } }) { Text("回到榜首") }
             TextButton(enabled = !working && !LibraryResources.offlineOnly, onClick = { sourceEditor = true; error = null }) { Text("添加来源") }
         }

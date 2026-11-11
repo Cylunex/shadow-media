@@ -34,21 +34,44 @@ class NovelClientFlowTest {
     private val server = MockWebServer()
     private val requests = CopyOnWriteArrayList<Pair<String, String>>()
     private var handler: (RecordedRequest) -> MockResponse = { MockResponse().setBody("{}") }
+    private fun RecordedRequest.route(): String? = path?.let {
+        if (requestUrl!!.encodedPath.startsWith("/novel/api/v1/jobs/")) it.substringBefore('?') else it
+    }
     private val row = """{"provider_id":"s","provider_name":"原创来源","bookUrl":"https://example.com/book/1","name":"山海来信","author":"行舟","intro":"沿着来信寻找远方灯火。","capabilities":["search","detail","toc","chapter"]}"""
     @Before fun start() {
         server.dispatcher = object : Dispatcher() { override fun dispatch(request: RecordedRequest): MockResponse {
-            requests += request.path.orEmpty() to request.body.clone().readUtf8()
+            requests += request.route().orEmpty() to request.body.clone().readUtf8()
             return handler(request)
         } }; server.start()
     }
     @After fun stop() { server.shutdown() }
     private fun json(value: String) = MockResponse().setBody(value)
     private fun connection() = CatalogConnection(name = "原创书库", kind = CatalogKind.OPDS, url = server.url("/novel/").toString(), allowHttp = true)
+    @Test fun previewConnectionFailureContinuesOriginalJobWithoutAnotherSubmission() {
+        var polls = 0
+        handler = { request -> when (request.route()) {
+            "/novel/api/v1/source-previews" -> json("""{"job_id":"preview"}""")
+            "/novel/api/v1/jobs/preview" -> if (++polls == 1) MockResponse().setResponseCode(503)
+                .setBody("""{"code":"source_unavailable","message":"连接暂时中断"}""")
+                else json("""{"state":"succeeded","result":{"detail":{"intro":"恢复后的作品简介"}}}""")
+            else -> modernResponse(request)
+        } }
+        val repo = repository(); val c = connection()
+        compose.setContent { ShadowMediaTheme { Surface {
+            NovelSourcePreviewSheet(repo, c, JSONObject(row), null, {}, {}, {}, {})
+        } } }
+        waitText("继续查看预览任务")
+        compose.onNodeWithText("继续查看预览任务").performClick()
+        waitText("恢复后的作品简介")
+        assertEquals(1, requests.count { it.first == "/novel/api/v1/source-previews" })
+        assertEquals(2, requests.count { it.first == "/novel/api/v1/jobs/preview" })
+        assertTrue(requests.none { it.first.endsWith("/progress") || it.first.endsWith("/collect") })
+    }
     @Test fun rankingsLoadAndOpenLocalWork() {
         handler = { request -> when {
-            request.path == "/novel/api/v1/rankings" -> json("""{"boards":[{"provider_id":"s","provider_name":"外部榜单","key":"heat","name":"总点击","period":"total"}]}""")
-            request.path!!.startsWith("/novel/api/v1/rankings/local?") -> json("""{"items":[{"rank":1,"work":{"id":"one","title":"山海来信","author":"行舟","availability":["online"]}}],"total":1,"offset":0,"limit":30,"categories":[]}""")
-            request.path!!.startsWith("/novel/api/v1/rankings/s/heat?") -> json("""{"name":"总点击","items":[{"index":0,"rank":1,"name":"远航","author":"行舟","work_id":"two"}],"total":1,"offset":0,"token":"snapshot"}""")
+            request.route() == "/novel/api/v1/rankings" -> json("""{"boards":[{"provider_id":"s","provider_name":"外部榜单","key":"heat","name":"总点击","period":"total"}]}""")
+            request.route()!!.startsWith("/novel/api/v1/rankings/local?") -> json("""{"items":[{"rank":1,"work":{"id":"one","title":"山海来信","author":"行舟","availability":["online"]}}],"total":1,"offset":0,"limit":30,"categories":[]}""")
+            request.route()!!.startsWith("/novel/api/v1/rankings/s/heat?") -> json("""{"name":"总点击","items":[{"index":0,"rank":1,"name":"远航","author":"行舟","work_id":"two"}],"total":1,"offset":0,"token":"snapshot"}""")
             else -> json("{}")
         } }
         val repo = repository(); val c = connection(); var opened = ""
@@ -71,7 +94,7 @@ class NovelClientFlowTest {
     }
     @Test fun returningFromRankedWorkRestoresScrolledPosition() {
         val items = (0 until 30).joinToString(",") { """{"rank":${it + 1},"work":{"id":"$it","title":"山海来信$it","author":"行舟"}}""" }
-        handler = { request -> if (request.path!!.startsWith("/novel/api/v1/rankings/local?"))
+        handler = { request -> if (request.route()!!.startsWith("/novel/api/v1/rankings/local?"))
             json("""{"items":[$items],"total":30,"offset":0,"categories":[]}""") else json("{}") }
         val repo = repository(); val c = connection(); var opened by mutableStateOf(false)
         compose.setContent { ShadowMediaTheme { Surface {
@@ -88,9 +111,9 @@ class NovelClientFlowTest {
     }
     @Test fun rankingSelectionPersistsAndSourceSearchUsesOnlyTheBookTitle() {
         handler = { request -> when {
-            request.path == "/novel/api/v1/rankings" -> json("""{"boards":[{"provider_id":"s","provider_name":"外部榜单","key":"weekly","name":"周点击","period":"week"}]}""")
-            request.path!!.startsWith("/novel/api/v1/rankings/local?") -> json("""{"items":[],"total":0,"categories":[]}""")
-            request.path!!.startsWith("/novel/api/v1/rankings/s/weekly?") -> json("""{"name":"周点击","items":[{"index":0,"rank":1,"name":"远航","author":"行舟"}],"total":1}""")
+            request.route() == "/novel/api/v1/rankings" -> json("""{"boards":[{"provider_id":"s","provider_name":"外部榜单","key":"weekly","name":"周点击","period":"week"}]}""")
+            request.route()!!.startsWith("/novel/api/v1/rankings/local?") -> json("""{"items":[],"total":0,"categories":[]}""")
+            request.route()!!.startsWith("/novel/api/v1/rankings/s/weekly?") -> json("""{"name":"周点击","items":[{"index":0,"rank":1,"name":"远航","author":"行舟"}],"total":1}""")
             else -> json("{}")
         } }
         val repo = repository(); val c = connection(); var visible by mutableStateOf(true); var query = ""
@@ -112,10 +135,10 @@ class NovelClientFlowTest {
     }
     @Test fun discoveryUsesIndependentScopeAndBackReturnsToColumns() {
         handler = { request -> when {
-            request.path!!.startsWith("/novel/api/v1/source-browser?") -> json("""{"items":[{"id":"s","name":"原创来源","entry_count":1}]}""")
-            request.path!!.startsWith("/novel/api/v1/source-selection") -> json("""{"detail":"匹配超过 5000 条"}""").setResponseCode(400)
-            request.path == "/novel/api/v1/source-browser/s/entries" -> json("""{"items":[{"key":"fantasy","name":"幻想","kind":"分类"}]}""")
-            request.path!!.startsWith("/novel/api/v1/source-browser/s/fantasy?") -> json("""{"items":[$row],"stale":false}""")
+            request.route()!!.startsWith("/novel/api/v1/source-browser?") -> json("""{"items":[{"id":"s","name":"原创来源","entry_count":1}]}""")
+            request.route()!!.startsWith("/novel/api/v1/source-selection") -> json("""{"detail":"匹配超过 5000 条"}""").setResponseCode(400)
+            request.route() == "/novel/api/v1/source-browser/s/entries" -> json("""{"items":[{"key":"fantasy","name":"幻想","kind":"分类"}]}""")
+            request.route()!!.startsWith("/novel/api/v1/source-browser/s/fantasy?") -> json("""{"items":[$row],"stale":false}""")
             else -> json("{}")
         } }
         val repo = repository(); val c = connection(); val state = NovelBrowserState().apply { selectMode(true) }
@@ -149,17 +172,17 @@ class NovelClientFlowTest {
         }
     }
     private fun browserResponse(request: RecordedRequest): MockResponse = when {
-        request.path!!.startsWith("/novel/api/v1/source-browser?") -> json("""{"items":[{"id":"s","name":"原创来源","search_paginated":true,"entry_count":1}]}""")
-        request.path!!.startsWith("/novel/api/v1/source-selection") -> json("""{"provider_ids":["s"]}""")
-        request.path == "/novel/api/v1/library/preferences" -> json("""{"search":{},"history":[]}""")
-        request.path == "/novel/api/v1/library/search-history" -> json("{}")
-        request.path == "/novel/api/v1/search-jobs" -> json("""{"job_id":"search"}""")
-        request.path == "/novel/api/v1/jobs/search" -> json("""{"state":"succeeded","result":{"items":[$row],"sources":[{"provider_id":"s","name":"原创来源","ok":true,"page":1,"raw_count":1,"count":1}]}}""")
-        request.path == "/novel/api/v1/source-previews" -> json("""{"job_id":null,"work_id":"canonical","message":"只读预览"}""")
+        request.route()!!.startsWith("/novel/api/v1/source-browser?") -> json("""{"items":[{"id":"s","name":"原创来源","search_paginated":true,"entry_count":1}]}""")
+        request.route()!!.startsWith("/novel/api/v1/source-selection") -> json("""{"provider_ids":["s"]}""")
+        request.route() == "/novel/api/v1/library/preferences" -> json("""{"search":{},"history":[]}""")
+        request.route() == "/novel/api/v1/library/search-history" -> json("{}")
+        request.route() == "/novel/api/v1/search-jobs" -> json("""{"job_id":"search"}""")
+        request.route() == "/novel/api/v1/jobs/search" -> json("""{"state":"succeeded","result":{"items":[$row],"sources":[{"provider_id":"s","name":"原创来源","ok":true,"page":1,"raw_count":1,"count":1}]}}""")
+        request.route() == "/novel/api/v1/source-previews" -> json("""{"job_id":null,"work_id":"canonical","message":"只读预览"}""")
         else -> json("{}")
     }
     @Test fun appliedScopeSurvivesNewBrowserAndIsUsedBeforeAutomaticSearch() {
-        handler = { request -> if (request.path!!.startsWith("/novel/api/v1/providers/catalog"))
+        handler = { request -> if (request.route()!!.startsWith("/novel/api/v1/providers/catalog"))
             json("""{"items":[],"total":0,"groups":[{"id":"g","name":"常用分组"}],"facets":{"tags":[{"value":"精选"}]}}""")
             else browserResponse(request) }
         val repo = repository(); val c = connection()
@@ -199,7 +222,7 @@ class NovelClientFlowTest {
         val result = JSONObject(row)
         val other = JSONObject(row).put("author", "另一作者").put("bookUrl", "https://example.com/book/other").put("name", "同名外的候选")
         if (serverAuto) result.put("auto_bind", JSONObject().put("status", "bound").put("work_id", "work").put("binding_id", "b"))
-        handler = { request -> when (request.path) {
+        handler = { request -> when (request.route()) {
             "/novel/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true,"source_intake_reuse":true,"source_search_auto_bind":$serverAuto,"source_version_prepare":$serverAuto}}""")
             "/novel/api/v1/jobs/search" -> json("""{"state":"succeeded","result":{"items":[$other,$result]}}""")
             "/novel/api/v1/source-results/collect" -> if (serverAuto) json("""{"work_id":"work","binding_id":"b","version_id":"v2","job_id":null}""") else json("""{"work_id":"work","binding_id":"b","job_id":"toc"}""")
@@ -263,9 +286,9 @@ class NovelClientFlowTest {
     @Test fun replacedSearchCancelsLateResponseWithoutMixingBooks() {
         val counter = java.util.concurrent.atomic.AtomicInteger()
         handler = { request -> when {
-            request.path == "/novel/api/v1/search-jobs" -> json("{\"job_id\":\"search${counter.incrementAndGet()}\"}")
-            request.path == "/novel/api/v1/jobs/search1" -> json("{\"state\":\"succeeded\",\"result\":{\"items\":[${row.replace("山海来信", "旧结果")}],\"sources\":[]}}").setBodyDelay(800, java.util.concurrent.TimeUnit.MILLISECONDS)
-            request.path == "/novel/api/v1/jobs/search2" -> json("{\"state\":\"succeeded\",\"result\":{\"items\":[${row.replace("山海来信", "新结果")}],\"sources\":[]}}")
+            request.route() == "/novel/api/v1/search-jobs" -> json("{\"job_id\":\"search${counter.incrementAndGet()}\"}")
+            request.route() == "/novel/api/v1/jobs/search1" -> json("{\"state\":\"succeeded\",\"result\":{\"items\":[${row.replace("山海来信", "旧结果")}],\"sources\":[]}}").setBodyDelay(800, java.util.concurrent.TimeUnit.MILLISECONDS)
+            request.route() == "/novel/api/v1/jobs/search2" -> json("{\"state\":\"succeeded\",\"result\":{\"items\":[${row.replace("山海来信", "新结果")}],\"sources\":[]}}")
             else -> browserResponse(request)
         } }
         val repo = repository(); val c = connection(); val state = NovelBrowserState("旧")
@@ -280,7 +303,7 @@ class NovelClientFlowTest {
     }
     @Test fun sourceSelectionSurvivesPagesAndMultiGroupTagsArePassedTogether() {
         handler = { request -> when {
-            request.path!!.contains("providers/catalog") -> {
+            request.route()!!.contains("providers/catalog") -> {
                 val second = request.requestUrl!!.queryParameter("offset") == "40"
                 json("{\"facets\":{\"tags\":[{\"value\":\"直连\"},{\"value\":\"稳定\"}]},\"total\":41,\"groups\":[{\"id\":\"g1\",\"name\":\"组甲\"},{\"id\":\"g2\",\"name\":\"组乙\"}],\"items\":[{\"id\":\"${if (second) "b" else "a"}\",\"name\":\"${if (second) "来源乙" else "来源甲"}\",\"enabled\":true}]}")
             }
@@ -303,7 +326,7 @@ class NovelClientFlowTest {
         assertTrue(second.contains("group_id=g1&group_id=g2")); assertTrue(second.contains("tag="))
     }
     @Test fun previewShowsCanonicalMetadataPartialTocAndFilterWithoutCollecting() {
-        handler = { request -> when (request.path) {
+        handler = { request -> when (request.route()) {
             "/novel/api/v1/source-previews" -> json("""{"job_id":"preview"}""")
             "/novel/api/v1/jobs/preview" -> json("""{"state":"succeeded","result":{"detail":{"name":"山海来信","word_count":"十万字","latest_chapter":"归来","source_updated_at":"今日","status":"连载"},"toc":{"items":[{"title":"初见"},{"title":"归来"}],"complete":false,"pages":3}}}""")
             else -> json("{}")
@@ -357,15 +380,15 @@ class NovelClientFlowTest {
         compose.onNodeWithText("搜索", substring = false).assertIsDisplayed()
         screenshot("novel-online-landscape-keyboard-dark")
     }
-    private fun modernResponse(request: RecordedRequest): MockResponse = if (request.path == "/novel/api/v1/integration")
+    private fun modernResponse(request: RecordedRequest): MockResponse = if (request.route() == "/novel/api/v1/integration")
         json("""{"capabilities":{"source_search_modes":true,"source_chapter_open":true,"source_intake_reuse":true}}""") else browserResponse(request)
 
     @Test fun allModeSendsEntireSelectionAndShowsTruncation() {
         val ids = (1..25).map { "s$it" }
         handler = { request -> when {
-            request.path!!.startsWith("/novel/api/v1/source-browser?") -> json(JSONObject().put("items", org.json.JSONArray(ids.map { JSONObject().put("id", it).put("name", it) })).toString())
-            request.path!!.startsWith("/novel/api/v1/source-selection") -> json(JSONObject().put("provider_ids", org.json.JSONArray(ids)).toString())
-            request.path == "/novel/api/v1/jobs/search" -> json(JSONObject().put("state", "succeeded").put("result", JSONObject()
+            request.route()!!.startsWith("/novel/api/v1/source-browser?") -> json(JSONObject().put("items", org.json.JSONArray(ids.map { JSONObject().put("id", it).put("name", it) })).toString())
+            request.route()!!.startsWith("/novel/api/v1/source-selection") -> json(JSONObject().put("provider_ids", org.json.JSONArray(ids)).toString())
+            request.route() == "/novel/api/v1/jobs/search" -> json(JSONObject().put("state", "succeeded").put("result", JSONObject()
                 .put("mode", "all").put("items", org.json.JSONArray().put(JSONObject(row)))
                 .put("sources", org.json.JSONArray(ids.map { JSONObject().put("provider_id", it).put("ok", true).put("count", 200) }))
                 .put("matched_count", 5001).put("truncated", true).put("remaining", 0).put("concurrency", 8)).toString())
@@ -392,7 +415,7 @@ class NovelClientFlowTest {
     }
     @Test fun returningToResultsResumesOriginalSearchWithoutSubmittingAgain() {
         val finished = java.util.concurrent.atomic.AtomicBoolean(false)
-        handler = { request -> if (request.path == "/novel/api/v1/jobs/search")
+        handler = { request -> if (request.route() == "/novel/api/v1/jobs/search")
             json("{\"state\":\"${if (finished.get()) "succeeded" else "running"}\",\"result\":{\"items\":[$row],\"sources\":[]}}")
             else modernResponse(request)
         }
@@ -411,7 +434,7 @@ class NovelClientFlowTest {
         compose.runOnIdle { assertEquals(1, state.rows.size) }
     }
     @Test fun previewChapterClickCollectsCurrentWorkAndOpensExactVersionChapter() {
-        handler = { request -> when (request.path) {
+        handler = { request -> when (request.route()) {
             "/novel/api/v1/source-previews" -> json("""{"job_id":null,"toc":{"items":[{"title":"归来","chapter_url":"https://example.com/chapter/2?part=1"}],"complete":true}}""")
             "/novel/api/v1/source-results/collect" -> json("""{"work_id":"existing","binding_id":"binding","job_id":"toc"}""")
             "/novel/api/v1/jobs/toc" -> json("""{"state":"succeeded","result":{"version_id":"fixed"}}""")
@@ -429,7 +452,7 @@ class NovelClientFlowTest {
         assertFalse(requests.any { it.first.contains("/chapters/") || it.first.contains("/progress/") })
     }
     @Test fun ambiguousReadWaitsForInlineWorkChoiceThenResumesTheSameAction() {
-        handler = { request -> when (request.path) {
+        handler = { request -> when (request.route()) {
             "/novel/api/v1/source-previews" -> json("""{"job_id":null,"message":"只读预览"}""")
             "/novel/api/v1/source-results/collect" -> if (!JSONObject(request.body.clone().readUtf8()).has("work_id"))
                 MockResponse().setResponseCode(409).setBody("""{"detail":{"code":"choose_existing_work","candidates":[{"id":"chosen","title":"山海来信","author":"行舟","description":"库内已有简介"}]}}""")
@@ -450,7 +473,7 @@ class NovelClientFlowTest {
         assertEquals(2, bodies.size); assertEquals("chosen", bodies.last().getString("work_id")); assertTrue(bodies.none { it.has("create_new") })
     }
     @Test fun independentCollectionIsOnlySentAfterExplicitChoice() {
-        handler = { request -> when (request.path) {
+        handler = { request -> when (request.route()) {
             "/novel/api/v1/source-previews" -> json("""{"job_id":null,"message":"只读预览"}""")
             "/novel/api/v1/source-results/collect" -> if (!JSONObject(request.body.clone().readUtf8()).optBoolean("create_new"))
                 MockResponse().setResponseCode(409).setBody("""{"detail":{"code":"choose_existing_work","candidates":[{"id":"existing","title":"山海来信","author":""}]}}""")
@@ -466,7 +489,7 @@ class NovelClientFlowTest {
         assertFalse(bodies.first().has("create_new")); assertTrue(bodies.last().getBoolean("create_new")); assertFalse(bodies.last().has("work_id"))
     }
     @Test fun metadataSourceWithTocNeverOffersChapterReading() {
-        handler = { request -> if (request.path == "/novel/api/v1/source-previews")
+        handler = { request -> if (request.route() == "/novel/api/v1/source-previews")
             json("""{"job_id":null,"toc":{"items":[{"title":"仅供浏览章节","chapter_url":"https://example.com/c"}],"complete":true}}""") else modernResponse(request)
         }
         val metadata = JSONObject(row).put("capabilities", org.json.JSONArray(listOf("search", "detail", "toc")))

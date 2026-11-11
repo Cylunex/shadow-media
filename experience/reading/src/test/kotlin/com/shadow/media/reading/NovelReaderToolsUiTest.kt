@@ -29,6 +29,9 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [28], qualifiers = "w320dp-h640dp-mdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class NovelReaderToolsUiTest {
+    private fun RecordedRequest.route(): String? = path?.let {
+        if (requestUrl!!.encodedPath.startsWith("/api/v1/jobs/")) it.substringBefore('?') else it
+    }
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
     private val server = MockWebServer()
     private val requests = CopyOnWriteArrayList<Pair<String, String>>()
@@ -37,8 +40,8 @@ class NovelReaderToolsUiTest {
     private var handler: (RecordedRequest) -> MockResponse = { MockResponse().setBody("{}") }
     @Before fun setup() {
         server.dispatcher = object : Dispatcher() { override fun dispatch(request: RecordedRequest): MockResponse {
-            requests += request.path.orEmpty() to request.body.clone().readUtf8()
-            return if (request.path.orEmpty().startsWith("/api/v1/source-browser")) json(browserData) else handler(request)
+            requests += request.route().orEmpty() to request.body.clone().readUtf8()
+            return if (request.route().orEmpty().startsWith("/api/v1/source-browser")) json(browserData) else handler(request)
         } }; server.start()
         c = CatalogConnection(name = "测试书库", kind = CatalogKind.OPDS, url = server.url("/").toString(), allowHttp = true)
     }
@@ -59,7 +62,7 @@ class NovelReaderToolsUiTest {
         var shown by mutableStateOf(true)
         var failRefresh = false
         val versions = (1..40).joinToString(",") { """{"id":"v$it","state":"ready","label":"来源 $it"}""" }
-        handler = { request -> if (request.path == "/api/v1/works/work") {
+        handler = { request -> if (request.route() == "/api/v1/works/work") {
             if (failRefresh) MockResponse().setResponseCode(503).setBody("{}").setBodyDelay(1, TimeUnit.SECONDS)
             else json("""{"id":"work","versions":[$versions]}""")
         } else json("{}") }
@@ -92,12 +95,12 @@ class NovelReaderToolsUiTest {
         browserData = """{"items":[{"id":"s"},{"id":"s2"}],"groups":[{"id":"a","name":"常用"},{"id":"b","name":"备用"}],"tags":["稳定","快速"]}"""
         var jobs = 0
         handler = { request -> when {
-            request.path == "/api/v1/works/work" -> json("""{"id":"work","title":"山海来信","author":"行舟","versions":[]}""")
-            request.path == "/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true}}""")
-            request.path.orEmpty().startsWith("/api/v1/source-selection") -> json("""{"provider_ids":["s","s2"]}""")
-            request.path == "/api/v1/search-jobs" -> json("""{"job_id":"job${++jobs}"}""")
-            request.path == "/api/v1/jobs/job1" -> json("""{"state":"succeeded","result":{"remaining":1,"items":[],"sources":[{"provider_id":"s","ok":false}]}}""")
-            request.path == "/api/v1/jobs/job2" -> json("""{"state":"succeeded","result":{"remaining":0,"items":[],"sources":[{"provider_id":"s","ok":true}]}}""")
+            request.route() == "/api/v1/works/work" -> json("""{"id":"work","title":"山海来信","author":"行舟","versions":[]}""")
+            request.route() == "/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true}}""")
+            request.route().orEmpty().startsWith("/api/v1/source-selection") -> json("""{"provider_ids":["s","s2"]}""")
+            request.route() == "/api/v1/search-jobs" -> json("""{"job_id":"job${++jobs}"}""")
+            request.route() == "/api/v1/jobs/job1" -> json("""{"state":"succeeded","result":{"remaining":1,"items":[],"sources":[{"provider_id":"s","ok":false}]}}""")
+            request.route() == "/api/v1/jobs/job2" -> json("""{"state":"succeeded","result":{"remaining":0,"items":[],"sources":[{"provider_id":"s","ok":true}]}}""")
             else -> json("""{"state":"succeeded","result":{"remaining":0,"items":[],"sources":[{"provider_id":"s2","ok":true}]}}""")
         } }
         var shown by mutableStateOf(true)
@@ -140,7 +143,7 @@ class NovelReaderToolsUiTest {
     }
 
     @Test fun sourceDirectoryKeepsPageAndScrollAcrossReturnAndSheetClose() {
-        handler = { request -> if (request.path == "/api/v1/works/work") json("""{"id":"work","versions":[{"id":"v1","state":"ready","label":"主书源"}]}""")
+        handler = { request -> if (request.route() == "/api/v1/works/work") json("""{"id":"work","versions":[{"id":"v1","state":"ready","label":"主书源"}]}""")
             else {
                 val offset = request.requestUrl?.queryParameter("offset")?.toIntOrNull() ?: 0
                 val rows = (offset until offset + 100).joinToString(",") { """{"id":"c$it","title":"章节 $it","ordinal":$it,"readable":true}""" }
@@ -173,10 +176,10 @@ class NovelReaderToolsUiTest {
 
     @Test fun failedRefreshKeepsOldRowsAndEmptyTagScopeNeverSearchesAllSources() {
         handler = { request -> when {
-            request.path == "/api/v1/works/work" -> json("""{"id":"work","title":"山海来信","author":"行舟","versions":[]}""")
-            request.path == "/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true}}""")
-            request.path.orEmpty().startsWith("/api/v1/source-selection") -> json("""{"provider_ids":[]}""")
-            request.path == "/api/v1/search-jobs" -> json("""{"job_id":"failed"}""")
+            request.route() == "/api/v1/works/work" -> json("""{"id":"work","title":"山海来信","author":"行舟","versions":[]}""")
+            request.route() == "/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true}}""")
+            request.route().orEmpty().startsWith("/api/v1/source-selection") -> json("""{"provider_ids":[]}""")
+            request.route() == "/api/v1/search-jobs" -> json("""{"job_id":"failed"}""")
             else -> json("""{"state":"failed","error":"查询中断","result":{"items":[],"sources":[{"provider_id":"s","ok":false}]}}""")
         } }
         val state = NovelReaderSourceState().apply {
@@ -215,7 +218,7 @@ class NovelReaderToolsUiTest {
     }
 
     @Test fun continuationIsVisibleAboveLongSourceListsAndRetainsEarlierSources() {
-        handler = { request -> when (request.path) {
+        handler = { request -> when (request.route()) {
             "/api/v1/works/work" -> json("""{"id":"work","versions":[],"title":"山海来信","author":"行舟"}""")
             "/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true}}""")
             "/api/v1/search-jobs" -> json("""{"job_id":"next"}""")
@@ -239,8 +242,8 @@ class NovelReaderToolsUiTest {
     }
 
     @Test fun sourceSelectionShowsTargetContentsAndOnlyExplicitChapterMovesReading() {
-        handler = { request -> if (request.path == "/api/v1/works/work") json("""{"id":"work","versions":[{"id":"v1","state":"ready","label":"主书源"},{"id":"v2","state":"ready","label":"备用书源"}]}""")
-            else if (request.path!!.contains("/open")) json("""{"version_id":"v2","quality":"approximate","mapping_basis":"title","position":{"chapter_id":"next"}}""")
+        handler = { request -> if (request.route() == "/api/v1/works/work") json("""{"id":"work","versions":[{"id":"v1","state":"ready","label":"主书源"},{"id":"v2","state":"ready","label":"备用书源"}]}""")
+            else if (request.route()!!.contains("/open")) json("""{"version_id":"v2","quality":"approximate","mapping_basis":"title","position":{"chapter_id":"next"}}""")
             else json("""{"version_id":"v2","total":1,"offset":0,"limit":100,"next_offset":null,"items":[{"id":"next","title":"山海来信","ordinal":8,"readable":true}]}""") }
         val repo = repository(); val state = NovelReaderSourceState(); var opened = ""
         compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -261,7 +264,7 @@ class NovelReaderToolsUiTest {
 
     @Test fun partialSearchResultsCanOpenTheirDirectoryWhileOtherSourcesAreStillSearching() {
         val source = """{"provider_id":"s","provider_name":"备用站点","bookUrl":"https://example.com/book","name":"山海来信","author":"行舟","capabilities":["detail","toc","chapter"],"auto_bind":{"status":"bound","work_id":"work","binding_id":"b"}}"""
-        handler = { request -> when (request.path) {
+        handler = { request -> when (request.route()) {
             "/api/v1/works/work" -> json("""{"id":"work","title":"山海来信","author":"行舟","versions":[{"id":"v1","label":"主书源","state":"ready"},{"id":"v2","label":"备用书源","state":"ready"}]}""")
             "/api/v1/integration" -> json("""{"capabilities":{"source_search_modes":true,"source_intake_reuse":true,"source_search_auto_bind":true}}""")
             "/api/v1/search-jobs" -> json("""{"job_id":"search"}""")
@@ -292,7 +295,7 @@ class NovelReaderToolsUiTest {
     @Test fun stoppingSearchRetainsResultsAndFilteringDoesNotLaunchAnotherSearch() {
         val source = """{"provider_id":"s","provider_name":"备用站点","bookUrl":"https://example.com/book","name":"山海来信","author":"另一作者","capabilities":["detail","toc","chapter"]}"""
         val result = """"result":{"items":[$source],"sources":[{"provider_id":"s","ok":true,"auto_bind_complete":false}]}"""
-        handler = { request -> when (request.path) {
+        handler = { request -> when (request.route()) {
             "/api/v1/works/work" -> json("""{"id":"work","title":"山海来信","author":"行舟","versions":[]}""")
             "/api/v1/integration" -> json("""{"capabilities":{"source_search_auto_bind":true}}""")
             "/api/v1/search-jobs" -> json("""{"job_id":"search"}""")
@@ -329,7 +332,7 @@ class NovelReaderToolsUiTest {
 
     @Test fun interruptedSearchResumesTheSameJobAndRetainsPartialResults() {
         var polls = 0
-        handler = { request -> when (request.path) {
+        handler = { request -> when (request.route()) {
             "/api/v1/works/work" -> json("""{"id":"work","title":"山海来信","author":"行舟","versions":[]}""")
             "/api/v1/search-jobs" -> json("""{"job_id":"search"}""")
             "/api/v1/jobs/search" -> when (++polls) {

@@ -42,7 +42,7 @@ class NovelSourceSearchTest {
             assertEquals("/novel/api/v1/search-jobs", request.path)
             assertEquals("原创作品", JSONObject(request.body.readUtf8()).getString("q"))
             assertEquals("Bearer REPLACE_TOKEN", request.getHeader("Authorization"))
-            repeat(2) { assertEquals("/novel/api/v1/jobs/search-1", server.takeRequest().path) }
+            repeat(2) { assertEquals("/novel/api/v1/jobs/search-1", server.takeRequest().requestUrl!!.encodedPath) }
         } finally { server.shutdown() }
     }
 
@@ -60,7 +60,7 @@ class NovelSourceSearchTest {
             assertEquals("existing-work", body.getString("work_id"))
             assertEquals("source-a", body.getString("provider_id"))
             assertEquals("https://example.com/book/1", body.getString("url"))
-            assertEquals("/novel/api/v1/jobs/toc-1", server.takeRequest().path)
+            assertEquals("/novel/api/v1/jobs/toc-1", server.takeRequest().requestUrl!!.encodedPath)
             assertEquals(2, server.requestCount)
         } finally { server.shutdown() }
     }

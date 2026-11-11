@@ -1,7 +1,9 @@
 package com.shadow.media.library
 
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.json.JSONArray
 
@@ -14,7 +16,32 @@ class NovelVersionSelectionRequired(val workId: String, val versionId: String) :
 data class NovelSourceOpening(val workId: String, val versionId: String, val chapterId: String? = null)
 
 /** Online results and job state stay in memory; their source URLs are only sent back to Novel. */
-class NovelSourceSearch(private val api: NovelApi) {
+class NovelSourceSearch(private val api: NovelApi, private val waitMillis: Long = 60_000) {
+    private val jobs = NovelJobPoller(api)
+    private data class ChoiceKey(val connection: CatalogConnection, val filter: NovelSourceFilter, val explore: Boolean)
+    private data class ChoicePage(val loaded: Long, val rows: List<String>)
+    private val choiceLock = Mutex()
+    private val choicePages = linkedMapOf<ChoiceKey, ChoicePage>()
+    suspend fun invalidateChoices() = choiceLock.withLock { choicePages.clear() }
+    suspend fun choices(connection: CatalogConnection, filter: NovelSourceFilter, explore: Boolean = false,
+        refresh: Boolean = false): List<JSONObject> = withContext(Dispatchers.Default) {
+        choiceLock.withLock {
+            val key = ChoiceKey(connection, filter, explore)
+            val cached = choicePages[key]?.takeIf { !refresh && System.nanoTime() - it.loaded < 30_000_000_000L }
+            if (cached != null) return@withLock cached.rows.map(::JSONObject)
+            val browser = api.json(connection, listOf("source-browser"),
+                listOf("mode" to if (explore) "explore" else "search") + filter.groups.map { "group_id" to it })
+            val defaultScope = if (explore) NovelSourceFilter(exploreEnabled = "true")
+                else NovelSourceFilter(enabled = "true", capability = "search")
+            val allowed = if (filter.copy(groups = emptyList()) == defaultScope) null
+                else NovelLibraryTools(api).selection(connection, filter).toSet()
+            val rows = browser.novelObjects("items").filter { allowed == null || it.optString("id") in allowed }
+            choicePages[key] = ChoicePage(System.nanoTime(), rows.map { it.toString() })
+            while (choicePages.size > 4) choicePages.remove(choicePages.keys.first())
+            rows
+        }
+    }
+
     suspend fun features(connection: CatalogConnection): NovelSourceFeatures {
         val caps = try { api.json(connection, listOf("integration")).optJSONObject("capabilities") }
         catch (e: NovelApiException) { if (e.status in setOf(404, 405)) null else throw e }
@@ -23,10 +50,7 @@ class NovelSourceSearch(private val api: NovelApi) {
             caps?.optBoolean("source_version_prepare") == true, caps?.optBoolean("source_body_preview") == true)
     }
     suspend fun scope(connection: CatalogConnection, filter: NovelSourceFilter): List<String> {
-        val browser = api.json(connection, listOf("source-browser"), listOf("mode" to "search") + filter.groups.map { "group_id" to it })
-        val defaultScope = NovelSourceFilter(enabled = "true", capability = "search")
-        val allowed = if (filter.copy(groups = emptyList()) == defaultScope) null else NovelLibraryTools(api).selection(connection, filter).toSet()
-        return browser.novelObjects("items").mapNotNull { it.novelId("id") }.filter { allowed == null || it in allowed }.distinct().also {
+        return choices(connection, filter).mapNotNull { it.novelId("id") }.distinct().also {
             require(it.size <= 5000) { "一次最多搜索 5000 个书源，请缩小范围" }
         }
     }
@@ -45,7 +69,7 @@ class NovelSourceSearch(private val api: NovelApi) {
     }
 
     // A search across thousands of sources may outlive a screen visit. Cancellation still stops HTTP polling.
-    suspend fun resumeSearch(connection: CatalogConnection, id: String, onUpdate: (JSONObject) -> Unit): JSONObject = pollJob(connection, id, onUpdate, allowCancelled = true)
+    suspend fun resumeSearch(connection: CatalogConnection, id: String, onUpdate: (JSONObject) -> Unit): JSONObject = jobs.await(connection, id, timeoutMillis = 0, allowCancelled = true, onUpdate = onUpdate)
 
     suspend fun bind(connection: CatalogConnection, workId: String, row: JSONObject): JSONObject {
         require(workId.isNotBlank() && readableNovelSource(row)) { "此来源暂无可读内容" }
@@ -57,11 +81,18 @@ class NovelSourceSearch(private val api: NovelApi) {
         return binding
     }
 
-    suspend fun preview(connection: CatalogConnection, row: JSONObject, includeToc: Boolean = false, includeBody: Boolean = false, chapterUrl: String? = null): JSONObject {
-        val receipt = api.json(connection, listOf("source-previews"), method = "POST", body = JSONObject()
-            .put("provider_id", row.getString("provider_id")).put("url", row.getString("bookUrl")).put("include_toc", includeToc || includeBody).put("include_body", includeBody).put("chapter_url", chapterUrl.orEmpty()))
-        val id = receipt.novelId("job_id") ?: return receipt
-        return awaitJob(connection, id) {}.getJSONObject("result")
+    suspend fun preview(connection: CatalogConnection, row: JSONObject, includeToc: Boolean = false, includeBody: Boolean = false,
+        chapterUrl: String? = null, previousJob: String? = null, onJob: (String?) -> Unit = {}): JSONObject {
+        val id = previousJob ?: run {
+            val receipt = api.json(connection, listOf("source-previews"), method = "POST", body = JSONObject()
+                .put("provider_id", row.getString("provider_id")).put("url", row.getString("bookUrl"))
+                .put("include_toc", includeToc || includeBody).put("include_body", includeBody).put("chapter_url", chapterUrl.orEmpty()))
+            receipt.novelId("job_id") ?: return receipt
+        }
+        onJob(id)
+        return awaitJob(connection, id) { job ->
+            if (job.optString("state") in setOf("succeeded", "failed", "cancelled")) onJob(null)
+        }.getJSONObject("result")
     }
 
     suspend fun collect(connection: CatalogConnection, row: JSONObject, workId: String? = null,
@@ -110,23 +141,9 @@ class NovelSourceSearch(private val api: NovelApi) {
 
     suspend fun cancel(connection: CatalogConnection, id: String) = api.json(connection, listOf("jobs", id, "cancel"), method = "POST")
 
-    suspend fun awaitJob(connection: CatalogConnection, id: String, onUpdate: (JSONObject) -> Unit): JSONObject = withTimeout(60_000) { pollJob(connection, id, onUpdate) }
+    suspend fun awaitJob(connection: CatalogConnection, id: String, onUpdate: (JSONObject) -> Unit): JSONObject =
+        jobs.await(connection, id, waitMillis, onUpdate = onUpdate)
 
-    private suspend fun pollJob(connection: CatalogConnection, id: String, onUpdate: (JSONObject) -> Unit, allowCancelled: Boolean = false): JSONObject {
-        // Read live state directly: a cached running job must never be treated as current progress.
-        var job = api.json(connection, listOf("jobs", id))
-        onUpdate(job)
-        while (job.optString("state") !in setOf("succeeded", "failed", "cancelled")) {
-            delay(1_000)
-            job = api.json(connection, listOf("jobs", id))
-            onUpdate(job)
-        }
-        when (job.optString("state")) {
-            "failed" -> error(job.optString("error").ifBlank { "书源操作失败，请重试" })
-            "cancelled" -> if (!allowCancelled) error("书源操作已取消，可重试")
-        }
-        return job
-    }
 }
 
 

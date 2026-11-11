@@ -84,7 +84,9 @@ class NovelRepository(private val context: Context, private val library: Library
             return cache.catalogPage(key)?.let { JSONObject(it.payload).put("_cached_at", it.updatedAt) } ?: throw e
         }
     }
-    suspend fun mutate(c: CatalogConnection, path: List<String>, method: String, body: JSONObject? = null): JSONObject = api.json(c, path, method = method, body = body)
+    suspend fun mutate(c: CatalogConnection, path: List<String>, method: String, body: JSONObject? = null): JSONObject = api.json(c, path, method = method, body = body).also {
+        if (path.firstOrNull() in setOf("providers", "source-groups")) sourceSearch.invalidateChoices()
+    }
     suspend fun downloaded(scope: String): List<LibraryAssetEntity> {
         return dao.publications(scope).groupBy { it.workId to it.versionId }.mapNotNull { (identity, publications) ->
             val saved = dao.state(stateId(scope, identity.first))?.localPosition?.takeIf(String::isNotBlank)?.let(::JSONObject)
