@@ -397,6 +397,32 @@ class NovelReaderToolsUiTest {
         assertTrue(requests.isEmpty())
     }
 
+    @Test fun downloadedFilterSearchesAcrossLocalPagesWithoutNetworkAndCanReturnToFullDirectory() {
+        handler = { json("""{"version_id":"v1","total":1,"offset":0,"limit":100,"next_offset":null,"items":[{"id":"remote","title":"联网目录","ordinal":0,"readable":true}]}""") }
+        val rows = (1..220).map { JSONObject().put("id", "d$it").put("ordinal", it * 3).put("readable", true).put("title", "本机第${it}章") }
+        val repo = repository()
+        var opened: String? = null
+        compose.setContent { MaterialTheme { Column(Modifier.fillMaxSize()) {
+            NovelContentsPanel(repo, c, "work", "v1", true, { opened = it.getString("id") },
+                downloadedChapters = { rows }, contentScope = null)
+        } } }
+        waitText("联网目录")
+        val before = requests.size
+        compose.onNodeWithContentDescription("更多目录操作").performClick()
+        compose.onNodeWithText("只看已下载").performClick()
+        waitText("已下载 · 220 节")
+        compose.onNodeWithText("搜索已下载章节标题").performTextInput("220章")
+        compose.onNode(hasSetTextAction()).performImeAction()
+        waitText("本机第220章")
+        compose.onNodeWithText("本机第220章").performClick()
+        assertEquals("d220", opened)
+        assertEquals(before, requests.size)
+        compose.onNodeWithContentDescription("清除章节搜索").performClick()
+        compose.onNodeWithContentDescription("更多目录操作").performClick()
+        compose.onNodeWithText("显示完整目录").performClick()
+        waitText("联网目录")
+    }
+
     @Test @Config(qualifiers = "w640dp-h360dp-mdpi") fun downloadDialogScrollsAtLandscapeHeightAndClosingRestoresContents() {
         handler = { json("""{"version_id":"v1","total":1,"offset":0,"limit":100,"next_offset":null,"items":[{"id":"chapter","title":"山海来信","ordinal":0,"readable":true}]}""") }
         val repo = repository()

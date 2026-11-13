@@ -55,20 +55,21 @@ internal fun ColumnScope.NativeReaderContentsPanel(
     var requested by rememberSaveable(asset.id, asset.revision) { mutableIntStateOf(current.ref.ordinal) }
     var total by remember { mutableIntStateOf(current.total) }
     val start = nativeContentsOffset(requested, total)
-    var allEntries by remember { mutableStateOf<List<NativeChapterRef>>(emptyList()) }
-    var entries by remember(start) { mutableStateOf<List<NativeChapterRef>>(emptyList()) }
+    var allEntries by remember(asset.id, asset.revision) { mutableStateOf<List<NativeChapterRef>>(emptyList()) }
+    val entries = remember(allEntries, start) {
+        allEntries.subList(start.coerceAtMost(allEntries.size), minOf(start + NATIVE_CONTENTS_PAGE_SIZE, allEntries.size))
+    }
     var downloaded by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var loading by remember(start) { mutableStateOf(true) }
+    var loading by remember(asset.id, asset.revision) { mutableStateOf(true) }
     var notice by remember(start) { mutableStateOf<String?>(null) }
     var retry by remember { mutableIntStateOf(0) }
-    LaunchedEffect(start, retry) {
+    LaunchedEffect(asset.id, asset.revision, retry) {
         loading = true
         notice = null
         try {
             val local = source.local(asset)
             total = local.size
             allEntries = local.map { it.ref }
-            entries = local.drop(start).take(NATIVE_CONTENTS_PAGE_SIZE).map { it.ref }
             downloaded = allEntries.map { it.id }.toSet()
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) { notice = e.message ?: "目录加载失败" }
@@ -90,7 +91,10 @@ internal fun ColumnScope.NativeContentsBody(
     var more by remember { mutableStateOf(false) }
     val focus = LocalFocusManager.current
     val listState = rememberLazyListState()
-    val visible = remember(entries, allEntries, filter) { if (filter.isBlank()) entries else allEntries.filter { SearchText.contains(it.title, filter) } }
+    val visible = remember(entries, allEntries, filter) {
+        val term = SearchText.fold(filter.trim())
+        if (term.isEmpty()) entries else allEntries.filter { SearchText.fold(it.title).contains(term, ignoreCase = true) }
+    }
     val target = number.toIntOrNull()?.takeIf { it in 1..total }
     var needsPosition by rememberSaveable(requested, filter) { mutableStateOf(true) }
     fun locate(ordinal: Int) { filter = ""; focus.clearFocus(); onRequest(ordinal); needsPosition = true }

@@ -152,10 +152,11 @@ class NovelContentsUiTest {
 
     @Test fun sparseOfflineDirectoryLocatesTheCurrentChapterBeforeAndAfterPaging() {
         val repo = NovelRepository(compose.activity)
+        val reads = java.util.concurrent.atomic.AtomicInteger()
         val cached = (0 until 230).map { chapter(it * 10) }
         compose.setContent { MaterialTheme { Surface { Column(Modifier.fillMaxSize()) {
             NovelContentsPanel(repo, null, "book", "v", true, {}, Modifier.weight(1f),
-                currentId = "c1450", currentOrdinal = 1450, downloadedChapters = { cached })
+                currentId = "c1450", currentOrdinal = 1450, downloadedChapters = { reads.incrementAndGet(); cached })
         } } } }
         fun awaitTitle(title: String) = compose.waitUntil(5_000) {
             compose.onAllNodesWithText(title).fetchSemanticsNodes().isNotEmpty()
@@ -168,6 +169,7 @@ class NovelContentsUiTest {
         compose.onNodeWithText("当前章").performClick()
         awaitTitle("正在阅读")
         compose.onNodeWithText("第1450 节 山海来信").assertIsDisplayed()
+        assertEquals(1, reads.get())
     }
 
     @Test fun removedOfflineChapterStaysInPlaceAndCannotBeOpened() {

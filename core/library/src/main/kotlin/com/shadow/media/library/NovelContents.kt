@@ -25,24 +25,30 @@ fun novelContentsNext(page: JSONObject): Int? {
 /** Offline fallback searches all downloaded titles, never represents them as a complete directory. */
 fun novelOfflineContents(chapters: List<JSONObject>, query: NovelContentsQuery, anchorId: String? = null): JSONObject {
     val ordered = chapters.distinctBy { it.getString("id") }.sortedBy { it.getInt("ordinal") }
-    val filtered = ordered.filter { query.q.isBlank() || SearchText.contains(it.optString("title"), query.q) }
-        .let { if (query.descending) it.reversed() else it }
-    val anchor = anchorId?.let { id -> filtered.indexOfFirst { it.getString("id") == id } }
+    return localContentsPage(ordered, query, anchorId).put("_downloaded_only", true)
+}
+
+private fun localContentsPage(ordered: List<JSONObject>, query: NovelContentsQuery, anchorId: String?): JSONObject {
+    val term = SearchText.fold(query.q.trim())
+    val matches = if (term.isEmpty()) ordered else ordered.filter {
+        SearchText.fold(it.optString("title")).contains(term, ignoreCase = true)
+    }
+    val filtered = if (query.descending) matches.asReversed() else matches
+    val anchor = anchorId?.takeIf { query.q.isBlank() }?.let { id -> filtered.indexOfFirst { it.getString("id") == id } }
     val start = if (anchor != null && anchor >= 0) anchor / query.limit * query.limit
         else query.offset.coerceAtMost(((filtered.size - 1).coerceAtLeast(0) / query.limit) * query.limit)
-    val rows = filtered.drop(start).take(query.limit)
+    val rows = filtered.subList(start, minOf(start + query.limit, filtered.size))
     return JSONObject().put("version_id", query.versionId).put("offset", start).put("limit", query.limit)
-        .put("total", filtered.size).put("items", JSONArray(rows)).put("_downloaded_only", true)
+        .put("total", filtered.size).put("items", JSONArray(rows))
         .put("next_offset", (start + rows.size).takeIf { it < filtered.size } ?: JSONObject.NULL)
         .put("latest", JSONObject.NULL)
 }
 
 /** A saved complete TOC includes uncached chapters; availability badges still come from local files. */
-fun novelSavedDirectoryContents(directory: JSONObject, query: NovelContentsQuery): JSONObject {
+fun novelSavedDirectoryContents(directory: JSONObject, query: NovelContentsQuery, anchorId: String? = null): JSONObject {
     require(directory.getString("version_id") == query.versionId)
     val entries = directory.novelObjects("items")
-    return novelOfflineContents(entries, query).apply {
-        remove("_downloaded_only")
+    return localContentsPage(entries, query, anchorId).apply {
         put("_directory_cached", true)
         put("latest", entries.lastOrNull { it.optBoolean("readable") } ?: JSONObject.NULL)
     }

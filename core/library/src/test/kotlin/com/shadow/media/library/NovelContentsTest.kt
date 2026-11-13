@@ -59,6 +59,15 @@ class NovelContentsTest {
         assertNull(novelContentsNext(page))
     }
 
+    @Test fun savedDirectoryLocatesByIdentityAndKeepsSearchPagination() {
+        val rows = (0..8).map { JSONObject().put("id", "c$it").put("ordinal", it).put("title", "回").put("readable", true) }
+        val directory = JSONObject().put("version_id", "v1").put("items", JSONArray(rows))
+        val query = NovelContentsQuery("v1", limit = 3)
+        assertEquals(6, novelSavedDirectoryContents(directory, query, "c7").getInt("offset"))
+        assertEquals(0, novelSavedDirectoryContents(directory, query.reverse(), "c7").getInt("offset"))
+        assertEquals(3, novelSavedDirectoryContents(directory, query.copy(q = "回", offset = 3), "c7").getInt("offset"))
+    }
+
     @Test fun updateFilterDoesNotMeanNoUpdatesWhenTurnedOff() {
         assertFalse(NovelQuery(view = "shelf").parameters().any { it.first == "has_updates" })
         assertTrue(NovelQuery(view = "shelf", hasUpdates = true).parameters().contains("has_updates" to "true"))

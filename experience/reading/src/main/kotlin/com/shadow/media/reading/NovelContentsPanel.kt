@@ -27,6 +27,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.shadow.media.library.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -44,35 +46,45 @@ fun NovelContentsPanel(
     retainedPages: MutableMap<Pair<NovelContentsQuery, String?>, JSONObject>? = null,
     currentLabel: String = "正在阅读",
 ) {
-    key(connection?.id, workId, versionId) {
+    key(connection?.id, contentScope, workId, versionId) {
         var term by rememberSaveable { mutableStateOf("") }
         var descending by rememberSaveable { mutableStateOf(false) }
         var offset by rememberSaveable { mutableIntStateOf((currentOrdinal ?: 0).coerceAtLeast(0) / 100 * 100) }
         var anchorId by rememberSaveable { mutableStateOf(currentId) }
         var positionInitialized by rememberSaveable { mutableStateOf(currentId != null) }
         val query = NovelContentsQuery(versionId, term, descending, offset)
+        var onlyDownloads by rememberSaveable { mutableStateOf(false) }
         val pageKey = query to anchorId
-        var page by remember(pageKey) { mutableStateOf<JSONObject?>(retainedPages?.get(pageKey)) }
-        var downloaded by remember { mutableStateOf<Set<String>>(emptySet()) }
-        var loading by remember(query, anchorId) { mutableStateOf(true) }
-        var error by remember(query, anchorId) { mutableStateOf<String?>(null) }
+        var page by remember(pageKey, onlyDownloads) { mutableStateOf<JSONObject?>(retainedPages?.get(pageKey).takeUnless { onlyDownloads }) }
+        var loading by remember(pageKey, onlyDownloads) { mutableStateOf(true) }
+        var error by remember(pageKey, onlyDownloads) { mutableStateOf<String?>(null) }
         var retry by remember { mutableIntStateOf(0) }
         var showDownloads by rememberSaveable { mutableStateOf(false) }
         val cacheUpdates by repository.cache.changes.collectAsState()
-        LaunchedEffect(cacheUpdates, retry) {
-            val cached = withContext(Dispatchers.IO) {
-                if (contentScope != null) repository.cache.chapters(contentScope, workId, versionId) else downloadedChapters()
-            }
-            downloaded = cached.map { it.getString("id") }.toSet()
+        // Share one inventory per cache revision across paging, badge rendering and offline queries.
+        val inventory = produceState<Result<List<JSONObject>>?>(null, contentScope, cacheUpdates, retry) {
+            value = null
+            value = try {
+                Result.success(withContext(Dispatchers.IO) {
+                    if (contentScope != null) repository.cache.chapters(contentScope, workId, versionId) else downloadedChapters()
+                })
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { Result.failure(e) }
         }
+        val downloaded = remember(inventory.value) {
+            inventory.value?.getOrNull().orEmpty().mapTo(mutableSetOf()) { it.getString("id") }
+        }
+        suspend fun cachedChapters() = snapshotFlow { inventory.value }.filterNotNull().first().getOrThrow()
         LaunchedEffect(currentId) {
             if (!positionInitialized && currentId != null) { anchorId = currentId; positionInitialized = true }
         }
-        LaunchedEffect(query, retry, anchorId) {
+        LaunchedEffect(query, retry, anchorId, onlyDownloads, if (onlyDownloads) inventory.value else null) {
             loading = true; error = null
             try {
-                val cached = withContext(Dispatchers.IO) {
-                    if (contentScope != null) repository.cache.chapters(contentScope, workId, versionId) else downloadedChapters()
+                if (onlyDownloads) {
+                    val rows = cachedChapters()
+                    page = withContext(Dispatchers.Default) { novelOfflineContents(rows, query, anchorId) }
+                    return@LaunchedEffect
                 }
                 try {
                     requireNotNull(connection) { "连接已移除" }
@@ -82,16 +94,17 @@ fun NovelContentsPanel(
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
                     val saved = contentScope?.let { repository.cache.savedDirectory(it, workId, versionId) }
+                    val cached = if (saved == null) cachedChapters() else emptyList()
                     if (saved == null && cached.isEmpty()) throw e
                     page = withContext(Dispatchers.Default) {
-                        saved?.let { novelSavedDirectoryContents(it, query) } ?: novelOfflineContents(cached, query, anchorId)
+                        saved?.let { novelSavedDirectoryContents(it, query, anchorId) } ?: novelOfflineContents(cached, query, anchorId)
                     }
                     error = if (e is NovelApiException && e.status in setOf(401, 403)) "登录已失效，当前显示本机目录" else if (saved == null) "暂时无法获取完整目录，当前仅显示本机已下载目录" else null
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { error = e.message ?: "目录加载失败，请重试" }
             finally {
-                page?.let { retainedPages?.put(pageKey, it) }
+                if (!onlyDownloads) page?.let { retainedPages?.put(pageKey, it) }
                 if (retainedPages != null && retainedPages.size > 12) retainedPages.keys.firstOrNull { it != pageKey }?.let(retainedPages::remove)
                 loading = false
             }
@@ -117,7 +130,11 @@ fun NovelContentsPanel(
                     val chapter = page?.novelObjects("items")?.firstOrNull { it.optString("id") == id }
                         ?: page?.optJSONObject("latest")?.takeIf { it.optString("id") == id }
                     chapter?.let(onOpen)
-                }, currentLabel = currentLabel)
+                }, currentLabel = currentLabel, onlyDownloads = onlyDownloads, onToggleDownloads = {
+                    onlyDownloads = !onlyDownloads
+                    offset = 0
+                    anchorId = null
+                })
         }
     }
 }
@@ -128,6 +145,7 @@ internal fun ColumnScope.NovelContentsBody(
     currentId: String?, currentOrdinal: Int?, enabled: Boolean,
     onQuery: (NovelContentsQuery, ContentsPosition) -> Unit, onRetry: () -> Unit, onOpen: (String) -> Unit,
     currentLabel: String = "正在阅读",
+    onlyDownloads: Boolean = false, onToggleDownloads: (() -> Unit)? = null,
 ) {
     var draft by rememberSaveable(query.q) { mutableStateOf(query.q) }
     var jump by rememberSaveable { mutableStateOf(false) }
@@ -165,6 +183,11 @@ internal fun ColumnScope.NovelContentsBody(
         Box {
             IconButton(onClick = { more = true }) { Icon(Icons.Rounded.MoreVert, "更多目录操作") }
             DropdownMenu(more, onDismissRequest = { more = false }) {
+                if (onToggleDownloads != null) DropdownMenuItem(text = { Text(if (onlyDownloads) "显示完整目录" else "只看已下载") }, onClick = {
+                    more = false
+                    pendingPosition = ContentsPosition.PAGE_START
+                    onToggleDownloads()
+                })
                 DropdownMenuItem(text = { Text("跳转页码") }, onClick = { more = false; jump = true })
                 DropdownMenuItem(text = { Text("目录首页") }, onClick = { more = false; navigate(query.copy(offset = 0)) })
                 DropdownMenuItem(text = { Text("目录末页") }, enabled = total > 0, onClick = { more = false; navigate(query.copy(offset = (pages - 1) * query.limit)) })
@@ -194,7 +217,7 @@ internal fun ColumnScope.NovelContentsBody(
     LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, overscrollEffect = null,
         contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (!loading && page != null && entries.isEmpty()) item {
-            ReaderEmptyState(Icons.Rounded.SearchOff, "没有匹配的章节", if (query.q.isBlank()) "此版本暂无目录，可返回选择其他版本。" else "试试更短的章节名，或清除关键词。")
+            ReaderEmptyState(Icons.Rounded.SearchOff, "没有匹配的章节", if (localOnly && query.q.isBlank()) "此版本暂无已下载章节。" else if (query.q.isBlank()) "此版本暂无目录，可返回选择其他版本。" else "试试更短的章节名，或清除关键词。")
         }
         items(entries, key = { it.getString("id") }) { entry ->
             val id = entry.getString("id")
