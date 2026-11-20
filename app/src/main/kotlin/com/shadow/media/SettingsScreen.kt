@@ -50,6 +50,9 @@ import com.shadow.media.ui.ShadowGlassPanel
 @Composable
 internal fun SettingsScreen(viewModel: MainViewModel) {
     var showNotices by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var devices by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    val container = (androidx.compose.ui.platform.LocalContext.current.applicationContext as ShadowMediaApplication).container
+    if (devices) DeviceHandoffPanel(container.deviceHandoff, viewModel, onDismiss = { devices = false })
     if (showNotices) OpenSourceNoticesDialog { showNotices = false }
     BackHandler(onBack = viewModel::back)
     val flags by viewModel.featureFlags.collectAsStateWithLifecycle()
@@ -67,6 +70,7 @@ internal fun SettingsScreen(viewModel: MainViewModel) {
                 onAction = viewModel::back,
             )
         }
+        item { FilledTonalButton(onClick = { devices = true }, modifier = Modifier.padding(horizontal = 20.dp)) { Text("设备接力与跨设备续播") } }
         item { FilledTonalButton(onClick = { showNotices = true }, modifier = Modifier.padding(horizontal = 20.dp).heightIn(min = 48.dp)) { Text("开源许可") } }
         item {
             FilledTonalButton(

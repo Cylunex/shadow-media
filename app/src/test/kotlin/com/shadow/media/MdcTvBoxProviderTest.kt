@@ -21,6 +21,41 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28], application = android.app.Application::class)
 @RunWith(RobolectricTestRunner::class)
 class MdcTvBoxProviderTest {
+    @Test fun failedFirstAndSecondResolversFallThroughWithoutReplayingAnAttemptedLine() = runTest {
+        MockWebServer().use { server ->
+            val provider = MdcTvBoxProvider(MdcMediaProvider(CatalogConnection(name = "MDC", kind = CatalogKind.OPDS,
+                url = server.url("/").toString(), allowHttp = true), OkHttpClient()))
+            val key = MediaKey(provider.descriptor.id, "site:movie:a")
+            server.enqueue(MockResponse().setBody("""{"features":["tvbox_v1"]}"""))
+            server.enqueue(MockResponse().setResponseCode(502))
+            server.enqueue(MockResponse().setBody("""{"site_id":"site","id":"movie","title":"Movie","episodes":[
+                {"id":"a","line":"A","title":"1"},{"id":"b","line":"B","title":"1"},{"id":"c","line":"C","title":"1"}]}"""))
+            server.enqueue(MockResponse().setResponseCode(502))
+            server.enqueue(MockResponse().setBody("""{"url":"https://example.com/movie.mp4","headers":{},"mime_type":"video/mp4"}"""))
+            val result = provider.resolveEpisode(UnifiedPlaybackRequest(key), emptySet(), true)
+            assertEquals("site:movie:c", result.key.itemId)
+            assertEquals(setOf("site:movie:a", "site:movie:b"), result.failed)
+        }
+    }
+
+    @Test fun crossSiteSearchPublishesEachStationAndRetainsPartialResults() = kotlinx.coroutines.runBlocking {
+        MockWebServer().use { server ->
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = if ("/bad/" in request.path.orEmpty())
+                    MockResponse().setResponseCode(503) else MockResponse().setBody("""{"items":[{"site_id":"good","id":"a","title":"Demo"}],"next_page":2}""")
+            }
+            val c = CatalogConnection(name = "MDC", kind = CatalogKind.OPDS, url = server.url("/").toString(), allowHttp = true)
+            val provider = MdcTvBoxProvider(MdcMediaProvider(c, OkHttpClient()))
+            val updates = mutableListOf<UnifiedMediaPage>()
+            val page = provider.searchSites(listOf(MdcTvBoxChoice("good","正常站"), MdcTvBoxChoice("bad","离线站")),
+                "Demo", "1", updates::add)
+            assertEquals(2, updates.size)
+            assertEquals(listOf("离线站"), page.failedSources)
+            assertEquals("Demo", page.items.single().title)
+            assertEquals("2", page.nextPageToken)
+        }
+    }
+
     @Test fun paginationKeepsPreviousHitsAndStopsOnRepeatedCursors() {
         fun item(id: String) = UnifiedMediaItem(MediaKey("site", id), id, "Series")
         val pages = TvBoxPages()
@@ -61,9 +96,9 @@ class MdcTvBoxProviderTest {
             val key = com.shadow.media.model.MediaKey(provider.descriptor.id, "one:film:first")
             fun episodes(extra: String = "") = """{"site_id":"one","id":"film","title":"Film","episodes":[{"id":"first","title":"第二集","line":"A"},{"id":"other","title":"第一集","line":"B"},{"id":"backup","title":"第二集","line":"B"}$extra]}"""
             server.enqueue(MockResponse().setBody(episodes()))
-            assertEquals("one:film:backup", provider.alternateEpisode(key)?.itemId)
+            assertEquals("one:film:backup", provider.alternateEpisodes(key).singleOrNull()?.itemId)
             server.enqueue(MockResponse().setBody(episodes(""",{"id":"duplicate","title":"第二集","line":"B"}""")))
-            assertEquals(null, provider.alternateEpisode(key))
+            assertTrue(provider.alternateEpisodes(key).isEmpty())
         }
     }
 

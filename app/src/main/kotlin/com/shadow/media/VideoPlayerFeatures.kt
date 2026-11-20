@@ -57,6 +57,8 @@ internal fun VideoPlayerFeatures(
     preferenceKey: String? = null,
     onDecoderChange: ((VideoDecoderMode) -> Unit)? = null,
     onCast: (() -> Unit)? = null,
+    onHandoff: (() -> Unit)? = null,
+    matchedSubtitleCount: Int = 0,
 ) {
     val context = LocalContext.current
     val preferences = remember(context) { VideoPreferenceStore.get(context) }
@@ -205,6 +207,7 @@ internal fun VideoPlayerFeatures(
     }
     if (panel != null) AlertDialog(onDismissRequest = { panel = null }, title = { Text("播放设置") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState())) {
+            if (onHandoff != null) TextButton(onClick = onHandoff) { Text("设备接力") }
             Text("解码器")
             Row { VideoDecoderMode.entries.forEach { mode -> TextButton(onClick = { if (onDecoderChange != null) onDecoderChange(mode) else preferences.update { it.copy(decoder = mode) } }) { Text((if (settings.decoder == mode) "✓ " else "") + when (mode) { VideoDecoderMode.AUTO -> "自动"; VideoDecoderMode.HARDWARE -> "硬件"; VideoDecoderMode.SOFTWARE -> "软件" }) } } }
             Text("软件模式使用设备提供的软件解码器；没有兼容解码器时可切回自动。", style = MaterialTheme.typography.bodySmall)
@@ -217,6 +220,16 @@ internal fun VideoPlayerFeatures(
                     preferences.update { if (audioLanguage) it.copy(audioLanguage = language) else it.copy(subtitleLanguage = language) }
                     preferences.applyLanguages(player)
                 }) { Text((if ((if (audioLanguage) settings.audioLanguage else settings.subtitleLanguage) == language) "✓ " else "") + label) } }
+            }
+            Text("字幕时间偏移 ${settings.subtitleOffsetMs / 1000.0} 秒")
+            Row {
+                fun changeOffset(value: Int) {
+                    preferences.update { it.copy(subtitleOffsetMs = value) }
+                    if (canSeek()) seek(position())
+                }
+                TextButton(onClick = { changeOffset(settings.subtitleOffsetMs - 500) }) { Text("提前 0.5 秒") }
+                TextButton(onClick = { changeOffset(0) }) { Text("归零") }
+                TextButton(onClick = { changeOffset(settings.subtitleOffsetMs + 500) }) { Text("延后 0.5 秒") }
             }
             Text("字幕大小 ${(settings.subtitleScale * 100).toInt()}%")
             Slider(settings.subtitleScale, { value -> preferences.update { it.copy(subtitleScale = value) } }, valueRange = .5f..2f)
@@ -247,6 +260,7 @@ internal fun VideoPlayerFeatures(
                     }
                 }
             }
+            if (matchedSubtitleCount > 0) Text("已匹配 " + matchedSubtitleCount + " 个外挂字幕，可在字幕音轨中选择。")
             if (onSubtitle != null) TextButton(onClick = { subtitlePicker.launch(arrayOf("*/*")); panel = null }) { Text("选择外挂字幕") }
             Text("左右滑调进度，左侧上下滑调亮度，右侧调音量；双击两侧快退/快进，长按 2 倍速。", style = MaterialTheme.typography.bodySmall)
         }

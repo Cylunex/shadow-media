@@ -21,6 +21,7 @@ data class VideoSettings(
     val subtitleBackground: Boolean = false,
     val subtitleBottomPadding: Float = .08f,
     val autoSwitchLines: Boolean = true,
+    val subtitleOffsetMs: Int = 0,
 )
 
 class VideoPreferenceStore internal constructor(context: Context) {
@@ -31,10 +32,11 @@ class VideoPreferenceStore internal constructor(context: Context) {
         runCatching { VideoDecoderMode.valueOf(preferences.getString("decoder", "AUTO")!!) }.getOrDefault(VideoDecoderMode.AUTO),
         preferences.getInt("retries", 2).coerceIn(0, 5), preferences.getString("audio", "").orEmpty(), preferences.getString("text", "").orEmpty(),
         preferences.getFloat("scale", 1f).takeIf { it.isFinite() }?.coerceIn(.5f, 2f) ?: 1f,
-        preferences.getBoolean("background", false), preferences.getFloat("bottom", .08f).takeIf { it.isFinite() }?.coerceIn(0f, .4f) ?: .08f, preferences.getBoolean("autoSwitchLines", true))
+        preferences.getBoolean("background", false), preferences.getFloat("bottom", .08f).takeIf { it.isFinite() }?.coerceIn(0f, .4f) ?: .08f, preferences.getBoolean("autoSwitchLines", true),
+        preferences.getInt("subtitleOffset", 0).coerceIn(-10000, 10000))
     @Synchronized fun update(change: (VideoSettings) -> VideoSettings) {
-        val next = change(settings.value).let { it.copy(retries = it.retries.coerceIn(0, 5), subtitleScale = it.subtitleScale.takeIf { value -> value.isFinite() }?.coerceIn(.5f, 2f) ?: 1f, subtitleBottomPadding = it.subtitleBottomPadding.takeIf { value -> value.isFinite() }?.coerceIn(0f, .4f) ?: .08f) }
-        preferences.edit().putString("decoder", next.decoder.name).putInt("retries", next.retries).putString("audio", next.audioLanguage)
+        val next = change(settings.value).let { it.copy(subtitleOffsetMs = it.subtitleOffsetMs.coerceIn(-10000, 10000), retries = it.retries.coerceIn(0, 5), subtitleScale = it.subtitleScale.takeIf { value -> value.isFinite() }?.coerceIn(.5f, 2f) ?: 1f, subtitleBottomPadding = it.subtitleBottomPadding.takeIf { value -> value.isFinite() }?.coerceIn(0f, .4f) ?: .08f) }
+        preferences.edit().putInt("subtitleOffset", next.subtitleOffsetMs).putString("decoder", next.decoder.name).putInt("retries", next.retries).putString("audio", next.audioLanguage)
             .putString("text", next.subtitleLanguage).putFloat("scale", next.subtitleScale).putBoolean("background", next.subtitleBackground)
             .putFloat("bottom", next.subtitleBottomPadding).putBoolean("autoSwitchLines", next.autoSwitchLines).apply()
         mutableSettings.value = next
@@ -86,8 +88,17 @@ class VideoPreferenceStore internal constructor(context: Context) {
     }
 }
 
-internal fun videoRenderers(context: Context, mode: VideoDecoderMode): DefaultRenderersFactory = DefaultRenderersFactory(context)
-    .setEnableDecoderFallback(mode == VideoDecoderMode.AUTO).setMediaCodecSelector(MediaCodecSelector { mime, secure, tunneling ->
+internal fun videoRenderers(context: Context, mode: VideoDecoderMode): DefaultRenderersFactory = object : DefaultRenderersFactory(context) {
+    private val settings = VideoPreferenceStore.get(context).settings
+    override fun buildTextRenderers(context: Context, output: androidx.media3.exoplayer.text.TextOutput,
+        outputLooper: android.os.Looper, extensionRendererMode: Int, out: ArrayList<androidx.media3.exoplayer.Renderer>) {
+        val start = out.size
+        super.buildTextRenderers(context, output, outputLooper, extensionRendererMode, out)
+        for (i in start until out.size) {
+            out[i] = SubtitleOffsetRenderer(out[i]) { settings.value.subtitleOffsetMs }
+        }
+    }
+}.setEnableDecoderFallback(mode == VideoDecoderMode.AUTO).setMediaCodecSelector(MediaCodecSelector { mime, secure, tunneling ->
         val codecs = MediaCodecSelector.DEFAULT.getDecoderInfos(mime, secure, tunneling)
         when (mode) {
             VideoDecoderMode.AUTO -> codecs
@@ -95,3 +106,22 @@ internal fun videoRenderers(context: Context, mode: VideoDecoderMode): DefaultRe
             VideoDecoderMode.SOFTWARE -> codecs.filter { it.softwareOnly }
         }
     })
+
+
+internal class SubtitleOffsetRenderer(renderer: androidx.media3.exoplayer.Renderer, private val offsetMs: () -> Int) :
+    androidx.media3.exoplayer.ForwardingRenderer(renderer) {
+    private fun subtitleTime(positionUs: Long) = positionUs - offsetMs() * 1000L
+
+    override fun enable(configuration: androidx.media3.exoplayer.RendererConfiguration, formats: Array<out Format>,
+        stream: androidx.media3.exoplayer.source.SampleStream, positionUs: Long, joining: Boolean,
+        mayRenderStartOfStream: Boolean, startPositionUs: Long, offsetUs: Long,
+        mediaPeriodId: androidx.media3.exoplayer.source.MediaSource.MediaPeriodId) =
+        super.enable(configuration, formats, stream, subtitleTime(positionUs), joining, mayRenderStartOfStream,
+            startPositionUs, offsetUs, mediaPeriodId)
+
+    override fun render(positionUs: Long, elapsedRealtimeUs: Long) = super.render(subtitleTime(positionUs), elapsedRealtimeUs)
+    override fun resetPosition(positionUs: Long, sampleStreamIsResetToKeyFrame: Boolean) =
+        super.resetPosition(subtitleTime(positionUs), sampleStreamIsResetToKeyFrame)
+    override fun getDurationToProgressUs(positionUs: Long, elapsedRealtimeUs: Long): Long =
+        super.getDurationToProgressUs(subtitleTime(positionUs), elapsedRealtimeUs)
+}

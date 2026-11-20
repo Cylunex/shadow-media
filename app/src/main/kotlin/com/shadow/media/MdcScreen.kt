@@ -25,26 +25,28 @@ internal fun MdcScreen(viewModel: MainViewModel) {
     val store = remember { CatalogConnectionStore(context, "mdc_connections", "shadow_mdc_v1") }
     val scope = rememberCoroutineScope()
     val stored = remember { runCatching { store.load() } }
-    var connections by remember { mutableStateOf(stored.getOrDefault(emptyList())) }
-    var selected by rememberSaveable { mutableStateOf<String?>(null) }
+    val connections = remember { mutableStateOf(stored.getOrDefault(emptyList())) }
+    val selection = rememberSaveable { mutableStateOf<String?>(null) }
+    val catalog = remember(selection.value) { MdcCatalogState(scope, stored.exceptionOrNull()?.message) }
+    DisposableEffect(catalog) { onDispose(catalog::close) }
+    catalog.Browse(viewModel, store, connections, selection)
+}
+
+@Composable
+private fun MdcCatalogState.Browse(
+    viewModel: MainViewModel, store: CatalogConnectionStore,
+    connectionState: MutableState<List<CatalogConnection>>, selectedState: MutableState<String?>,
+) {
+    var connections by connectionState
+    var selected by selectedState
     var workId by rememberSaveable { mutableStateOf<String?>(null) }
     var selection by rememberSaveable(selected) { mutableStateOf(MdcFilters()) }
     var query by rememberSaveable { mutableStateOf("") }
     var mode by rememberSaveable { mutableStateOf("works") }
     var selectedPlaylist by rememberSaveable { mutableStateOf("") }
-    var playlists by remember { mutableStateOf(emptyList<MdcPlaylist>()) }
-    var playlistWorks by remember { mutableStateOf(emptyList<Pair<String, String>>()) }
-    var people by remember { mutableStateOf(emptyList<MdcPerson>()) }
-    var actorProfile by remember { mutableStateOf<org.json.JSONObject?>(null) }
     var expandedFilters by rememberSaveable { mutableStateOf(false) }
-    var total by remember { mutableStateOf(0) }
-    var facetData by remember { mutableStateOf(org.json.JSONObject()) }
     var submittedQuery by rememberSaveable { mutableStateOf("") }
-    var rows by remember { mutableStateOf(emptyList<UnifiedMediaItem>()) }
-    var detail by remember { mutableStateOf<UnifiedMediaItem?>(null) }
-    var cursor by remember { mutableStateOf<String?>(null) }
-    var error by remember { mutableStateOf(stored.exceptionOrNull()?.message) }
-    var busy by remember { mutableStateOf(false) }
+    var findSources by remember(workId) { mutableStateOf(false) }
     var pendingPlan by remember { mutableStateOf<org.json.JSONObject?>(null) }
     var picking by remember { mutableStateOf(false) }
     var candidates by remember { mutableStateOf(emptyList<Pair<String, String>>()) }
@@ -57,7 +59,6 @@ internal fun MdcScreen(viewModel: MainViewModel) {
     var token by remember { mutableStateOf("") }
     var includeInSearch by remember { mutableStateOf(false) }
     var allowHttp by remember { mutableStateOf(false) }
-    var job by remember { mutableStateOf<Job?>(null) }
     val connection = connections.singleOrNull { it.id == selected }
     val provider = remember(connection) { connection?.let(viewModel::mdcProvider) }
     val tvbox = remember(provider) { provider?.let(::MdcTvBoxProvider) }
@@ -81,45 +82,12 @@ internal fun MdcScreen(viewModel: MainViewModel) {
     var discoveryError by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(discoveryAttempt) {
         try {
-            val discovery = viewModel.discoverMdcConnections()
+            val discovery = viewModel.discoverMdcConnections(force = discoveryAttempt > 0)
             connections = discovery.connections
             discoveryError = discovery.failedAccounts.takeIf { it.isNotEmpty() }?.joinToString(prefix = "未能连接：")
         }
         catch (e: CancellationException) { throw e }
         catch (e: Exception) { discoveryError = e.message ?: "服务发现失败" }
-    }
-    var facetJob by remember { mutableStateOf<Job?>(null) }
-    var actorJob by remember { mutableStateOf<Job?>(null) }
-    var facetError by remember { mutableStateOf<String?>(null) }
-    var actorError by remember { mutableStateOf<String?>(null) }
-    var loadedFilters by remember { mutableStateOf<org.json.JSONObject?>(null) }
-
-    fun loadFacets(p: MdcMediaProvider, filters: org.json.JSONObject) {
-        facetJob?.cancel()
-        facetError = null
-        facetJob = scope.launch {
-            try {
-                val result = p.facets(filters)
-                ensureActive()
-                facetData = result
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { facetError = e.message ?: "筛选统计暂不可用" }
-        }
-    }
-
-    fun loadActor(p: MdcMediaProvider, id: String) {
-        actorJob?.cancel()
-        actorError = null
-        actorProfile = null
-        if (id.isBlank()) return
-        actorJob = scope.launch {
-            try {
-                val result = p.person(id)
-                ensureActive()
-                actorProfile = result
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { actorError = e.message ?: "演员资料暂不可用" }
-        }
     }
 
     fun load(next: String? = null) {
@@ -164,24 +132,6 @@ internal fun MdcScreen(viewModel: MainViewModel) {
             catch (e: Exception) { error = e.message }
             finally { busy = false }
         }
-    }
-    var peopleCursor by remember { mutableStateOf<String?>(null) }
-    var peopleError by remember { mutableStateOf<String?>(null) }
-    var peopleBusy by remember { mutableStateOf(false) }
-    var peopleGeneration by remember { mutableIntStateOf(0) }
-    var peoplePageJob by remember { mutableStateOf<Job?>(null) }
-    suspend fun loadPeoplePage(p: MdcMediaProvider, term: String, cursor: String?, generation: Int) {
-        peopleBusy = true
-        peopleError = null
-        try {
-            val page = p.peoplePage(term, cursor)
-            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            if (generation != peopleGeneration) return
-            people = if (cursor == null) page.items else (people + page.items).distinctBy { it.id }
-            peopleCursor = page.next
-        } catch (e: CancellationException) { throw e }
-        catch (e: Exception) { if (generation == peopleGeneration) peopleError = e.message ?: "演员目录读取失败" }
-        finally { if (generation == peopleGeneration) peopleBusy = false }
     }
     LaunchedEffect(provider, mode, query) {
         peoplePageJob?.cancel()
@@ -237,7 +187,13 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                         editingConnection = c; name = c.name; url = c.url; token = c.token
                         preferenceSpace = c.username; allowHttp = c.allowHttp; includeInSearch = c.includeInSearch; editor = true
                     }) { Text("编辑连接") }
-                    TextButton(onClick = { store.remove(c.id); connections = connections.filter { it.isSharedMdc() } + store.load(); viewModel.refreshProviderConnections() }) { Text("移除连接") }
+                    TextButton(onClick = {
+                        try {
+                            store.remove(c.id)
+                            connections = connections.filter { it.isSharedMdc() } + store.load()
+                            viewModel.refreshProviderConnections()
+                        } catch (e: IllegalStateException) { error = e.message }
+                    }) { Text("移除连接") }
                     }
                 } }
             } else if (workId != null) {
@@ -247,6 +203,13 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                             item.posterUrl?.let { if (loader != null) MdcArtwork(it, item.title, loader, Modifier.height(240.dp).fillMaxWidth()) }
                             Text(item.title, style = MaterialTheme.typography.headlineSmall)
                             Text(item.subtitle.orEmpty())
+                            MdcRelatedFilters(provider!!, item) { filters ->
+                                selection = filters
+                                query = ""
+                                mode = "works"
+                                workId = null
+                                detail = null
+                            }
                             Button(enabled = !busy, onClick = {
                                 job?.cancel()
                                 job = scope.launch {
@@ -256,6 +219,8 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                                         if (plan.optJSONObject("emby") == null &&
                                             (plan.optJSONArray("sources")?.length() ?: 0) > 1) {
                                             pendingPlan = plan
+                                        } else if (plan.optJSONObject("emby") == null && (plan.optJSONArray("sources")?.length() ?: 0) == 0) {
+                                            findSources = true
                                         } else viewModel.playMdc(provider!!, item.key, preparedPlan = plan)
                                     }
                                     catch (e: CancellationException) { throw e }
@@ -269,7 +234,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                                     try {
                                         val plan = provider!!.plan(item.key, online = true)
                                         if ((plan.optJSONArray("sources")?.length() ?: 0) == 0) {
-                                            error = "暂无已确认的在线线路"
+                                            findSources = true
                                         } else pendingPlan = plan
                                     } catch (e: CancellationException) { throw e }
                                     catch (e: Exception) { error = e.message }
@@ -280,6 +245,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                                 matchQuery = item.subtitle?.substringBefore(" · ").orEmpty().ifBlank { item.title }
                                 picking = true
                             }) { Text("选择或更换 Emby 影片") }
+                            TextButton(onClick = { findSources = true }) { Text("在影视仓跨站找片") }
                             Text(item.overview.orEmpty())
                         }
                     }
@@ -460,6 +426,9 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                 } }
             }
         }
+    }
+    if (findSources) detail?.let { work ->
+        MdcCrossSiteSearch(work, viewModel, onClose = { findSources = false })
     }
     pendingPlan?.let { plan ->
         AlertDialog(onDismissRequest = { pendingPlan = null }, title = { Text("版本与线路") },

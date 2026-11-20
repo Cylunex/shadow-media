@@ -14,6 +14,30 @@ import org.robolectric.annotation.Config
 class VideoPreferencesTest {
     private val context: Context get() = RuntimeEnvironment.getApplication()
     @Before fun reset() { context.getSharedPreferences("video_preferences", 0).edit().clear().commit() }
+    @Test fun delayingAndAdvancingSubtitlesShiftsTheTextClockAcrossSeeks() {
+        val calls = mutableListOf<Pair<String, Long>>()
+        val type = androidx.media3.exoplayer.Renderer::class.java
+        val delegate = Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, args ->
+            calls.add(method.name to args!![0] as Long)
+            if (method.name == "getDurationToProgressUs") 20L else null
+        } as androidx.media3.exoplayer.Renderer
+        var offset = 500
+        val renderer = SubtitleOffsetRenderer(delegate) { offset }
+        renderer.render(2_000_000, 1)
+        offset = -500
+        renderer.resetPosition(2_000_000, true)
+        assertEquals(20L, renderer.getDurationToProgressUs(2_000_000, 2))
+        assertEquals(listOf("render" to 1_500_000L, "resetPosition" to 2_500_000L,
+            "getDurationToProgressUs" to 2_500_000L), calls)
+    }
+
+    @Test fun subtitleOffsetSurvivesRecreationAndCanBeMovedBothWays() {
+        val store = VideoPreferenceStore(context)
+        store.update { it.copy(subtitleOffsetMs = -500) }
+        assertEquals(-500, VideoPreferenceStore(context).settings.value.subtitleOffsetMs)
+        store.update { it.copy(subtitleOffsetMs = 50000) }
+        assertEquals(10000, VideoPreferenceStore(context).settings.value.subtitleOffsetMs)
+    }
     @Test fun `decoder retries languages and subtitle appearance survive recreation`() {
         val store = VideoPreferenceStore(context)
         store.update { it.copy(decoder = VideoDecoderMode.SOFTWARE, retries = 5, audioLanguage = "ja", subtitleLanguage = "zh", subtitleScale = 1.3f, subtitleBackground = true, autoSwitchLines = false) }

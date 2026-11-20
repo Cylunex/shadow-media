@@ -70,7 +70,7 @@ internal fun VideoWarehouseScreen(state: MainUiState, viewModel: MainViewModel, 
         try {
             providers = emptyList()
             checkConnections(viewModel.knownMdcConnections().connections)
-            val discovery = viewModel.discoverMdcConnections()
+            val discovery = viewModel.discoverMdcConnections(force = discoveryAttempt > 0)
             val active = discovery.connections.map { it.id }.toSet()
             available.removeAll { it.connection.id !in active }
             providers = available.toList()
@@ -137,6 +137,7 @@ internal fun MdcTvBoxScreen(
     var reload by remember { mutableStateOf(0) }
     val pages = remember(provider, site, category, query, warehouse, everywhere, reload) { TvBoxPages() }
     var request by remember(pages) { mutableStateOf<String?>("1") }
+    var partial by remember(pages) { mutableStateOf<UnifiedMediaPage?>(null) }
     var pageError by remember(pages) { mutableStateOf<String?>(null) }
     var sitesLoading by remember { mutableStateOf(true) }
     val loading = sitesLoading || (site.isNotEmpty() && request != null && pageError == null)
@@ -177,16 +178,18 @@ internal fun MdcTvBoxScreen(
     }
 
     LaunchedEffect(pages) { scroll.scrollToItem(0) }
-    LaunchedEffect(pages, request) {
+    LaunchedEffect(pages, request, visibleSites, sitesLoading) {
         val token = request ?: return@LaunchedEffect
-        if (site.isEmpty()) return@LaunchedEffect
+        if (site.isEmpty() || sitesLoading) return@LaunchedEffect
+        partial = null
         pageError = null
         pages.lastRequested = token
         try {
-            val result = if (everywhere && query.isNotBlank()) provider.searchGroup(query, token, warehouse)
+            val result = if (everywhere && query.isNotBlank()) provider.searchSites(visibleSites, query, token) { partial = it }
             else provider.items(site, category, token, query)
             ensureActive()
             pages.record(token, result)
+            partial = null
             request = null
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) { pageError = e.message ?: "影片加载失败"; request = null }
@@ -243,7 +246,7 @@ internal fun MdcTvBoxScreen(
                 }
             } }
             if (!loading && pageError == null && pages.isEmptyResult) item(span = { GridItemSpan(maxLineSpan) }) { Text("没有找到影片") }
-            items(pages.items, key = { it.key.stableId }) { item ->
+            items((pages.items + partial?.items.orEmpty()).distinctBy { it.key }, key = { it.key.stableId }) { item ->
                 androidx.compose.material3.Card(onClick = { viewModel.openUnifiedItem(item) }, modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.fillMaxWidth().padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         if (loader != null) MdcArtwork(item.posterUrl, item.title, loader, Modifier.fillMaxWidth().aspectRatio(.68f))

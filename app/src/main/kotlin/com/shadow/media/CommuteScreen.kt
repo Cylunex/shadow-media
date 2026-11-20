@@ -73,6 +73,15 @@ internal suspend fun commuteChoices(rows: List<CommuteAudioRow>, minutes: Int, a
         Row { TextButton(onClick = onBack) { Text("返回") }; Text("通勤听 · 已下载", style = MaterialTheme.typography.titleLarge) }
         Text("这次有 ${minutes} 分钟 · 按原速估算")
         Row { listOf(10, 20, 30, 60).forEach { m -> TextButton(onClick = { onMinutes(m) }) { Text("${m} 分") } } }
+        val reading by container.library.dao.continuing(listOf("BOOK")).collectAsStateWithLifecycle(null)
+        val speechScope = rememberCoroutineScope()
+        reading?.asset?.takeIf { it.format in setOf("epub", "txt") && it.localUri.isNotBlank() }?.let { book ->
+            TextButton(onClick = { speechScope.launch {
+                com.shadow.media.library.ProgressWriter.flush()
+                val locator = container.library.dao.progress(book.id)?.locatorJson
+                com.shadow.media.reading.ReaderNarrationService.startBook(context, book.id, locator, minutes)
+            } }) { Text("继续朗读「" + book.title + "」") }
+        }
         key(providers, minutes) {
             var error by remember { mutableStateOf(false) }
             var retry by remember { mutableIntStateOf(0) }

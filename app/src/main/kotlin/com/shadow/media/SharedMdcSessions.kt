@@ -34,12 +34,20 @@ internal class SharedMdcSessions(private val novel: NovelRepository) {
     }
 
     private val discoveryLock = Mutex()
+    private var lastAccounts = emptyList<CatalogConnection>()
+    private var lastSuccess: Long? = null
 
-    suspend fun discover(): List<String> = withContext(Dispatchers.IO) {
+    suspend fun discover(force: Boolean = false): List<String> = withContext(Dispatchers.IO) {
         discoveryLock.withLock {
+            val accounts = novel.availableConnections().filter { it.oidcIssuer.isNotBlank() && it.oidcAuthState.isNotBlank() }
+            val sameAccounts = accounts.size == lastAccounts.size && accounts.all { current ->
+                lastAccounts.any { it.id == current.id && it.name == current.name && current.retainsAccountOf(it) }
+            }
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (!force && sameAccounts && lastSuccess?.let { now - it < 60_000 } == true) return@withLock emptyList()
             val result = mutableMapOf<String, Pair<CatalogConnection, CatalogConnection>>()
             val failed = mutableListOf<String>()
-            for (account in novel.availableConnections().filter { it.oidcIssuer.isNotBlank() && it.oidcAuthState.isNotBlank() }) {
+            for (account in accounts) {
                 try {
                     val manifest = novel.live(account, listOf("services"))
                     sharedMdcConnection(account, manifest)?.let { result[it.id] = it to account }
@@ -54,6 +62,8 @@ internal class SharedMdcSessions(private val novel: NovelRepository) {
                     }
                 }
             }
+            lastAccounts = accounts
+            lastSuccess = if (failed.isEmpty()) now else null
             discovered = result
             failed
         }

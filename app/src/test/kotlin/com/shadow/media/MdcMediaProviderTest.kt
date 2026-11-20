@@ -57,7 +57,8 @@ class MdcMediaProviderTest {
         firstStatus = 200
         assertTrue(sessions.discover().isEmpty())
         firstStatus = 503
-        assertEquals(listOf("One"), sessions.discover())
+        assertTrue(sessions.discover().isEmpty())
+        assertEquals(listOf("One"), sessions.discover(force = true))
         assertEquals(listOf("shared-mdc:one", "shared-mdc:two"), ids())
         accounts = listOf(first.copy(oidcSubject = "different"), second)
         assertEquals(listOf("shared-mdc:two"), ids())
@@ -70,6 +71,21 @@ class MdcMediaProviderTest {
         assertEquals(ids(), readMdcConnections({ error("locked") }, sessions::connections).connections.map { it.id })
     }
 
+    @Test fun remoteSubtitlesUseOnlyThisWorkAndTheAuthenticatedGateway() = runTest {
+        val connection = CatalogConnection(name = "MDC", kind = CatalogKind.OPDS,
+            url = "https://example.com/library/", token = "REPLACE_TOKEN")
+        val provider = MdcMediaProvider(connection, OkHttpClient())
+        val key = com.shadow.media.model.MediaKey(provider.descriptor.id, "work1")
+        val prefix = "/api/media/v1/works/work1/subtitles/"
+        val hash = "a".repeat(32)
+        val tracks = org.json.JSONArray()
+        for (path in listOf(prefix + hash, prefix + "../other", prefix.replace("work1", "other") + hash,
+                "https://other.example.com/" + hash)) tracks.put(org.json.JSONObject().put("url", path).put("label", "example.srt"))
+        val track = provider.workSubtitles(key, org.json.JSONObject().put("subtitles", tracks)).single()
+        assertEquals("https://example.com/library" + prefix + hash, track.uri)
+        assertEquals("Bearer REPLACE_TOKEN", track.requestHeaders["Authorization"])
+        assertEquals(connection.url, track.credentialOrigin)
+    }
     @Test fun `default filters remove all collection constraints`() {
         val active = MdcFilters(label = "label", platform = "platform", series = "series").request("sample")
         for (key in listOf("series", "platforms", "labels")) assertTrue(active.has(key))

@@ -81,6 +81,18 @@ interface ShadowMediaDao {
         completed: Boolean,
     )
 
+    @androidx.room.Transaction
+    suspend fun recordSiteResult(provider: String, site: String, ok: Boolean, elapsed: Long?) {
+        val key = "$provider:site:$site"
+        val previous = sourceHealth(key) ?: SourceHealthEntity(key, provider, updatedAtEpochMs = 0)
+        upsertSourceHealth(previous.copy(
+            successes = previous.successes + if (ok) 1 else 0,
+            failures = previous.failures + if (ok) 0 else 1,
+            consecutiveFailures = if (ok) 0 else previous.consecutiveFailures + 1,
+            averageFirstFrameMs = elapsed?.let { (3 * (previous.averageFirstFrameMs ?: it) + it) / 4 } ?: previous.averageFirstFrameMs,
+            updatedAtEpochMs = System.currentTimeMillis()))
+    }
+
     @Upsert
     suspend fun upsertSourceHealth(health: SourceHealthEntity)
 

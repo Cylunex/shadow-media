@@ -16,7 +16,12 @@ import com.shadow.media.provider.ProviderSearchRequest
 import com.shadow.media.provider.ProviderSection
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
+internal data class ResolvedEpisode(val key: MediaKey, val candidate: PlaybackCandidate, val failed: Set<String>)
 internal data class MdcTvBoxChoice(val id: String, val name: String)
 internal data class MdcTvBoxGroup(val id: String, val name: String, val sites: List<String>)
 
@@ -76,6 +81,30 @@ internal class MdcTvBoxProvider(val mdc: MdcMediaProvider) : MediaProvider {
         parsePage(mdc.api("tvbox/search", mapOf("q" to query, "page" to page, "group_id" to group)
             .filterValues(String::isNotBlank)))
 
+    suspend fun searchSites(sites: List<MdcTvBoxChoice>, query: String, page: String,
+        onPartial: (UnifiedMediaPage) -> Unit): UnifiedMediaPage = coroutineScope {
+        val limit = Semaphore(4)
+        val completed = Channel<Pair<MdcTvBoxChoice, UnifiedMediaPage?>>(Channel.UNLIMITED)
+        sites.forEach { site -> launch {
+            val result = try { limit.withPermit { withTimeoutOrNull(12000) { items(site.id, "", page, query) } } }
+            catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+            completed.send(site to result)
+        } }
+        val hits = linkedMapOf<MediaKey, UnifiedMediaItem>()
+        val failed = mutableListOf<String>()
+        var next: Int? = null
+        fun snapshot() = UnifiedMediaPage(hits.values.toList(), next?.toString(), failedSources = failed.toList())
+        repeat(sites.size) {
+            val (site, result) = completed.receive()
+            if (result == null) failed += site.name else {
+                result.items.forEach { hits[it.key] = it }
+                result.nextPageToken?.toIntOrNull()?.let { next = minOf(next ?: it, it) }
+            }
+            onPartial(snapshot())
+        }
+        snapshot()
+    }
+
     override suspend fun detail(key: MediaKey): MediaDetail {
         val target = target(key)
         val body = mdc.api(target.path)
@@ -96,13 +125,34 @@ internal class MdcTvBoxProvider(val mdc: MdcMediaProvider) : MediaProvider {
         return MediaDetail(parent, children = children)
     }
 
-    suspend fun alternateEpisode(key: MediaKey): MediaKey? {
+    suspend fun alternateEpisodes(key: MediaKey): List<MediaKey> {
         val parent = MediaKey(descriptor.id, key.itemId.substringBeforeLast(':'))
         val children = detail(parent).children
-        val current = children.firstOrNull { it.key == key } ?: return null
+        val current = children.firstOrNull { it.key == key } ?: return emptyList()
         val lines = children.filter { it.title == current.title && !it.subtitle.isNullOrBlank() }.groupBy { it.subtitle }
-        if (lines[current.subtitle]?.size != 1) return null
-        return lines.values.firstOrNull { it.size == 1 && it.single().key != key }?.single()?.key
+        if (lines[current.subtitle]?.size != 1) return emptyList()
+        return lines.values.mapNotNull { it.singleOrNull()?.key }.filter { it != key }
+    }
+
+    suspend fun resolveEpisode(request: UnifiedPlaybackRequest, failedItems: Set<String>, switchLines: Boolean,
+        retryCurrent: Boolean = false): ResolvedEpisode {
+        val failed = failedItems.toMutableSet()
+        var lastError: Exception? = null
+        suspend fun tryLine(key: MediaKey): ResolvedEpisode? = try {
+            val candidate = resolve(request.copy(key = key)).first()
+            ResolvedEpisode(key, candidate, failed.toSet())
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { failed += key.itemId; lastError = e; null }
+
+        if (request.key.itemId !in failed) tryLine(request.key)?.let { return it }
+        if (switchLines) {
+            val alternatives = try { alternateEpisodes(request.key) }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { lastError = e; emptyList() }
+            alternatives.filter { it.itemId !in failed }.forEach { tryLine(it)?.let { line -> return line } }
+        }
+        if (retryCurrent) tryLine(request.key)?.let { return it }
+        throw lastError ?: IllegalStateException("本集可用线路已尝试完毕")
     }
 
     override suspend fun resolve(request: UnifiedPlaybackRequest): List<PlaybackCandidate> {

@@ -3,8 +3,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <queries><intent><action android:name="android.intent.action.TTS_SERVICE" /></intent></queries>
+    <queries><package android:name="com.google.android.projection.gearhead" /><package android:name="com.google.android.gms" /><intent><action android:name="android.intent.action.TTS_SERVICE" /></intent></queries>
     <application>
+        <service android:name=".NarrationBrowserService" android:label="Shadow 小说朗读" android:exported="true">
+            <intent-filter><action android:name="android.media.browse.MediaBrowserService" /></intent-filter>
+        </service>
         <service android:name=".ReaderNarrationService" android:exported="false" android:foregroundServiceType="mediaPlayback" />
         <activity android:name=".NativeTextReaderActivity" android:theme="@android:style/Theme.Material.NoActionBar" android:exported="false" />
         <activity android:name=".ReaderActivity" android:exported="false" />

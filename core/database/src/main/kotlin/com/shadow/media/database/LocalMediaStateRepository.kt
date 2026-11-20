@@ -71,6 +71,9 @@ class LocalMediaStateRepository(private val dao: ShadowMediaDao) {
 
     fun playbackMetrics(limit: Int = 200): Flow<List<PlaybackMetricEntity>> = dao.observePlaybackMetrics(limit)
 
+    suspend fun recordSiteResult(provider: String, site: String, success: Boolean, elapsed: Long?) =
+        dao.recordSiteResult(provider, site, success, elapsed)
+
     fun sourceHealth(): Flow<List<SourceHealthEntity>> = dao.observeSourceHealth()
 
     fun segments(providerId: String, itemId: String): Flow<List<MediaSegment>> =

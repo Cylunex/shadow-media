@@ -1,5 +1,6 @@
 package com.shadow.media
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -54,7 +55,9 @@ import com.shadow.media.ui.shadowTvFocus
 import com.shadow.media.ui.withoutEmoji
 
 @Composable
-internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) {
+internal fun NetworkStorageScreen(viewModel: MainViewModel) {
+    val controller = viewModel.networkStorage
+    val state by controller.state.collectAsStateWithLifecycle()
     BackHandler(onBack = viewModel::back)
     val context = LocalContext.current
     var discoveryRun by remember { mutableIntStateOf(0) }
@@ -111,10 +114,10 @@ internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) 
                 Text(discoveryError ?: "自动发现广播 WebDAV / HTTP(S) 的设备；未开启服务广播的 NAS 可手动添加。HTTP 服务需要填写实际 DAV 路径。", style = MaterialTheme.typography.bodySmall)
                 discovered.forEach { server ->
                     androidx.compose.material3.TextButton(onClick = {
-                        viewModel.updateNetworkStorageKind(NetworkStorageKind.WEBDAV)
-                        viewModel.updateNetworkStorageName(server.name)
-                        viewModel.updateNetworkStorageAddress(server.address)
-                        viewModel.updateNetworkStorageAllowInsecure(server.address.startsWith("http:"))
+                        controller.updateNetworkStorageKind(NetworkStorageKind.WEBDAV)
+                        controller.updateNetworkStorageName(server.name)
+                        controller.updateNetworkStorageAddress(server.address)
+                        controller.updateNetworkStorageAllowInsecure(server.address.startsWith("http:"))
                     }) { Text("${server.name} · ${if (server.webdav) "WebDAV" else "HTTP 服务"} · ${server.address}") }
                 }
                 if (!discovering && discovered.isEmpty()) Text("没有发现服务，请确认手机和服务器连接同一局域网。", style = MaterialTheme.typography.bodySmall)
@@ -131,7 +134,7 @@ internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) 
                         NetworkStorageKind.entries.forEach { kind ->
                             FilterChip(
                                 selected = state.networkStorageKind == kind,
-                                onClick = { viewModel.updateNetworkStorageKind(kind) },
+                                onClick = { controller.updateNetworkStorageKind(kind) },
                                 label = { Text(kind.label()) },
                                 leadingIcon = { Icon(kind.icon(), null, Modifier.size(18.dp)) },
                             )
@@ -139,7 +142,7 @@ internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) 
                     }
                     OutlinedTextField(
                         value = state.networkStorageName,
-                        onValueChange = viewModel::updateNetworkStorageName,
+                        onValueChange = controller::updateNetworkStorageName,
                         label = { Text("媒体库名称") },
                         placeholder = { Text("家庭影片") },
                         singleLine = true,
@@ -147,7 +150,7 @@ internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) 
                     )
                     OutlinedTextField(
                         value = state.networkStorageAddress,
-                        onValueChange = viewModel::updateNetworkStorageAddress,
+                        onValueChange = controller::updateNetworkStorageAddress,
                         label = { Text(if (state.networkStorageKind == NetworkStorageKind.SMB) "SMB 主机" else "服务地址") },
                         placeholder = {
                             Text(
@@ -165,7 +168,7 @@ internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) 
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             OutlinedTextField(
                                 value = state.networkStorageShare,
-                                onValueChange = viewModel::updateNetworkStorageShare,
+                                onValueChange = controller::updateNetworkStorageShare,
                                 label = { Text("共享名") },
                                 placeholder = { Text("Media") },
                                 singleLine = true,
@@ -173,7 +176,7 @@ internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) 
                             )
                             OutlinedTextField(
                                 value = state.networkStorageDomain,
-                                onValueChange = viewModel::updateNetworkStorageDomain,
+                                onValueChange = controller::updateNetworkStorageDomain,
                                 label = { Text("域，可空") },
                                 singleLine = true,
                                 modifier = Modifier.weight(1f),
@@ -183,14 +186,14 @@ internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) 
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedTextField(
                             value = state.networkStorageUsername,
-                            onValueChange = viewModel::updateNetworkStorageUsername,
+                            onValueChange = controller::updateNetworkStorageUsername,
                             label = { Text("用户名") },
                             singleLine = true,
                             modifier = Modifier.weight(1f),
                         )
                         OutlinedTextField(
                             value = state.networkStoragePassword,
-                            onValueChange = viewModel::updateNetworkStoragePassword,
+                            onValueChange = controller::updateNetworkStoragePassword,
                             label = { Text("密码") },
                             singleLine = true,
                             visualTransformation = PasswordVisualTransformation(),
@@ -199,7 +202,7 @@ internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) 
                     }
                     OutlinedTextField(
                         value = state.networkStorageRootPath,
-                        onValueChange = viewModel::updateNetworkStorageRootPath,
+                        onValueChange = controller::updateNetworkStorageRootPath,
                         label = { Text("媒体根目录") },
                         placeholder = { Text("/Movies") },
                         singleLine = true,
@@ -207,19 +210,19 @@ internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) 
                     )
                     ToggleRow(
                         checked = state.networkStorageAllowInsecureHttp,
-                        onCheckedChange = viewModel::updateNetworkStorageAllowInsecure,
+                        onCheckedChange = controller::updateNetworkStorageAllowInsecure,
                         title = if (state.networkStorageKind == NetworkStorageKind.SMB) {
                             "允许 STRM 使用受信任局域网 HTTP"
                         } else "允许受信任局域网 HTTP",
                     )
                     ToggleRow(
                         checked = state.networkStorageReadNfo,
-                        onCheckedChange = viewModel::updateNetworkStorageReadNfo,
+                        onCheckedChange = controller::updateNetworkStorageReadNfo,
                         title = "读取 NFO 和同目录海报",
                     )
                     ToggleRow(
                         checked = state.networkStorageResolveStrm,
-                        onCheckedChange = viewModel::updateNetworkStorageResolveStrm,
+                        onCheckedChange = controller::updateNetworkStorageResolveStrm,
                         title = "解析 STRM 第一条有效播放地址",
                     )
                     state.networkStorageMessage?.let {
@@ -230,7 +233,7 @@ internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) 
                         )
                     }
                     Button(
-                        onClick = viewModel::saveNetworkStorage,
+                        onClick = controller::saveNetworkStorage,
                         enabled = !state.isSavingNetworkStorage,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
@@ -247,7 +250,7 @@ internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) 
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("已连接", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                IconButton(onClick = viewModel::refreshNetworkStorages) { Icon(Icons.Rounded.Refresh, "刷新连接") }
+                IconButton(onClick = controller::refreshNetworkStorages) { Icon(Icons.Rounded.Refresh, "刷新连接") }
             }
         }
         items(state.networkStorages, key = NetworkStorageConnection::id) { connection ->
@@ -255,7 +258,7 @@ internal fun NetworkStorageScreen(state: MainUiState, viewModel: MainViewModel) 
                 connection = connection,
                 status = state.networkStorageStatuses[connection.id],
                 onOpen = { viewModel.openNetworkStorage(connection) },
-                onRemove = { viewModel.removeNetworkStorage(connection.id) },
+                onRemove = { controller.removeNetworkStorage(connection.id) },
             )
         }
         if (state.networkStorages.isEmpty()) {

@@ -1,5 +1,7 @@
 package com.shadow.media
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
 import android.content.ContentResolver
 import android.content.Intent
 import android.net.Uri
@@ -274,6 +276,7 @@ private fun UnifiedResultCard(item: UnifiedMediaItem, providerName: String, load
 
 @Composable
 internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
+    val integrations = viewModel.integrations.state.collectAsStateWithLifecycle()
     BackHandler(onBack = viewModel::back)
     val context = LocalContext.current
     val detail = state.selectedUnifiedDetail
@@ -365,7 +368,7 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                         }
                         if (
                             detail.item.externalIds.keys.any { it.equals("Tmdb", true) } &&
-                            state.integrations.any { it.kind == IntegrationKind.SEERR }
+                            integrations.value.integrations.any { it.kind == IntegrationKind.SEERR }
                         ) {
                             OutlinedButton(
                                 onClick = viewModel::requestSelectedMedia,
@@ -459,7 +462,7 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
         state.errorMessage?.let { message ->
             item { Text(message, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 20.dp)) }
         }
-        state.integrationMessage?.let { message ->
+        integrations.value.integrationMessage?.let { message ->
             item { Text(message.withoutEmoji(), color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(horizontal = 20.dp)) }
         }
     }
@@ -979,6 +982,7 @@ private fun ExternalSourceCard(
 
 @Composable
 internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
+    val guide = viewModel.liveGuide.state.collectAsStateWithLifecycle().value
     BackHandler(onBack = viewModel::back)
     val source = state.selectedExternalSource
     var catalogs by remember(source?.id) { mutableStateOf<List<MediaProvider>?>(null) }
@@ -995,7 +999,7 @@ internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
         state.liveChannels,
         state.externalQuery,
         state.externalGroup,
-        state.liveFavoriteKeys,
+        guide.liveFavoriteKeys,
     ) {
         state.liveChannels.filter { channel ->
             val matchesQuery = state.externalQuery.isBlank() ||
@@ -1003,7 +1007,7 @@ internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
                 channel.group.orEmpty().contains(state.externalQuery, true)
             val matchesGroup = when (state.externalGroup) {
                 null -> true
-                LIVE_FAVORITES_FILTER -> "$favoritePrefix${channel.id}" in state.liveFavoriteKeys
+                LIVE_FAVORITES_FILTER -> "$favoritePrefix${channel.id}" in guide.liveFavoriteKeys
                 else -> channel.group == state.externalGroup
             }
             matchesQuery && matchesGroup
@@ -1080,12 +1084,12 @@ internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
-                        if (state.isLoadingGuide) Icons.Rounded.LiveTv else Icons.Rounded.Security,
+                        if (guide.isLoadingGuide) Icons.Rounded.LiveTv else Icons.Rounded.Security,
                         null,
                         tint = MaterialTheme.colorScheme.primary,
                     )
                     Text(
-                        state.liveGuideMessage ?: if (state.isLoadingGuide) "正在同步 XMLTV 节目单"
+                        guide.liveGuideMessage ?: if (guide.isLoadingGuide) "正在同步 XMLTV 节目单"
                         else "独立网络沙箱播放，不携带 Emby 凭据",
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                         style = MaterialTheme.typography.bodySmall,
@@ -1112,12 +1116,12 @@ internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
             item { EmptyStatePanel("没有符合当前筛选条件的频道", Modifier.padding(horizontal = 20.dp)) }
         }
         items(filteredChannels, key = LiveChannel::id) { channel ->
-            val programs = channel.epgId?.let(state.livePrograms::get).orEmpty()
+            val programs = channel.epgId?.let(guide.livePrograms::get).orEmpty()
             val stableKey = "$favoritePrefix${channel.id}"
             LiveChannelCard(
                 channel = channel,
                 programs = programs,
-                favorite = stableKey in state.liveFavoriteKeys,
+                favorite = stableKey in guide.liveFavoriteKeys,
                 onPlay = viewModel::playExternalEntry,
                 lineDescription = viewModel::liveLineDescription,
                 onFavorite = { viewModel.toggleLiveFavorite(channel) },

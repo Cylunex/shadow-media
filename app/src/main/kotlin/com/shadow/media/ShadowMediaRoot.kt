@@ -1,17 +1,13 @@
 package com.shadow.media
 
-import android.content.ActivityNotFoundException
-import android.content.Intent
+import androidx.lifecycle.repeatOnLifecycle
 import android.app.Activity
 import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.ContextWrapper
 import android.net.Uri
 import android.util.Rational
-import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
@@ -49,7 +45,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.BookmarkAdd
 import androidx.compose.material.icons.rounded.Headphones
@@ -63,7 +58,6 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SkipNext
-import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
@@ -110,7 +104,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -129,11 +122,8 @@ import com.shadow.media.model.MediaSort
 import com.shadow.media.model.SegmentType
 import com.shadow.media.model.EmbySession
 import com.shadow.media.model.PlaybackPlan
-import com.shadow.media.model.embyTicksToMilliseconds
 import com.shadow.media.playback.PlaybackRuntime
 import com.shadow.media.playback.ExternalPlaybackRuntime
-import com.shadow.media.playback.MpvIsoPlaybackRuntime
-import com.shadow.media.playback.MpvIsoPlaybackState
 import com.shadow.media.ui.ContinueFeedCard
 import com.shadow.media.ui.EmbyArtwork
 import com.shadow.media.ui.EmptyStatePanel
@@ -188,8 +178,8 @@ fun LegacyMediaRoot(
                 Screen.DISCOVER -> DiscoverScreen(state, viewModel)
                 Screen.PROVIDER_DETAIL -> UnifiedDetailScreen(state, viewModel)
                 Screen.MDC -> mdcPageState.SaveableStateProvider("mdc") { MdcScreen(viewModel) }
-                Screen.NETWORK_STORAGES -> NetworkStorageScreen(state, viewModel)
-                Screen.INTEGRATIONS -> IntegrationScreen(state, viewModel)
+                Screen.NETWORK_STORAGES -> NetworkStorageScreen(viewModel)
+                Screen.INTEGRATIONS -> IntegrationScreen(viewModel)
                 Screen.INSIGHTS -> InsightsScreen(viewModel)
                 Screen.SETTINGS -> SettingsScreen(viewModel)
                 Screen.PLAYER -> FeedScreen(state, viewModel, container)
@@ -241,6 +231,7 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
             .also { it.player.setPlaybackSpeed(decoderResume?.speed ?: 1f) }
     }
     val videoControls = LocalVideoControlState.current
+    var showHandoff by remember { mutableStateOf(false) }
     var showCast by remember { mutableStateOf(false) }
     val inPip = (context.findActivity() as? MainActivity)?.inPictureInPicture == true
     val playbackError by runtime.error.collectAsStateWithLifecycle()
@@ -254,8 +245,11 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
     }
     DisposableEffect(runtime) {
         val listener = object : androidx.media3.common.Player.Listener {
+            private val started = android.os.SystemClock.elapsedRealtime()
             private var healthy = false
-            override fun onRenderedFirstFrame() { if (!healthy) { healthy = true; viewModel.externalPlaybackHealthy(entry) } }
+            override fun onRenderedFirstFrame() {
+                if (!healthy) { healthy = true; viewModel.externalPlaybackHealthy(entry, android.os.SystemClock.elapsedRealtime() - started) }
+            }
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
                 if (playWhenReady) container.castPlayback.takeReturnPosition(entry.sourceId, entry.id)?.let { if (runtime.player.isCurrentMediaItemSeekable) runtime.player.seekTo(it) }
             }
@@ -360,6 +354,16 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
             onClick = { viewModel.refreshExternalPlayback(runtime.player.currentPosition, runtime.player.playWhenReady) },
             modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 170.dp),
         ) { Text("重新解析来源") }
+        if (entry.sourceId.startsWith("mdc:") && !inPip && !videoControls.locked &&
+            (playbackError != null || recovery.phase == com.shadow.media.playback.PlaybackRecoveryPhase.FAILED)) {
+            var matching by remember(entry.id) { mutableStateOf(false) }
+            TextButton(onClick = { matching = true }, modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 220.dp)) {
+                Text("在影视仓找其他来源")
+            }
+            if (matching) MdcCrossSiteSearch(com.shadow.media.model.UnifiedMediaItem(
+                com.shadow.media.model.MediaKey(entry.sourceId, entry.id.substringBefore(":version:")), entry.title, "Movie"
+            ), viewModel) { matching = false }
+        }
         if (!inPip && !videoControls.locked) LiveLinePicker(state, viewModel, entry, Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(top = 76.dp))
         VideoQueueControls(container, viewModel, entry, runtime.player,
             Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(bottom = 72.dp))
@@ -370,188 +374,13 @@ private fun ExternalPlayerScreen(state: MainUiState, viewModel: MainViewModel, c
             val resolved = if (candidate == null) entry else entry.copy(url = candidate.url, requestHeaders = candidate.requiredHeaders, credentialOrigin = candidate.credentialOrigin)
             PreparedCastMedia(resolved, runtime.player.currentPosition, com.shadow.media.playback.castMimeType(resolved.url))
         })
-        VideoPlayerFeatures(runtime.player, onSubtitle = runtime::addSubtitle, onCast = { showCast = true }, preferenceKey = "${entry.sourceId}:${entry.id}",
+        if (showHandoff) DeviceHandoffPanel(container.deviceHandoff, viewModel,
+            { container.deviceHandoff.playback(entry.sourceId, entry.id, entry.title, runtime.player.currentPosition) }, { showHandoff = false })
+        VideoPlayerFeatures(runtime.player, matchedSubtitleCount = entry.subtitles.size, onHandoff = { showHandoff = true }, onSubtitle = runtime::addSubtitle, onCast = { showCast = true }, preferenceKey = "${entry.sourceId}:${entry.id}",
             onDecoderChange = { mode ->
                 decoderResume = VideoRestartSnapshot(runtime.player.currentPosition, runtime.player.playWhenReady, runtime.player.playbackParameters.speed)
                 preferences.update { it.copy(decoder = mode) }
             })
-    }
-}
-
-@Composable
-private fun ExternalIsoPlayerScreen(
-    entry: com.shadow.media.model.ExternalMediaEntry,
-    viewModel: MainViewModel,
-    container: AppContainer,
-) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val runtime = remember(entry.id, entry.url, entry.startPositionMs, entry.playbackRevision) {
-        MpvIsoPlaybackRuntime(context.applicationContext, entry, container.networkStorageRepository, onTerminalError = { position, _ -> viewModel.refreshExternalPlayback(position, true, automatic = true) })
-    }
-    val playbackState by runtime.state.collectAsStateWithLifecycle()
-    val recovery by runtime.recovery.collectAsStateWithLifecycle()
-    val diagnostics by runtime.diagnostics.collectAsStateWithLifecycle()
-    val focusRequester = remember(runtime) { FocusRequester() }
-    LaunchedEffect(runtime) { runCatching { focusRequester.requestFocus() } }
-
-    DisposableEffect(runtime, lifecycleOwner) {
-        var resumeAfterBackground = false
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_STOP -> {
-                    runtime.setForeground(false)
-                    resumeAfterBackground = runtime.state.value.isPlaying
-                    runtime.pause()
-                }
-                Lifecycle.Event.ON_START -> {
-                    runtime.setForeground(true)
-                    if (resumeAfterBackground) {
-                    runtime.play()
-                    resumeAfterBackground = false
-                    }
-                }
-                else -> Unit
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-            val snapshot = runtime.state.value
-            container.recordExternalHistory(entry, snapshot.positionMs, snapshot.durationMs.takeIf { it > 0 })
-            runtime.close()
-        }
-    }
-
-    Box(
-        Modifier.fillMaxSize().background(Color.Black)
-            .focusRequester(focusRequester)
-            .onPreviewKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                when (event.key) {
-                    Key.DirectionLeft -> {
-                        runtime.seekTo((playbackState.positionMs - TV_SEEK_STEP_MS).coerceAtLeast(0))
-                        true
-                    }
-                    Key.DirectionRight -> {
-                        runtime.seekTo(playbackState.positionMs + TV_SEEK_STEP_MS)
-                        true
-                    }
-                    Key.Enter, Key.NumPadEnter, Key.Spacebar, Key.MediaPlayPause -> {
-                        if (playbackState.isPlaying) runtime.pause() else runtime.play()
-                        true
-                    }
-                    else -> false
-                }
-            }
-            .focusable(),
-    ) {
-        AndroidView(
-            factory = { SurfaceView(it).also(runtime::attach) },
-            update = runtime::attach,
-            modifier = Modifier.fillMaxSize(),
-        )
-        Row(
-            modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.58f)).statusBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = viewModel::back) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回", tint = Color.White)
-            }
-            Column(Modifier.weight(1f)) {
-                Text(entry.title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    "网络 ISO · libmpv 光盘引擎",
-                    color = Color.White.copy(alpha = 0.7f),
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        }
-        PlaybackRecoveryNotice(recovery, runtime::retry, Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 76.dp, start = 16.dp, end = 16.dp))
-        ExternalIsoControls(
-            title = entry.title,
-            runtime = runtime,
-            state = playbackState,
-            sourceStats = diagnostics.source,
-            modifier = Modifier.align(Alignment.BottomCenter),
-        )
-        playbackState.error?.let { message ->
-            Card(
-                modifier = Modifier.align(Alignment.Center).padding(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xE81B1114), contentColor = Color.White),
-            ) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("ISO 播放失败", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                    Text(message, color = Color.White.copy(alpha = 0.84f), style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ExternalIsoControls(
-    title: String,
-    runtime: MpvIsoPlaybackRuntime,
-    state: MpvIsoPlaybackState,
-    sourceStats: com.fongmi.android.tv.player.iso.IsoSourceStats,
-    modifier: Modifier = Modifier,
-) {
-    var positionMs by remember(runtime) { mutableLongStateOf(state.positionMs) }
-    var isScrubbing by remember(runtime) { mutableStateOf(false) }
-    LaunchedEffect(state.positionMs, isScrubbing) {
-        if (!isScrubbing) positionMs = state.positionMs
-    }
-    Column(
-        modifier = modifier.fillMaxWidth()
-            .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
-            .background(Color(0xE6111612)).navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 14.dp),
-    ) {
-        Text("DISC IMAGE", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
-        Text(title, color = Color.White, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Slider(
-            value = positionMs.coerceIn(0L, state.durationMs.coerceAtLeast(0L)).toFloat(),
-            onValueChange = { isScrubbing = true; positionMs = it.toLong() },
-            onValueChangeFinished = { runtime.seekTo(positionMs); isScrubbing = false },
-            valueRange = 0f..state.durationMs.coerceAtLeast(1L).toFloat(),
-            enabled = state.isSeekable && state.durationMs > 0,
-        )
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            Column {
-                Text("${formatDuration(positionMs)} / ${formatDuration(state.durationMs)}", color = Color.White)
-                Text(
-                    "随机读取 ${sourceStats.requestCount} 次 · ${sourceStats.upstreamHost ?: "网络存储"}",
-                    color = Color.White.copy(alpha = 0.58f),
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            FilledTonalButton(onClick = { if (state.isPlaying) runtime.pause() else runtime.play() }) {
-                Icon(if (state.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null)
-                Spacer(Modifier.size(6.dp))
-                Text(if (state.isPlaying) "暂停" else "播放")
-            }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            TextButton(onClick = runtime::previousChapter, enabled = state.chapterCount > 0) {
-                Icon(Icons.Rounded.SkipPrevious, null)
-                Text("上一章")
-            }
-            TextButton(onClick = runtime::nextChapter, enabled = state.chapterCount > 0) {
-                Icon(Icons.Rounded.SkipNext, null)
-                Text("下一章")
-            }
-            TextButton(onClick = runtime::nextAudioTrack, enabled = state.audioTracks.size > 1) {
-                Icon(Icons.Rounded.Headphones, null)
-                Text("音轨")
-            }
-            TextButton(onClick = runtime::nextSubtitleTrack, enabled = state.subtitleTracks.isNotEmpty()) {
-                Icon(Icons.Rounded.Subtitles, null)
-                Text("字幕")
-            }
-        }
     }
 }
 
@@ -779,7 +608,19 @@ private fun ItemScreen(state: MainUiState, viewModel: MainViewModel) {
         }
         if (state.wallItems.isNotEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
-                ContinueFeedCard(state.currentIndex, viewModel::startLibraryFeed)
+                Column {
+                    Row(Modifier.horizontalScroll(rememberScrollState())) {
+                        FeedOrder.entries.forEach { order ->
+                            FilterChip(selected = state.feedFilter.order == order, onClick = {
+                                viewModel.setFeedFilter(state.feedFilter.copy(order = order))
+                            }, label = { Text(order.label) })
+                        }
+                    }
+                    FilterChip(selected = state.feedFilter.hideSeen, onClick = {
+                        viewModel.setFeedFilter(state.feedFilter.copy(hideSeen = !state.feedFilter.hideSeen))
+                    }, label = { Text("跳过刷过的影片") })
+                    ContinueFeedCard(state.currentIndex, viewModel::startLibraryFeed)
+                }
             }
         }
         gridItems(state.wallItems, key = MediaItem::id) { item ->
@@ -1052,341 +893,6 @@ private fun FeedPage(
 }
 
 @Composable
-private fun IsoPlayer(
-    state: MainUiState,
-    item: MediaItem,
-    plan: PlaybackPlan,
-    container: AppContainer,
-    onRetry: () -> Unit,
-    onTerminalError: (Long, String) -> Unit,
-    onStarted: (PlaybackPlan, Long) -> Unit,
-    onStopped: (PlaybackPlan, Long) -> Unit,
-    onSaveMoment: (MediaItem, Long) -> Unit,
-    onSaveSegment: (MediaItem, SegmentType, Long, Long) -> Unit,
-) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val session = requireNotNull(state.session)
-    val runtime = remember(plan) {
-        MpvIsoPlaybackRuntime(
-            context = context,
-            session = session,
-            plan = plan,
-            playbackOutbox = container.playbackOutbox,
-            clientIdentity = container.clientIdentity,
-            startPositionMs = state.playbackStartPositionMs,
-            onTerminalError = onTerminalError,
-        )
-    }
-    val playbackState by runtime.state.collectAsStateWithLifecycle()
-    val recovery by runtime.recovery.collectAsStateWithLifecycle()
-    val diagnostics by runtime.diagnostics.collectAsStateWithLifecycle()
-    val pendingReports by container.playbackOutbox.pendingCount.collectAsStateWithLifecycle()
-    var launchError by remember(plan) { mutableStateOf<String?>(null) }
-    var launchedAtPosition by remember(plan) { mutableLongStateOf(0L) }
-    var showDiagnostics by remember(runtime) { mutableStateOf(false) }
-    var externalPlaybackActive by remember(runtime) { mutableStateOf(false) }
-    val focusRequester = remember(runtime) { FocusRequester() }
-    LaunchedEffect(runtime) { runCatching { focusRequester.requestFocus() } }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        externalPlaybackActive = false
-        val returnedPosition = result.data?.getLongExtra(VLC_RESULT_POSITION, -1L) ?: -1L
-        if (returnedPosition >= 0) runtime.seekTo(returnedPosition)
-        onStopped(plan, returnedPosition.takeIf { it >= 0 } ?: launchedAtPosition)
-    }
-
-    fun launchVlc() {
-        val startPosition = playbackState.positionMs.coerceAtLeast(0L)
-        val playbackUrl = plan.primary.url.toHttpUrl()
-        val serverUrl = session.serverUrl.toHttpUrl()
-        if (
-            playbackUrl.scheme != serverUrl.scheme || playbackUrl.host != serverUrl.host ||
-            playbackUrl.port != serverUrl.port
-        ) {
-            launchError = "ISO 播放地址不属于当前 Emby 服务器，已拒绝向外部播放器发送凭据"
-            return
-        }
-        val authorizedUrl = playbackUrl.newBuilder()
-            .setQueryParameter("api_key", session.accessToken)
-            .build()
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setPackage(VLC_PACKAGE)
-            setDataAndType(Uri.parse(authorizedUrl.toString()), "video/*")
-            putExtra("title", item.name)
-            putExtra("from_start", startPosition == 0L)
-            putExtra("position", startPosition)
-        }
-        val resumeNativeOnFailure = playbackState.isPlaying
-        runtime.pause()
-        try {
-            launchedAtPosition = startPosition
-            externalPlaybackActive = true
-            launcher.launch(intent)
-            onStarted(plan, startPosition)
-            launchError = null
-        } catch (_: ActivityNotFoundException) {
-            externalPlaybackActive = false
-            if (resumeNativeOnFailure) runtime.play()
-            launchError = "没有找到 VLC for Android，请先安装后重试"
-        }
-    }
-
-    DisposableEffect(runtime, lifecycleOwner) {
-        var resumeAfterBackground = false
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_STOP -> {
-                    runtime.setForeground(false)
-                    resumeAfterBackground = !externalPlaybackActive && runtime.state.value.isPlaying
-                    runtime.pause()
-                }
-                Lifecycle.Event.ON_START -> {
-                    runtime.setForeground(true)
-                    if (resumeAfterBackground) {
-                    runtime.play()
-                    resumeAfterBackground = false
-                    }
-                }
-                else -> Unit
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-            runtime.close()
-        }
-    }
-
-    Box(
-        Modifier.fillMaxSize()
-            .focusRequester(focusRequester)
-            .onPreviewKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                when (event.key) {
-                    Key.DirectionLeft -> {
-                        runtime.seekTo(playbackState.positionMs - TV_SEEK_STEP_MS)
-                        true
-                    }
-                    Key.DirectionRight -> {
-                        runtime.seekTo(playbackState.positionMs + TV_SEEK_STEP_MS)
-                        true
-                    }
-                    Key.Enter, Key.NumPadEnter, Key.Spacebar, Key.MediaPlayPause -> {
-                        if (playbackState.isPlaying) runtime.pause() else runtime.play()
-                        true
-                    }
-                    else -> false
-                }
-            }
-            .focusable()
-    ) {
-        AndroidView(
-            factory = { viewContext -> SurfaceView(viewContext).also(runtime::attach) },
-            modifier = Modifier.fillMaxSize(),
-        )
-
-        if (playbackState.isBuffering) {
-            Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator(color = Color.White)
-                Spacer(Modifier.height(8.dp))
-                Text("正在读取 ISO ${playbackState.bufferPercent}%", color = Color.White)
-            }
-        }
-
-        FilledTonalButton(
-            onClick = { showDiagnostics = !showDiagnostics },
-            modifier = Modifier.statusBarsPadding().padding(top = 68.dp, start = 12.dp),
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-        ) {
-            Icon(Icons.Rounded.BugReport, null, modifier = Modifier.size(17.dp))
-            Spacer(Modifier.size(6.dp))
-            Text(if (showDiagnostics) "收起诊断" else "ISO 诊断")
-        }
-
-        if (showDiagnostics || playbackState.error != null || launchError != null) {
-            Card(
-                Modifier.fillMaxWidth().statusBarsPadding()
-                    .padding(start = 16.dp, end = 16.dp, top = 124.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = Color(0xEE111713),
-                    contentColor = Color.White,
-                ),
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("ISO 播放链路", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
-                    Text("${diagnostics.engine} · ${diagnostics.nativeAbi ?: "正在加载"} · 应用内播放", color = Color.White)
-                    Text(
-                        "上游 ${diagnostics.source.upstreamHost ?: "等待连接"} · " +
-                            "HTTP ${diagnostics.source.upstreamStatus ?: "-"} · " +
-                            "Range ${if (diagnostics.source.upstreamStatus == 206) "是" else "待确认"}",
-                        color = Color.White.copy(alpha = 0.74f),
-                    )
-                    Text(
-                        "请求 ${diagnostics.source.requestCount} · 缓存 " +
-                            "${diagnostics.source.cacheHits}/${diagnostics.source.cacheMisses} · " +
-                            if (diagnostics.source.requestCount > 0) {
-                                "最近 bytes=${diagnostics.source.lastOffset}-" +
-                                    "${diagnostics.source.lastOffset + diagnostics.source.lastLength - 1} · "
-                            } else {
-                                "最近 Range 等待读取 · "
-                            } +
-                            diagnostics.source.totalBytes.takeIf { it > 0 }?.let(::formatBytes).orEmpty(),
-                        color = Color.White.copy(alpha = 0.74f),
-                    )
-                    Text(
-                        "章节 ${playbackState.chapterIndex + 1}/${playbackState.chapterCount} · " +
-                            "${diagnostics.videoCodec ?: "?"}/${diagnostics.audioCodec ?: "?"} · " +
-                            "${diagnostics.hardwareDecoder ?: "软件/待定"} · 同步队列 $pendingReports",
-                        color = Color.White.copy(alpha = 0.74f),
-                    )
-                    (playbackState.error ?: launchError ?: diagnostics.lastError)?.let {
-                        Text(it, color = MaterialTheme.colorScheme.error)
-                        Row {
-                            OutlinedButton(onClick = onRetry) { Text("重新解析") }
-                            Spacer(Modifier.size(8.dp))
-                            OutlinedButton(onClick = ::launchVlc) { Text("外部 VLC 兜底") }
-                        }
-                    }
-                    if (launchError?.contains("没有找到") == true) {
-                        OutlinedButton(
-                            onClick = {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(VLC_DOWNLOAD_URL)))
-                            },
-                        ) { Text("打开 VLC 下载页") }
-                    }
-                }
-            }
-        }
-
-        IsoPlaybackControls(
-            item = item,
-            runtime = runtime,
-            state = playbackState,
-            segments = state.mediaSegments,
-            onSaveMoment = { onSaveMoment(item, it) },
-            onSaveSegment = { type, startMs, endMs -> onSaveSegment(item, type, startMs, endMs) },
-            onExternalFallback = ::launchVlc,
-            modifier = Modifier.align(Alignment.BottomCenter),
-        )
-    }
-}
-
-@Composable
-private fun IsoPlaybackControls(
-    item: MediaItem,
-    runtime: MpvIsoPlaybackRuntime,
-    state: MpvIsoPlaybackState,
-    segments: List<MediaSegment>,
-    onSaveMoment: (Long) -> Unit,
-    onSaveSegment: (SegmentType, Long, Long) -> Unit,
-    onExternalFallback: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    var positionMs by remember(runtime) { mutableLongStateOf(0L) }
-    var isScrubbing by remember(runtime) { mutableStateOf(false) }
-    val activeSegment = segments.firstOrNull { positionMs in it.startMs until it.endMs }
-
-    LaunchedEffect(state.positionMs, isScrubbing) {
-        if (!isScrubbing) positionMs = state.positionMs
-    }
-
-    Column(
-        modifier = modifier.fillMaxWidth()
-            .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
-            .background(Color(0xE6111612))
-            .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 14.dp),
-    ) {
-        Text("DISC IMAGE", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
-        Text(
-            item.name,
-            color = Color.White,
-            style = MaterialTheme.typography.titleLarge,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Slider(
-            value = positionMs.coerceIn(0L, state.durationMs.coerceAtLeast(0L)).toFloat(),
-            onValueChange = {
-                isScrubbing = true
-                positionMs = it.toLong()
-            },
-            onValueChangeFinished = {
-                runtime.seekTo(positionMs)
-                isScrubbing = false
-            },
-            valueRange = 0f..state.durationMs.coerceAtLeast(1L).toFloat(),
-            enabled = state.isSeekable && state.durationMs > 0,
-        )
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                "${formatDuration(positionMs)} / ${formatDuration(state.durationMs)}",
-                color = Color.White,
-                style = MaterialTheme.typography.bodySmall,
-            )
-            FilledTonalButton(onClick = { if (state.isPlaying) runtime.pause() else runtime.play() }) {
-                Icon(if (state.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null)
-                Spacer(Modifier.size(6.dp))
-                Text(if (state.isPlaying) "暂停" else "播放")
-            }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            TextButton(onClick = runtime::previousChapter, enabled = state.chapterCount > 0) {
-                Icon(Icons.Rounded.SkipPrevious, null)
-                Text("上一章")
-            }
-            TextButton(onClick = runtime::nextChapter, enabled = state.chapterCount > 0) {
-                Icon(Icons.Rounded.SkipNext, null)
-                Text("下一章")
-            }
-            TextButton(onClick = runtime::nextAudioTrack, enabled = state.audioTracks.size > 1) {
-                Icon(Icons.Rounded.Headphones, null)
-                Text("音轨")
-            }
-            TextButton(onClick = runtime::nextSubtitleTrack, enabled = state.subtitleTracks.isNotEmpty()) {
-                Icon(Icons.Rounded.Subtitles, null)
-                Text("字幕")
-            }
-        }
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            TextButton(onClick = { onSaveMoment(positionMs) }) {
-                Icon(Icons.Rounded.BookmarkAdd, null)
-                Spacer(Modifier.size(5.dp))
-                Text("保存时刻")
-            }
-            if (activeSegment != null && state.isSeekable) {
-                TextButton(onClick = { runtime.seekTo(activeSegment.endMs) }) {
-                    Icon(Icons.Rounded.SkipNext, null)
-                    Spacer(Modifier.size(5.dp))
-                    Text(activeSegment.type.skipLabel())
-                }
-            } else {
-                TextButton(
-                    onClick = { onSaveSegment(SegmentType.INTRO, 0L, positionMs) },
-                    enabled = positionMs >= 5_000,
-                ) { Text("标记片头终点") }
-                TextButton(
-                    onClick = { onSaveSegment(SegmentType.CREDITS, positionMs, state.durationMs) },
-                    enabled = state.durationMs > positionMs,
-                ) { Text("标记片尾起点") }
-            }
-        }
-        TextButton(onClick = onExternalFallback, modifier = Modifier.align(Alignment.End)) {
-            Icon(Icons.AutoMirrored.Rounded.OpenInNew, null, modifier = Modifier.size(17.dp))
-            Spacer(Modifier.size(5.dp))
-            Text("外部 VLC 兜底", color = Color.White.copy(alpha = 0.7f))
-        }
-    }
-}
-
-@Composable
 private fun ActivePlayer(
     feedPreload: com.shadow.media.playback.FeedPreloadPool?,
     state: MainUiState,
@@ -1405,8 +911,8 @@ private fun ActivePlayer(
     val lifecycleOwner = LocalLifecycleOwner.current
     val preferences = remember(context) { com.shadow.media.playback.VideoPreferenceStore.get(context) }
     val videoSettings by preferences.settings.collectAsStateWithLifecycle()
-    var decoderResume by remember(plan) { mutableStateOf<VideoRestartSnapshot?>(null) }
-    val runtime = remember(plan, feedPreload, videoSettings.decoder) {
+    var decoderResume by remember(session, plan, state.playbackStartPositionMs) { mutableStateOf<VideoRestartSnapshot?>(null) }
+    val runtime = remember(session, plan, state.playbackStartPositionMs, feedPreload, videoSettings.decoder) {
         PlaybackRuntime(
             context = context,
             feedPreload = feedPreload,
@@ -1421,9 +927,19 @@ private fun ActivePlayer(
             onTerminalError = onTerminalError,
         ).also { it.player.setPlaybackSpeed(decoderResume?.speed ?: 1f) }
     }
+    val syncOwner = container.deviceHandoff.accountId
+    LaunchedEffect(runtime, syncOwner) {
+        if (syncOwner != null) lifecycleOwner.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            while (true) {
+                container.deviceHandoff.observe(session.providerId, item.id, item.name, runtime.currentPositionMs)
+                delay(3000)
+            }
+        }
+    }
     val diagnostics by runtime.diagnostics.collectAsStateWithLifecycle()
     val recovery by runtime.recovery.collectAsStateWithLifecycle()
     val pendingReports by container.playbackOutbox.pendingCount.collectAsStateWithLifecycle()
+    var showHandoff by remember { mutableStateOf(false) }
     var showCast by remember { mutableStateOf(false) }
     var showDiagnostics by remember(runtime) { mutableStateOf(false) }
     DisposableEffect(runtime) {
@@ -1596,7 +1112,9 @@ private fun ActivePlayer(
                                 at.coerceIn(0, Long.MAX_VALUE / 10000) * 10000, paused, true, event, candidate.method))
                     })
             })
-        VideoPlayerFeatures(runtime.player, onCast = { showCast = true }, position = { runtime.currentPositionMs },
+        if (showHandoff) DeviceHandoffPanel(container.deviceHandoff, null,
+            { container.deviceHandoff.playback(session.providerId, item.id, item.name, runtime.currentPositionMs) }, { showHandoff = false })
+        VideoPlayerFeatures(runtime.player, onHandoff = { showHandoff = true }, onCast = { showCast = true }, position = { runtime.currentPositionMs },
             duration = { runtime.durationMs }, canSeek = { runtime.isSeekSupported }, seek = runtime::seekTo,
             preferenceKey = "${session.providerId}:${plan.itemId}", onDecoderChange = { mode ->
                 decoderResume = VideoRestartSnapshot(runtime.currentPositionMs, runtime.player.playWhenReady, runtime.player.playbackParameters.speed)
@@ -1733,7 +1251,7 @@ private fun PlaybackControls(
     }
 }
 
-private fun SegmentType.skipLabel(): String = when (this) {
+internal fun SegmentType.skipLabel(): String = when (this) {
     SegmentType.INTRO -> "跳过片头"
     SegmentType.RECAP -> "跳过回顾"
     SegmentType.CREDITS -> "跳过片尾"
@@ -1863,15 +1381,9 @@ private fun MediaItem.episodeLabel(): String = if (seriesName != null) {
     type
 }
 
-private fun formatDuration(milliseconds: Long): String {
+internal fun formatDuration(milliseconds: Long): String {
     val seconds = milliseconds / 1_000
     return "%d:%02d".format(seconds / 60, seconds % 60)
-}
-
-private fun formatBytes(bytes: Long): String = when {
-    bytes >= 1024L * 1024 * 1024 -> "%.1f GiB".format(bytes / (1024.0 * 1024 * 1024))
-    bytes >= 1024L * 1024 -> "%.1f MiB".format(bytes / (1024.0 * 1024))
-    else -> "$bytes B"
 }
 
 private fun Boolean.asFlag(): String = if (this) "是" else "否"
@@ -1911,9 +1423,6 @@ private fun PlaybackPlan.isDiscImage(): Boolean =
     videoType.equals("Iso", ignoreCase = true) ||
         container?.split(',')?.any { it.equals("iso", ignoreCase = true) } == true
 
-private const val VLC_PACKAGE = "org.videolan.vlc"
-private const val VLC_RESULT_POSITION = "extra_position"
-private const val VLC_DOWNLOAD_URL = "https://www.videolan.org/vlc/download-android.html"
-private const val TV_SEEK_STEP_MS = 10_000L
+internal const val TV_SEEK_STEP_MS = 10_000L
 
 internal data class VideoRestartSnapshot(val positionMs: Long, val playing: Boolean, val speed: Float)

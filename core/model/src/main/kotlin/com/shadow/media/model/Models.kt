@@ -152,6 +152,7 @@ data class ExternalMediaEntry(
     val refreshAttempts: Int = 0,
     val mimeType: String? = null,
     val playbackItemId: String? = null,
+    val failedPlaybackItems: Set<String> = emptySet(),
 )
 
 data class LiveChannel(

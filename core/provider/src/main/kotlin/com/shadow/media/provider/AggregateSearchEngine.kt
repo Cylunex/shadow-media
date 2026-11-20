@@ -38,6 +38,7 @@ class AggregateSearchEngine(private val timeoutMs: Long = 12_000, private val co
     fun searchSnapshots(
         providers: List<MediaProvider>,
         request: ProviderSearchRequest,
+        sourcePenalty: (UnifiedMediaItem) -> Int = { 0 },
     ): Flow<AggregateSearchResult> = channelFlow {
         val normalizedQuery = request.query.trim()
         require(normalizedQuery.isNotEmpty()) { "搜索内容不能为空" }
@@ -54,6 +55,7 @@ class AggregateSearchEngine(private val timeoutMs: Long = 12_000, private val co
             .distinctBy { it.key.stableId }
             .sortedWith(
                 compareByDescending<UnifiedMediaItem> { relevance(it, normalizedQuery) }
+                    .thenBy(sourcePenalty)
                     .thenByDescending { it.rating ?: 0.0 }
                     .thenByDescending { it.year ?: 0 }
                     .thenBy(UnifiedMediaItem::title)

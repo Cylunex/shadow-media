@@ -47,7 +47,7 @@ class FeedPreloadPool(context: Context, private val session: EmbySession, identi
             FeedPreloadTarget.TRACKS -> DefaultPreloadManager.PreloadStatus.PRELOAD_STATUS_TRACKS_SELECTED
             FeedPreloadTarget.NONE -> DefaultPreloadManager.PreloadStatus.PRELOAD_STATUS_NOT_PRELOADED
         }
-    })
+    }).setRenderersFactory(videoRenderers(context, VideoDecoderMode.AUTO))
     private val manager = builder.build().apply { addListener(object : PreloadManagerListener {
         override fun onError(error: PreloadException) {
             entries[error.mediaItem.mediaId]?.failed = true

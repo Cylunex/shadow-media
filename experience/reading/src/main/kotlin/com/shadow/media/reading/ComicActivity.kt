@@ -51,6 +51,7 @@ class ComicActivity : ComponentActivity() {
     private var currentPage by mutableIntStateOf(0)
     private var currentOffset = 0f
     private var reflowBlock = 0
+    private var cropBorders by mutableStateOf(false)
     private var stripReachedEnd: Boolean? = null
     private var reflowReachedEnd = false
     private var textSize by mutableFloatStateOf(20f)
@@ -71,6 +72,7 @@ class ComicActivity : ComponentActivity() {
                 val item = requireNotNull(intent.getStringExtra("assetId")?.let { library.dao.asset(it) }) { "文件已移除" }
                 if (savedInstanceState == null) mode = getPreferences(MODE_PRIVATE).getString("mode:" + item.id, "LTR") ?: "LTR"
                 if (mode == "REFLOW" && (item.format != "pdf" || android.os.Build.VERSION.SDK_INT < 35)) mode = "LTR"
+                cropBorders = getPreferences(MODE_PRIVATE).getBoolean("crop:" + item.id, false)
                 val source = LibraryComicSource(item, library)
                 val manifest = withContext(Dispatchers.IO) { source.pages() }
                 require(manifest.isNotEmpty()) { "未找到可显示的页面" }
@@ -114,8 +116,8 @@ class ComicActivity : ComponentActivity() {
             var marksVisible by remember { mutableStateOf(false) }
             fun spreadFor(page: Int) = comicSpreadIndex(page, mode)
             fun firstInSpread(spread: Int) = comicSpreadStart(spread, mode)
-            val perSpread = if (mode == "双页") 2 else 1
-            val pager = rememberPagerState(initialPage = spreadFor(initialPage)) { (if (mode == "双页") 1 + pages.size / 2 else pages.size).coerceAtLeast(1) }
+            val perSpread = if (comicDouble(mode)) 2 else 1
+            val pager = rememberPagerState(initialPage = spreadFor(initialPage)) { (if (comicDouble(mode)) 1 + pages.size / 2 else pages.size).coerceAtLeast(1) }
             LaunchedEffect(pager, pages, perSpread, mode) {
                 if (mode == "长图" || pages.isEmpty()) return@LaunchedEffect
                 pager.scrollToPage(spreadFor(currentPage).coerceAtMost(pager.pageCount - 1))
@@ -154,9 +156,10 @@ class ComicActivity : ComponentActivity() {
                     if (error != null) Text(error!!, Modifier.padding(24.dp))
                     else if (pages.isEmpty()) CircularProgressIndicator(Modifier.padding(24.dp))
                     else if (mode == "长图") StripReader()
-                    else HorizontalPager(pager, reverseLayout = mode == "RTL", beyondViewportPageCount = 0, modifier = Modifier.fillMaxSize()) { spread ->
+                    else HorizontalPager(pager, reverseLayout = mode == "RTL" || mode == "双页RTL", beyondViewportPageCount = 0, modifier = Modifier.fillMaxSize()) { spread ->
                         Row(Modifier.fillMaxSize()) {
-                            repeat(perSpread) { offset ->
+                            repeat(perSpread) { slot ->
+                                val offset = if (mode == "双页RTL" && spread > 0) perSpread - 1 - slot else slot
                                 val index = firstInSpread(spread) + offset
                                 if ((spread != 0 || perSpread == 1 || offset == 0) && index in pages.indices) {
                                     if (mode == "REFLOW") ReflowPage(index, Modifier.weight(1f).fillMaxHeight())
@@ -168,8 +171,16 @@ class ComicActivity : ComponentActivity() {
                 }
             }
             if (settings) AlertDialog(onDismissRequest = { settings = false }, title = { Text("阅读模式") }, text = {
-                Column { listOf("LTR" to "从左向右", "RTL" to "从右向左", "长图" to "条漫 · 连续上下滚动", "双页" to "双页对开").forEach { (key, label) ->
+                Column { listOf("LTR" to "从左向右", "RTL" to "从右向左", "长图" to "条漫 · 连续上下滚动", "双页" to "双页对开", "双页RTL" to "双页右开").forEach { (key, label) ->
                     TextButton(onClick = { initialPage = currentPage; initialOffset = currentOffset; stripReachedEnd = null; mode = key; restoreEpoch++; save(force = true); getPreferences(MODE_PRIVATE).edit().putString("mode:" + asset?.id, key).apply(); settings = false }) { Text(label) }
+                }
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Checkbox(cropBorders, onCheckedChange = {
+                        initialPage = currentPage; initialOffset = currentOffset
+                        cropBorders = it; restoreEpoch++
+                        getPreferences(MODE_PRIVATE).edit().putBoolean("crop:" + asset?.id, it).apply()
+                    })
+                    Text("自动裁白边")
                 }
                 if (asset?.format == "pdf" && android.os.Build.VERSION.SDK_INT >= 35) TextButton(onClick = {
                     initialPage = currentPage; initialOffset = currentOffset; mode = "REFLOW"; restoreEpoch++
@@ -291,16 +302,21 @@ class ComicActivity : ComponentActivity() {
         var local by remember(index, asset?.revision) { mutableStateOf<File?>(null) }
         var failure by remember(index) { mutableStateOf<String?>(null) }
         var retry by remember(index) { mutableIntStateOf(0) }
-        LaunchedEffect(index, asset?.revision, retry) {
+        var crop by remember(index, asset?.revision, cropBorders) { mutableStateOf<android.graphics.Rect?>(null) }
+        LaunchedEffect(index, asset?.revision, retry, cropBorders) {
             failure = null
             var prepared: File? = null
             try {
-                val ratio = withContext(Dispatchers.IO) {
+                val (ratio, region) = withContext(Dispatchers.IO) {
                     prepared = adjacentCache.take(index)
                     val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     android.graphics.BitmapFactory.decodeFile(requireNotNull(prepared).path, bounds)
-                    if (bounds.outWidth > 0) bounds.outHeight.toFloat() / bounds.outWidth else 1.5f
+                    val region = if (cropBorders) comicContentRegion(requireNotNull(prepared), bounds.outWidth, bounds.outHeight) else null
+                    val ratio = if (region != null) region.height().toFloat() / region.width()
+                        else if (bounds.outWidth > 0) bounds.outHeight.toFloat() / bounds.outWidth else 1.5f
+                    ratio to region
                 }
+                crop = region
                 onAspect(ratio)
                 local = prepared; prepared = null
             }
@@ -310,7 +326,7 @@ class ComicActivity : ComponentActivity() {
         }
         Box(modifier) {
             val image = local
-            if (image != null) key(image.path, mode, restoreEpoch) {
+            if (image != null) key(image.path, mode, restoreEpoch, crop) {
                 AndroidView(factory = { context -> SubsamplingScaleImageView(context).apply {
                     setMaxTileSize(1024)
                     if (strip) { isPanEnabled = false; isZoomEnabled = false }
@@ -336,7 +352,7 @@ class ComicActivity : ComponentActivity() {
                             }
                         }
                     })
-                    setImage(ImageSource.uri(Uri.fromFile(image)))
+                    setImage(ImageSource.uri(Uri.fromFile(image)).apply { crop?.let { region(it) } })
                 } }, modifier = Modifier.fillMaxSize(), onRelease = { it.recycle() })
             }
             if (failure != null) Column(Modifier.padding(16.dp)) {

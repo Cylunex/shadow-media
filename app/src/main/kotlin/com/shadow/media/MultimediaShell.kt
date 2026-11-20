@@ -64,6 +64,7 @@ import com.shadow.media.reading.ComicActivity
 import com.shadow.media.reading.ReaderActivity
 
 @Composable fun ShadowMediaRoot(viewModel: MainViewModel, container: AppContainer) {
+    ObserveDeviceHandoff(container.deviceHandoff, viewModel)
     val state by viewModel.state.collectAsStateWithLifecycle()
     LaunchedEffect(state.screen) { if (state.screen != Screen.EXTERNAL_PLAYER) container.videoQueue.deactivate() }
     val context = LocalContext.current
@@ -527,6 +528,7 @@ import com.shadow.media.reading.ReaderActivity
 }
 
 @Composable private fun SourcesHub(state: MainUiState, viewModel: MainViewModel, pendingSync: Int, onImport: () -> Unit, onCatalogs: () -> Unit, onNovel: () -> Unit, onOffline: () -> Unit, onContinue: () -> Unit, onVideos: () -> Unit) {
+    val networkStorage = viewModel.networkStorage.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val appearance = remember { context.getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE) }
     var theme by remember { mutableStateOf(appearance.getString("theme", "深色")) }
@@ -536,7 +538,7 @@ import com.shadow.media.reading.ReaderActivity
         item { Text("通用设置", style = MaterialTheme.typography.headlineLarge); Text("你的内容，按自己的方式连接", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item { SourceTile("Emby 媒体服务", "${state.savedSessions.size} 个已保存账号", Icons.Rounded.Dns, viewModel::showServers) }
         item { SourceTile("Shadow MDC", "作品目录与 Emby 一键播放", Icons.Rounded.VideoLibrary, viewModel::showMdc) }
-        item { SourceTile("网络存储", "OpenList / WebDAV / SMB · ${state.networkStorages.size} 个连接", Icons.Rounded.FolderOpen, viewModel::showNetworkStorages) }
+        item { SourceTile("网络存储", "OpenList / WebDAV / SMB · ${networkStorage.value.networkStorages.size} 个连接", Icons.Rounded.FolderOpen, viewModel::showNetworkStorages) }
         item { SourceTile("影视与直播订阅", "${state.externalSources.size} 个订阅 · 导入、更新与诊断", Icons.Rounded.LiveTv, viewModel::showSources) }
         item { SourceTile("本机视频与链接", "手机视频 / 文件夹 / m3u8 · 继续观看", Icons.Rounded.VideoLibrary, onVideos) }
         item { SourceTile("本地书籍与音频", "系统文件选择器 · 不需要全盘存储权限", Icons.Rounded.FileOpen, onImport) }

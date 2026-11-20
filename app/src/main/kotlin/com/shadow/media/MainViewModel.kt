@@ -47,9 +47,6 @@ import com.shadow.media.model.FeatureId
 import com.shadow.media.model.MediaDetail
 import com.shadow.media.model.MediaKey
 import com.shadow.media.model.NetworkStorageConnection
-import com.shadow.media.model.NetworkStorageHealth
-import com.shadow.media.model.NetworkStorageKind
-import com.shadow.media.model.NetworkStorageStatus
 import com.shadow.media.model.ProviderDescriptor
 import com.shadow.media.model.UnifiedMediaItem
 import com.shadow.media.model.UnifiedPlaybackRequest
@@ -64,9 +61,6 @@ import com.shadow.media.provider.ProviderSearchFailure
 import com.shadow.media.provider.ProviderSearchRequest
 import okhttp3.OkHttpClient
 import java.util.UUID
-import com.shadow.media.model.IntegrationConnection
-import com.shadow.media.model.IntegrationKind
-import com.shadow.media.model.IntegrationStatus
 import com.shadow.media.model.MediaSegment
 import com.shadow.media.model.SegmentSource
 import com.shadow.media.model.SegmentType
@@ -107,6 +101,7 @@ data class MainUiState(
     val detailEpisodes: List<MediaItem> = emptyList(),
     val playerReturnScreen: Screen = Screen.ITEMS,
     val feedMode: Boolean = false,
+    val feedFilter: FeedFilter = FeedFilter(),
     val externalSources: List<ExternalSourceSummary> = emptyList(),
     val externalSourceReadError: String? = null,
     val sourceUrl: String = "",
@@ -115,12 +110,8 @@ data class MainUiState(
     val selectedExternalSource: ExternalSourceSummary? = null,
     val externalEntries: List<ExternalMediaEntry> = emptyList(),
     val liveChannels: List<LiveChannel> = emptyList(),
-    val livePrograms: Map<String, List<LiveProgram>> = emptyMap(),
-    val liveFavoriteKeys: Set<String> = emptySet(),
     val externalQuery: String = "",
     val externalGroup: String? = null,
-    val isLoadingGuide: Boolean = false,
-    val liveGuideMessage: String? = null,
     val selectedExternalEntry: ExternalMediaEntry? = null,
     val externalAttemptedLines: Set<String> = emptySet(),
     val externalPlayerReturnScreen: Screen = Screen.EXTERNAL_ITEMS,
@@ -135,32 +126,6 @@ data class MainUiState(
     val providerDetailBackStack: List<MediaDetail> = emptyList(),
     val providerDetailReturnScreen: Screen = Screen.DISCOVER,
     val isSearchingProviders: Boolean = false,
-    val integrations: List<IntegrationConnection> = emptyList(),
-    val integrationStatuses: Map<String, IntegrationStatus> = emptyMap(),
-    val integrationKind: IntegrationKind = IntegrationKind.TUNARR,
-    val integrationName: String = "",
-    val integrationBaseUrl: String = "",
-    val integrationApiToken: String = "",
-    val integrationAllowInsecureHttp: Boolean = false,
-    val integrationPlaylistUrl: String = "",
-    val integrationEpgUrl: String = "",
-    val integrationMessage: String? = null,
-    val isSavingIntegration: Boolean = false,
-    val networkStorages: List<NetworkStorageConnection> = emptyList(),
-    val networkStorageStatuses: Map<String, NetworkStorageStatus> = emptyMap(),
-    val networkStorageKind: NetworkStorageKind = NetworkStorageKind.OPENLIST,
-    val networkStorageName: String = "",
-    val networkStorageAddress: String = "",
-    val networkStorageUsername: String = "",
-    val networkStoragePassword: String = "",
-    val networkStorageDomain: String = "",
-    val networkStorageShare: String = "",
-    val networkStorageRootPath: String = "/",
-    val networkStorageAllowInsecureHttp: Boolean = false,
-    val networkStorageReadNfo: Boolean = true,
-    val networkStorageResolveStrm: Boolean = true,
-    val networkStorageMessage: String? = null,
-    val isSavingNetworkStorage: Boolean = false,
     val networkStorageReturnScreen: Screen = Screen.HOME,
     val mediaSegments: List<MediaSegment> = emptyList(),
     val insightMessage: String? = null,
@@ -206,10 +171,14 @@ class MainViewModel(
     private val retryLimit: () -> Int = { 2 },
     private val mdcConnections: () -> List<com.shadow.media.library.CatalogConnection> = { emptyList() },
     private val sharedMdcConnections: () -> List<com.shadow.media.library.CatalogConnection> = { emptyList() },
-    private val discoverSharedMdc: suspend () -> List<String> = { emptyList() },
+    private val discoverSharedMdc: suspend (Boolean) -> List<String> = { emptyList() },
     private val sharedMdcToken: (suspend (com.shadow.media.library.CatalogConnection, String?) -> String)? = null,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
+    internal val networkStorage = NetworkStorageController(viewModelScope, networkStorageRepository, networkStorageStore,
+        providersChanged = { syncProviders() }, reportError = { message -> update { copy(errorMessage = message) } })
+    internal val integrations = IntegrationController(viewModelScope, integrationRepository, integrationStore,
+        externalSourceRepository, externalSourceStore, providersChanged = { syncProviders() })
     var feedPreloader: com.shadow.media.playback.FeedPreloadPool? = null
     private var resolutionRetry: (() -> Unit)? = null
     private val resolutionRecovery = PlaybackRecovery(viewModelScope, { !com.shadow.media.model.NetworkPolicy.offlineOnly }, retryLimit) { resolutionRetry?.invoke() }
@@ -227,10 +196,8 @@ class MainViewModel(
     private val wallPagination = WallPagination()
     private val playbackOwnership = PlaybackOwnership()
     private var deleteRequest: Job? = null
-    private var liveGuideRequest: Job? = null
+    internal val liveGuide = LiveGuideController(viewModelScope, localMediaState, liveGuideRepository)
     private var providerSearchRequest: Job? = null
-    private var storageProbeRequest: Job? = null
-    private var integrationProbeRequest: Job? = null
     private val searchPageJobs = mutableMapOf<String, Job>()
     private var searchGeneration = 0L
     private var submittedQuery = ""
@@ -430,10 +397,26 @@ class MainViewModel(
         else -> null
     }
 
+    internal fun deviceHandoffFailed(error: Exception) = showError(error)
+
+    internal suspend fun resumeDevicePlayback(key: MediaKey, position: Long) {
+        syncProviders()
+        val provider = requireNotNull(providerRegistry.provider(key.providerId)) { "请在此设备连接相同来源" }
+        if (provider is MdcMediaProvider && key.itemId.contains(":version:")) {
+            val work = key.copy(itemId = key.itemId.substringBefore(":version:"))
+            val plan = provider.plan(work, online = true)
+            val source = requireNotNull(selectMdcRecoverySource(plan, key.itemId.substringAfter(":version:"), "")) { "原版本已不可用" }
+            playMdc(provider, work, plan, source, position)
+        } else {
+            val item = provider.detail(key).item.copy(progressMs = position)
+            playUnifiedOnline(item, useSavedPosition = false)
+        }
+    }
+
     internal fun knownMdcConnections() = readMdcConnections(mdcConnections, sharedMdcConnections)
 
-    internal suspend fun discoverMdcConnections(): MdcDiscovery {
-        val failed = try { discoverSharedMdc() }
+    internal suspend fun discoverMdcConnections(force: Boolean = false): MdcDiscovery {
+        val failed = try { discoverSharedMdc(force) }
         catch (e: CancellationException) { throw e }
         catch (e: IllegalStateException) { listOf(e.message ?: "统一账号") }
         val known = knownMdcConnections()
@@ -443,7 +426,7 @@ class MainViewModel(
 
     internal suspend fun playMdc(
         provider: MdcMediaProvider, key: MediaKey, preparedPlan: org.json.JSONObject? = null,
-        chosenSource: org.json.JSONObject? = null,
+        chosenSource: org.json.JSONObject? = null, resumePosition: Long? = null,
     ) {
         val plan = preparedPlan ?: provider.plan(key)
         val target = plan.optJSONObject("emby")
@@ -454,6 +437,7 @@ class MainViewModel(
             val sourceId = source.optString("version_id").takeUnless { it.isBlank() || it == "null" }
                 ?: error("播放线路缺少稳定版本身份")
             val item = provider.detail(key).item
+            val subtitles = provider.workSubtitles(key, plan)
             val playbackId = key.itemId + ":version:" + sourceId
             val history = localMediaState.history(externalHistoryKey(key.providerId, playbackId).stableId)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -464,8 +448,8 @@ class MainViewModel(
                 externalPlayerReturnScreen = Screen.MDC,
                 selectedExternalEntry = ExternalMediaEntry(
                     id = playbackId,
-                    startPositionMs = history?.takeUnless { it.completed }?.positionMs ?: 0,
-                    sourceId = key.providerId, title = item.title,
+                    startPositionMs = resumePosition ?: history?.takeUnless { it.completed }?.positionMs ?: 0,
+                    sourceId = key.providerId, title = item.title, subtitles = subtitles,
                     url = source.getString("url"), group = provider.descriptor.name,
                     mimeType = source.optString("mime_type").takeUnless { it.isBlank() || it == "null" },
                 ),
@@ -513,118 +497,8 @@ class MainViewModel(
 
     fun showNetworkStorages() {
         cancelContentRequests()
-        val returnScreen = state.value.screen
-        val connections = loadNetworkStorageConnections()
-        update {
-            copy(
-                screen = Screen.NETWORK_STORAGES,
-                networkStorages = connections.orEmpty(),
-                networkStorageMessage = if (connections != null) null else networkStorageMessage,
-                errorMessage = if (connections != null) null else errorMessage,
-                networkStorageReturnScreen = returnScreen,
-            )
-        }
-        if (connections != null) refreshNetworkStorages()
-    }
-
-    fun updateNetworkStorageKind(value: NetworkStorageKind) = update { copy(networkStorageKind = value) }
-    fun updateNetworkStorageName(value: String) = update { copy(networkStorageName = value, networkStorageMessage = null) }
-    fun updateNetworkStorageAddress(value: String) = update { copy(networkStorageAddress = value, networkStorageMessage = null) }
-    fun updateNetworkStorageUsername(value: String) = update { copy(networkStorageUsername = value, networkStorageMessage = null) }
-    fun updateNetworkStoragePassword(value: String) = update { copy(networkStoragePassword = value, networkStorageMessage = null) }
-    fun updateNetworkStorageDomain(value: String) = update { copy(networkStorageDomain = value, networkStorageMessage = null) }
-    fun updateNetworkStorageShare(value: String) = update { copy(networkStorageShare = value, networkStorageMessage = null) }
-    fun updateNetworkStorageRootPath(value: String) = update { copy(networkStorageRootPath = value, networkStorageMessage = null) }
-    fun updateNetworkStorageAllowInsecure(value: Boolean) = update { copy(networkStorageAllowInsecureHttp = value) }
-    fun updateNetworkStorageReadNfo(value: Boolean) = update { copy(networkStorageReadNfo = value) }
-    fun updateNetworkStorageResolveStrm(value: Boolean) = update { copy(networkStorageResolveStrm = value) }
-
-    fun saveNetworkStorage() {
-        val snapshot = state.value
-        if (snapshot.isSavingNetworkStorage) return
-        val connection = NetworkStorageConnection(
-            id = UUID.randomUUID().toString(),
-            name = snapshot.networkStorageName.trim(),
-            kind = snapshot.networkStorageKind,
-            address = snapshot.networkStorageAddress.trim(),
-            username = snapshot.networkStorageUsername.trim(),
-            password = snapshot.networkStoragePassword,
-            domain = snapshot.networkStorageDomain.trim(),
-            share = snapshot.networkStorageShare.trim(),
-            rootPath = snapshot.networkStorageRootPath.trim().ifBlank { "/" },
-            allowInsecureHttp = snapshot.networkStorageAllowInsecureHttp,
-            readNfo = snapshot.networkStorageReadNfo,
-            resolveStrm = snapshot.networkStorageResolveStrm,
-        )
-        viewModelScope.launch {
-            runCatching {
-                require(connection.name.isNotBlank()) { "请填写媒体库名称" }
-                require(connection.address.isNotBlank()) { "请填写服务地址或 SMB 主机" }
-                if (connection.kind == NetworkStorageKind.SMB) require(connection.share.isNotBlank()) { "请填写 SMB 共享名" }
-                update { copy(isSavingNetworkStorage = true, networkStorageMessage = "正在验证连接") }
-                val status = networkStorageRepository.probe(connection)
-                if (status.health != NetworkStorageHealth.ONLINE) throw IllegalArgumentException(status.message)
-                networkStorageStore.save(connection)
-                syncProviders()
-                status
-            }.onSuccess { status ->
-                update {
-                    copy(
-                        networkStorages = networkStorageStore.loadAll(),
-                        networkStorageStatuses = networkStorageStatuses + (connection.id to status),
-                        networkStorageName = "",
-                        networkStorageAddress = "",
-                        networkStorageUsername = "",
-                        networkStoragePassword = "",
-                        networkStorageDomain = "",
-                        networkStorageShare = "",
-                        networkStorageRootPath = "/",
-                        isSavingNetworkStorage = false,
-                        networkStorageMessage = "已添加 ${connection.name}",
-                    )
-                }
-            }.onFailure { error ->
-                if (error is CancellationException) throw error
-                update { copy(isSavingNetworkStorage = false, networkStorageMessage = "连接失败：${error.message ?: "未知错误"}") }
-            }
-        }
-    }
-
-    fun removeNetworkStorage(connectionId: String) {
-        try { networkStorageStore.remove(connectionId) }
-        catch (e: Exception) {
-            update { copy(networkStorageMessage = e.message ?: "无法移除网络媒体库", errorMessage = e.message) }
-            return
-        }
-        networkStorageRepository.forget(connectionId)
-        syncProviders()
-        update {
-            copy(
-                networkStorages = networkStorageStore.loadAll(),
-                networkStorageStatuses = networkStorageStatuses - connectionId,
-                networkStorageMessage = "已移除网络媒体库",
-            )
-        }
-    }
-
-    fun refreshNetworkStorages() {
-        storageProbeRequest?.cancel()
-        val connections = loadNetworkStorageConnections() ?: return
-        storageProbeRequest = viewModelScope.launch {
-            supervisorScope {
-                connections.forEach { connection -> launch {
-                    try {
-                        if (connection !in networkStorageStore.loadAll()) return@launch
-                        val status = networkStorageRepository.probe(connection)
-                        ensureActive()
-                        if (connection in networkStorageStore.loadAll()) {
-                            update { copy(networkStorageStatuses = networkStorageStatuses + (connection.id to status)) }
-                        }
-                    } catch (e: CancellationException) { throw e }
-                    catch (e: Exception) { update { copy(networkStorageMessage = e.message ?: "连接检查失败") } }
-                } }
-            }
-        }
+        update { copy(screen = Screen.NETWORK_STORAGES, networkStorageReturnScreen = screen, errorMessage = null) }
+        networkStorage.open()
     }
 
     fun openNetworkStorage(connection: NetworkStorageConnection) {
@@ -643,9 +517,12 @@ class MainViewModel(
 
     fun showIntegrations() {
         cancelContentRequests()
-        val connections = integrationStore.loadAll()
-        update { copy(screen = Screen.INTEGRATIONS, integrations = connections, integrationMessage = null, errorMessage = null) }
-        refreshIntegrations()
+        update { copy(screen = Screen.INTEGRATIONS, errorMessage = null) }
+        integrations.open()
+    }
+
+    fun requestSelectedMedia() {
+        state.value.selectedUnifiedDetail?.item?.let(integrations::requestMedia)
     }
 
     fun showInsights() = navigate { copy(screen = Screen.INSIGHTS, insightMessage = null, errorMessage = null) }
@@ -729,134 +606,6 @@ class MainViewModel(
         resolvePlayback(session, item, 0, moment.positionMs, 0)
     }
 
-    fun updateIntegrationKind(value: IntegrationKind) = update { copy(integrationKind = value) }
-    fun updateIntegrationName(value: String) = update { copy(integrationName = value, integrationMessage = null) }
-    fun updateIntegrationBaseUrl(value: String) = update { copy(integrationBaseUrl = value, integrationMessage = null) }
-    fun updateIntegrationApiToken(value: String) = update { copy(integrationApiToken = value, integrationMessage = null) }
-    fun updateIntegrationAllowInsecure(value: Boolean) = update { copy(integrationAllowInsecureHttp = value) }
-    fun updateIntegrationPlaylistUrl(value: String) = update { copy(integrationPlaylistUrl = value) }
-    fun updateIntegrationEpgUrl(value: String) = update { copy(integrationEpgUrl = value) }
-
-    fun saveIntegration() {
-        val snapshot = state.value
-        if (snapshot.integrationName.isBlank() || snapshot.integrationBaseUrl.isBlank() || snapshot.isSavingIntegration) return
-        val connection = IntegrationConnection(
-            id = UUID.randomUUID().toString(),
-            name = snapshot.integrationName.trim(),
-            kind = snapshot.integrationKind,
-            baseUrl = snapshot.integrationBaseUrl.trim(),
-            apiToken = snapshot.integrationApiToken.trim(),
-            allowInsecureHttp = snapshot.integrationAllowInsecureHttp,
-            playlistUrl = snapshot.integrationPlaylistUrl.trim().takeIf(String::isNotEmpty),
-            epgUrl = snapshot.integrationEpgUrl.trim().takeIf(String::isNotEmpty),
-        )
-        viewModelScope.launch {
-            update { copy(isSavingIntegration = true, integrationMessage = null) }
-            runCatching { integrationRepository.probe(connection) }
-                .onSuccess { status ->
-                    integrationStore.save(connection)
-                    update {
-                        copy(
-                            integrations = integrationStore.loadAll(),
-                            integrationStatuses = integrationStatuses + (connection.id to status),
-                            integrationName = "",
-                            integrationBaseUrl = "",
-                            integrationApiToken = "",
-                            integrationPlaylistUrl = "",
-                            integrationEpgUrl = "",
-                            isSavingIntegration = false,
-                            integrationMessage = "连接已加密保存 · ${status.message}",
-                        )
-                    }
-                }
-                .onFailure {
-                    update { copy(isSavingIntegration = false, integrationMessage = it.message ?: "连接配置无效") }
-                }
-        }
-    }
-
-    fun removeIntegration(connectionId: String) {
-        integrationStore.remove(connectionId)
-        update {
-            copy(
-                integrations = integrationStore.loadAll(),
-                integrationStatuses = integrationStatuses - connectionId,
-                integrationMessage = "连接已移除",
-            )
-        }
-    }
-
-    fun refreshIntegrations() {
-        integrationProbeRequest?.cancel()
-        val connections = integrationStore.loadAll()
-        if (connections.isEmpty()) return
-        integrationProbeRequest = viewModelScope.launch {
-            try {
-                val statuses = supervisorScope {
-                    connections.map { connection -> async { connection.id to integrationRepository.probe(connection) } }.map { it.await() }.toMap()
-                }
-                ensureActive()
-                val current = integrationStore.loadAll()
-                val currentIds = current.map { it.id }.toSet()
-                val validIds = current.filter { it in connections }.map { it.id }.toSet()
-                update { copy(
-                    integrations = current,
-                    integrationStatuses = (integrationStatuses + statuses.filterKeys { it in validIds }).filterKeys { it in currentIds },
-                ) }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { update { copy(integrationMessage = e.message ?: "连接检查失败") } }
-        }
-    }
-
-    fun importVirtualChannels(connection: IntegrationConnection) {
-        val urls = integrationRepository.virtualChannelUrls(connection)
-        if (urls == null) {
-            update { copy(integrationMessage = "请先为这个服务填写 M3U 输出地址") }
-            return
-        }
-        viewModelScope.launch {
-            update { copy(isSavingIntegration = true, integrationMessage = "正在导入虚拟频道") }
-            runCatching {
-                val imported = externalSourceRepository.importFromUrl(urls.first, connection.allowInsecureHttp)
-                val entries = externalSourceRepository.entries(imported).map { entry ->
-                    if (entry.epgUrl == null) entry.copy(epgUrl = urls.second) else entry
-                }
-                imported.copy(
-                    summary = imported.summary.copy(name = connection.name, allowInsecureHttp = connection.allowInsecureHttp),
-                    resolvedEntries = entries,
-                )
-            }.mapCatching { imported ->
-                externalSourceStore.save(imported)
-                syncProviders()
-                update {
-                    copy(
-                        isSavingIntegration = false,
-                        integrationMessage = "虚拟频道已加入直播中心",
-                    )
-                }
-            }.onFailure {
-                update { copy(isSavingIntegration = false, integrationMessage = it.message ?: "频道导入失败") }
-            }
-        }
-    }
-
-    fun requestSelectedMedia() {
-        val item = state.value.selectedUnifiedDetail?.item ?: return
-        val tmdbId = item.externalIds.entries.firstOrNull { it.key.equals("Tmdb", true) }
-            ?.value?.toIntOrNull()
-        val seerr = integrationStore.loadAll().firstOrNull { it.kind == IntegrationKind.SEERR }
-        if (tmdbId == null || seerr == null) {
-            update { copy(integrationMessage = "需要 TMDB ID 和已配置的 Seerr 连接") }
-            return
-        }
-        viewModelScope.launch {
-            val mediaType = if (item.type.equals("Movie", true)) "movie" else "tv"
-            runCatching { integrationRepository.requestMedia(seerr, tmdbId, mediaType) }
-                .onSuccess { message -> update { copy(integrationMessage = message) } }
-                .onFailure { update { copy(integrationMessage = it.message ?: "提交想看失败") } }
-        }
-    }
-
     fun showDiscover() {
         cancelContentRequests()
         syncProviders()
@@ -887,12 +636,16 @@ class MainViewModel(
             }
             localMediaState.addSearch(query)
             try {
+                val health = sourceHealth.value.associateBy { it.sourceKey }
                 aggregateSearchEngine.searchSnapshots(
                     providerRegistry.providers.first().filterNot {
                         (it is MdcMediaProvider && !it.connection.includeInSearch) ||
                             (it is MdcTvBoxProvider && !it.includeInSearch)
                     },
                     ProviderSearchRequest(query = query, pageSize = 60),
+                    sourcePenalty = { item ->
+                        health[item.key.providerId + ":site:" + item.key.itemId.substringBefore(':')]?.consecutiveFailures ?: 0
+                    },
                 ).collect { result ->
                     if (generation == searchGeneration) update { copy(discoverResults = result.items, providerSearchFailures = result.failures, providerSearchNext = result.nextPageTokens, isSearchingProviders = result.pendingProviderIds.isNotEmpty()) }
                 }
@@ -989,7 +742,9 @@ class MainViewModel(
             if (!tryOfflineVideo(item.key, item.progressMs)) playUnifiedOnline(item, queueEntryId, playWhenReady)
         }
     }
-    private fun playUnifiedOnline(item: UnifiedMediaItem, queueEntryId: String? = null, playWhenReady: Boolean = true) {
+    private fun playUnifiedOnline(
+        item: UnifiedMediaItem, queueEntryId: String? = null, playWhenReady: Boolean = true, useSavedPosition: Boolean = true,
+    ) {
         cancelContentRequests()
         if (com.shadow.media.model.contentKind(item.type) in setOf(
                 com.shadow.media.model.ContentKind.BOOK, com.shadow.media.model.ContentKind.COMIC, com.shadow.media.model.ContentKind.AUDIOBOOK, com.shadow.media.model.ContentKind.MUSIC, com.shadow.media.model.ContentKind.PODCAST)) {
@@ -1038,23 +793,35 @@ class MainViewModel(
                     homeSections = if (session == provider.session) homeSections else emptyList(),
                     selectedLibrary = if (session == provider.session) selectedLibrary else null,
                     items = listOf(embyItem),
-                    playerReturnScreen = screen,
+                    playerReturnScreen = if (screen == Screen.PLAYER) playerReturnScreen else screen,
                     feedMode = false,
                 )
             }
-            playAt(0)
+            if (useSavedPosition) playAt(0)
+            else resolvePlayback(provider.session, embyItem, 0, item.progressMs, 0, playWhenReady)
             return
         }
         contentRequest = viewModelScope.launch {
             update { copy(isLoading = true, errorMessage = null) }
-            runCatching { provider.resolve(UnifiedPlaybackRequest(item.key, item.progressMs)) }
+            val resolveStarted = android.os.SystemClock.elapsedRealtime()
+            var episode: ResolvedEpisode? = null
+            runCatching {
+                val request = UnifiedPlaybackRequest(item.key, item.progressMs)
+                if (provider is MdcTvBoxProvider) {
+                    val line = provider.resolveEpisode(request, emptySet(), autoSwitchLines())
+                    episode = line
+                    listOf(line.candidate)
+                } else provider.resolve(request)
+            }
                 .onSuccess { candidates ->
                     ensureActive()
                     val candidate = candidates.firstOrNull()
+                    if (provider is MdcTvBoxProvider && candidate != null) lineHealth?.recordResolve(
+                        item.key.providerId, item.key.itemId.substringBefore(':'), android.os.SystemClock.elapsedRealtime() - resolveStarted)
                     if (candidate == null) {
                         update { copy(isLoading = false, errorMessage = "这个 Provider 没有返回可播放线路") }
                     } else {
-                        val position = if ((provider is MdcTvBoxProvider || item.key.providerId.startsWith("tvbox:")) && item.progressMs == 0L) {
+                        val position = if (useSavedPosition && (provider is MdcTvBoxProvider || item.key.providerId.startsWith("tvbox:")) && item.progressMs == 0L) {
                             localMediaState.history(externalHistoryKey(item.key.providerId, item.key.itemId).stableId)
                                 ?.takeUnless { it.completed }?.positionMs ?: 0L
                         } else item.progressMs
@@ -1066,6 +833,8 @@ class MainViewModel(
                                 selectedExternalEntry = ExternalMediaEntry(
                                     queueEntryId = queueEntryId, playWhenReady = playWhenReady,
                                     id = item.key.itemId,
+                                    playbackItemId = episode?.key?.itemId,
+                                    failedPlaybackItems = episode?.failed.orEmpty(),
                                     sourceId = item.key.providerId,
                                     title = item.title,
                                     url = candidate.url,
@@ -1087,7 +856,11 @@ class MainViewModel(
                         }
                     }
                 }
-                .onFailure { ensureActive(); showError(it) }
+                .onFailure {
+                    ensureActive()
+                    if (provider is MdcTvBoxProvider) localMediaState.recordSiteResult(item.key.providerId, item.key.itemId.substringBefore(':'), false, null)
+                    showError(it)
+                }
         }
     }
 
@@ -1103,6 +876,7 @@ class MainViewModel(
             copy(
                 selectedLibrary = library,
                 wallFolders = emptyList(),
+                feedFilter = state.value.session?.let { feedSessionStore.filter(it, library.id) } ?: FeedFilter(),
                 screen = Screen.ITEMS,
                 wallItems = emptyList(),
                 wallSearch = "",
@@ -1122,6 +896,13 @@ class MainViewModel(
         loadFeed(library, autoPlay = true)
     }
 
+    fun setFeedFilter(filter: FeedFilter) {
+        val snapshot = state.value
+        val session = snapshot.session ?: return
+        val library = snapshot.selectedLibrary ?: return
+        feedSessionStore.setFilter(session, library.id, filter)
+        update { copy(feedFilter = filter) }
+    }
     fun startLibraryFeed() {
         val library = state.value.selectedLibrary ?: return
         loadFeed(library, autoPlay = true)
@@ -1130,9 +911,11 @@ class MainViewModel(
     private fun loadFeed(library: MediaLibrary, autoPlay: Boolean) {
         val session = state.value.session ?: return
         cancelContentRequests()
+        val filter = feedSessionStore.filter(session, library.id)
         contentRequest = viewModelScope.launch {
             update {
                 copy(
+                    feedFilter = filter,
                     selectedLibrary = library,
                     items = emptyList(),
                     screen = Screen.ITEMS,
@@ -1141,10 +924,7 @@ class MainViewModel(
                     errorMessage = null,
                 )
             }
-            repository.cachedRecentVideos(session, library.id)?.let { cached ->
-                if (state.value.session == session) update { copy(items = cached, isLoading = false) }
-            }
-            runCatching { repository.recentVideos(session, library.id) }
+            runCatching { feedSessionStore.candidates(repository, session, library.id, filter) }
                 .onSuccess { loadedItems ->
                     ensureActive()
                     if (state.value.session != session) return@onSuccess
@@ -1156,6 +936,7 @@ class MainViewModel(
                             items = orderedItems,
                             currentIndex = feed.currentIndex,
                             lastFeedLibraryId = library.id,
+                            errorMessage = if (orderedItems.isEmpty()) "当前刷片条件下没有影片" else null,
                             isLoading = false,
                         )
                     }
@@ -1571,16 +1352,13 @@ class MainViewModel(
                 selectedExternalSource = source,
                 externalEntries = entries,
                 liveChannels = entries.toLiveChannels(),
-                livePrograms = emptyMap(),
-                liveFavoriteKeys = emptySet(),
                 externalQuery = "",
                 externalGroup = null,
-                liveGuideMessage = null,
                 selectedExternalEntry = null,
                 errorMessage = null,
             )
         }
-        loadLiveMetadata(source, entries)
+        liveGuide.load(source, entries)
     }
 
     internal suspend fun externalCatalogs(sourceId: String): List<com.shadow.media.provider.MediaProvider> =
@@ -1594,28 +1372,7 @@ class MainViewModel(
     fun setExternalGroup(value: String?) = update { copy(externalGroup = value) }
 
     fun toggleLiveFavorite(channel: LiveChannel) {
-        val source = state.value.selectedExternalSource ?: return
-        val providerId = "external:${source.id}"
-        val stableKey = "$providerId:${channel.id}"
-        viewModelScope.launch {
-            if (stableKey in state.value.liveFavoriteKeys) {
-                localMediaState.removeFavorite(stableKey)
-                update { copy(liveFavoriteKeys = liveFavoriteKeys - stableKey) }
-            } else {
-                localMediaState.addFavorite(
-                    MediaFavoriteEntity(
-                        stableKey = stableKey,
-                        providerId = providerId,
-                        itemId = channel.id,
-                        title = channel.title,
-                        subtitle = channel.group,
-                        posterUrl = channel.logoUrl,
-                        addedAtEpochMs = System.currentTimeMillis(),
-                    )
-                )
-                update { copy(liveFavoriteKeys = liveFavoriteKeys + stableKey) }
-            }
-        }
+        state.value.selectedExternalSource?.let { liveGuide.toggleFavorite(it, channel) }
     }
 
     fun playCatchup(entry: ExternalMediaEntry, program: LiveProgram) {
@@ -1687,6 +1444,7 @@ class MainViewModel(
         val snapshot = state.value
         val entry = snapshot.selectedExternalEntry?.takeIf { it.id == entryId } ?: return
         lineHealth?.record(entry, false)
+        recordSitePlayback(entry, false, null)
         val channel = snapshot.liveChannels.firstOrNull { channel -> channel.streams.any { it.id == entry.id && it.sourceId == entry.sourceId } }
         val attempted = snapshot.externalAttemptedLines + com.shadow.media.model.liveLineKey(entry)
         val next = if (autoSwitchLines() && channel != null) com.shadow.media.model.chooseLiveLine(channel.streams, attempted,
@@ -1696,7 +1454,17 @@ class MainViewModel(
                 externalAttemptedLines = attempted, errorMessage = null) }
         } else refreshExternalPlayback(positionMs, playing, automatic = true)
     }
-    fun externalPlaybackHealthy(entry: ExternalMediaEntry) { lineHealth?.record(entry, true) }
+    fun externalPlaybackHealthy(entry: ExternalMediaEntry, elapsed: Long) {
+        lineHealth?.record(entry, true)
+        recordSitePlayback(entry, true, elapsed)
+    }
+    internal fun siteResolveMs(source: String, site: String) = lineHealth?.resolveMs(source, site)
+
+    private fun recordSitePlayback(entry: ExternalMediaEntry, success: Boolean, elapsed: Long?) {
+        if (!entry.sourceId.startsWith("mdc-tvbox:")) return
+        val site = entry.id.substringBefore(':')
+        viewModelScope.launch { localMediaState.recordSiteResult(entry.sourceId, site, success, elapsed) }
+    }
     fun liveLineDescription(entry: ExternalMediaEntry): String {
         val value = lineHealth?.health(entry) ?: return ""
         return if (value.failures + value.successes == 0) "未测试" else "成功 ${value.successes} · 失败 ${value.failures}"
@@ -1704,7 +1472,8 @@ class MainViewModel(
 
     fun refreshExternalPlayback(positionMs: Long, playWhenReady: Boolean, automatic: Boolean = false) {
         val entry = state.value.selectedExternalEntry ?: return
-        if (automatic && entry.refreshAttempts >= 1) return
+        val provider = providerRegistry.provider(entry.sourceId) ?: providerRegistry.provider("external:" + entry.sourceId)
+        if (automatic && entry.refreshAttempts >= 1 && (provider !is MdcTvBoxProvider || !autoSwitchLines())) return
         val mdc = mdcPlayback?.takeIf { it.entryId == entry.id && it.provider.descriptor.id == entry.sourceId }
         if (mdc != null) {
             playbackRequest?.cancel()
@@ -1715,9 +1484,11 @@ class MainViewModel(
                         "此版本已无可用线路"
                     }
                     ensureActive()
+                    val subtitles = mdc.provider.workSubtitles(mdc.key, plan)
+                    ensureActive()
                     if (state.value.screen == Screen.EXTERNAL_PLAYER && state.value.selectedExternalEntry == entry) {
                         update { copy(selectedExternalEntry = entry.copy(
-                            url = source.getString("url"), startPositionMs = positionMs,
+                            url = source.getString("url"), startPositionMs = positionMs, subtitles = subtitles,
                             mimeType = source.optString("mime_type").takeUnless { it.isBlank() || it == "null" },
                             playWhenReady = playWhenReady, playbackRevision = entry.playbackRevision + 1,
                             refreshAttempts = if (automatic) entry.refreshAttempts + 1 else 0,
@@ -1732,28 +1503,22 @@ class MainViewModel(
             }
             return
         }
-        val provider = providerRegistry.provider(entry.sourceId) ?: providerRegistry.provider("external:${entry.sourceId}") ?: return
+        if (provider == null) return
         playbackRequest?.cancel()
         playbackRequest = viewModelScope.launch {
             try {
                 val current = MediaKey(provider.descriptor.id, entry.playbackItemId ?: entry.id)
-                var playbackKey = current
-                val alternate = if (automatic && autoSwitchLines() && provider is MdcTvBoxProvider) {
-                    try { provider.alternateEpisode(current) }
-                    catch (e: CancellationException) { throw e }
-                    catch (_: Exception) { null }
+                val request = UnifiedPlaybackRequest(current, positionMs, refresh = true)
+                val episode = if (provider is MdcTvBoxProvider) {
+                    val failed = if (automatic) entry.failedPlaybackItems + current.itemId else emptySet()
+                    provider.resolveEpisode(request, failed, autoSwitchLines(),
+                        retryCurrent = automatic && entry.refreshAttempts == 0)
                 } else null
-                suspend fun resolve(key: MediaKey) = provider.resolve(UnifiedPlaybackRequest(key, positionMs, refresh = true))
-                val candidates = if (alternate == null) resolve(current) else {
-                    try { resolve(alternate).also { playbackKey = alternate } }
-                    catch (e: CancellationException) { throw e }
-                    catch (_: Exception) { resolve(current) }
-                }
+                val candidate = episode?.candidate ?: requireNotNull(provider.resolve(request).firstOrNull()) { "来源没有返回播放线路" }
                 ensureActive()
-                val candidate = requireNotNull(candidates.firstOrNull()) { "来源没有返回播放线路" }
                 if (state.value.screen == Screen.EXTERNAL_PLAYER && state.value.selectedExternalEntry == entry) update {
                     copy(selectedExternalEntry = entry.copy(url = candidate.url, requestHeaders = candidate.requiredHeaders,
-                        playbackItemId = playbackKey.itemId,
+                        playbackItemId = episode?.key?.itemId ?: current.itemId, failedPlaybackItems = episode?.failed.orEmpty(),
                         credentialOrigin = candidate.credentialOrigin, subtitles = candidate.subtitles, startPositionMs = positionMs,
                         mimeType = candidate.mimeType ?: entry.mimeType,
                         playWhenReady = playWhenReady, playbackRevision = entry.playbackRevision + 1,
@@ -1782,16 +1547,8 @@ class MainViewModel(
 
     fun refreshProviderConnections() = syncProviders()
 
-    private fun loadNetworkStorageConnections(): List<NetworkStorageConnection>? = try {
-        networkStorageStore.loadAll()
-    } catch (e: Exception) {
-        val message = e.message ?: "网络存储凭据暂时无法读取，请解锁设备后重试"
-        update { copy(networkStorageMessage = message, errorMessage = message) }
-        null
-    }
-
     private fun syncProviders(mdc: MdcDiscovery = knownMdcConnections()) {
-        val storedNetworkConnections = loadNetworkStorageConnections().orEmpty()
+        val storedNetworkConnections = networkStorage.loadNetworkStorageConnections().orEmpty()
         val subscriptions = runCatching { externalSourceStore.loadImports() }
         val providers = buildList {
             addAll(nativeProviders())
@@ -1818,79 +1575,15 @@ class MainViewModel(
                 }
             }
         }
+        networkStorage.setConnections(storedNetworkConnections)
+        integrations.readConnections()
         providerRegistry.replace(providers)
         update {
             copy(
                 externalSources = subscriptions.getOrNull()?.map { it.summary } ?: externalSources,
                 externalSourceReadError = subscriptions.exceptionOrNull()?.message,
                 providerDescriptors = providers.map { it.descriptor },
-                networkStorages = storedNetworkConnections,
-                integrations = integrationStore.loadAll(),
             )
-        }
-    }
-
-    private fun loadLiveMetadata(source: ExternalSourceSummary, entries: List<ExternalMediaEntry>) {
-        liveGuideRequest?.cancel()
-        liveGuideRequest = viewModelScope.launch {
-            val providerId = "external:${source.id}"
-            val now = System.currentTimeMillis()
-            val cached = localMediaState.epg(
-                source.id,
-                now - 6L * 60 * 60 * 1_000,
-                now + 3L * 24 * 60 * 60 * 1_000,
-            ).first()
-            val favorites = localMediaState.favoriteKeys(providerId)
-            ensureActive()
-            update {
-                copy(
-                    livePrograms = cached.groupBy(LiveProgram::channelId),
-                    liveFavoriteKeys = favorites,
-                )
-            }
-
-            val guideUrls = entries.mapNotNull(ExternalMediaEntry::epgUrl)
-                .map(String::trim)
-                .filter { it.isNotEmpty() && '{' !in it }
-                .distinct()
-            if (guideUrls.isEmpty()) {
-                update { copy(liveGuideMessage = "订阅未提供标准 XMLTV 节目单") }
-                return@launch
-            }
-            update { copy(isLoadingGuide = true, liveGuideMessage = null) }
-            val results = supervisorScope {
-                guideUrls.map { url ->
-                    async {
-                        runCatching {
-                            liveGuideRepository.load(source.id, url, source.allowInsecureHttp)
-                        }
-                    }
-                }.map { it.await() }
-            }
-            ensureActive()
-            val programs = results.flatMap { result -> result.getOrElse { emptyList() } }
-                .distinctBy { "${it.channelId}:${it.startEpochMs}" }
-                .map { it.copy(sourceId = source.id) }
-            if (programs.isNotEmpty()) {
-                localMediaState.replaceEpg(source.id, programs)
-                ensureActive()
-                update {
-                    copy(
-                        livePrograms = programs.groupBy(LiveProgram::channelId),
-                        isLoadingGuide = false,
-                        liveGuideMessage = "节目单已更新 · ${programs.size} 个节目",
-                    )
-                }
-            } else {
-                val firstError = results.firstNotNullOfOrNull { it.exceptionOrNull()?.message }
-                update {
-                    copy(
-                        isLoadingGuide = false,
-                        liveGuideMessage = firstError?.let { "节目单更新失败：$it" }
-                            ?: "节目单没有匹配当前时间范围的节目",
-                    )
-                }
-            }
         }
     }
 
@@ -1964,13 +1657,12 @@ class MainViewModel(
                 copy(screen = externalPlayerReturnScreen, selectedExternalEntry = null, errorMessage = null)
             }
             Screen.EXTERNAL_ITEMS -> update {
-                liveGuideRequest?.cancel()
+                liveGuide.clear()
                 copy(
                     screen = Screen.SOURCES,
                     selectedExternalSource = null,
                     externalEntries = emptyList(),
                     liveChannels = emptyList(),
-                    livePrograms = emptyMap(),
                     selectedExternalEntry = null,
                     errorMessage = null,
                 )
@@ -2094,8 +1786,8 @@ class MainViewModel(
         unifiedPageRequest++
         contentRequest?.cancel()
         playbackRequest?.cancel()
-        liveGuideRequest?.cancel()
-        update { copy(isLoading = false, isLoadingMore = false, isLoadingGuide = false) }
+        liveGuide.cancel()
+        update { copy(isLoading = false, isLoadingMore = false) }
     }
 
     private fun navigate(transform: MainUiState.() -> MainUiState) {

@@ -2,6 +2,8 @@ package com.shadow.media
 
 import android.content.Intent
 import android.net.Uri
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.getValue
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -54,7 +56,9 @@ import com.shadow.media.ui.shadowTvFocus
 import com.shadow.media.ui.withoutEmoji
 
 @Composable
-internal fun IntegrationScreen(state: MainUiState, viewModel: MainViewModel) {
+internal fun IntegrationScreen(viewModel: MainViewModel) {
+    val controller = viewModel.integrations
+    val state by controller.state.collectAsStateWithLifecycle()
     BackHandler(onBack = viewModel::back)
     LazyColumn(
         modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
@@ -83,21 +87,21 @@ internal fun IntegrationScreen(state: MainUiState, viewModel: MainViewModel) {
                         items(IntegrationKind.entries, key = IntegrationKind::name) { kind ->
                             FilterChip(
                                 selected = state.integrationKind == kind,
-                                onClick = { viewModel.updateIntegrationKind(kind) },
+                                onClick = { controller.updateIntegrationKind(kind) },
                                 label = { Text(kind.label()) },
                             )
                         }
                     }
                     OutlinedTextField(
                         value = state.integrationName,
-                        onValueChange = viewModel::updateIntegrationName,
+                        onValueChange = controller::updateIntegrationName,
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("连接名称") },
                         singleLine = true,
                     )
                     OutlinedTextField(
                         value = state.integrationBaseUrl,
-                        onValueChange = viewModel::updateIntegrationBaseUrl,
+                        onValueChange = controller::updateIntegrationBaseUrl,
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("服务地址") },
                         placeholder = { Text("https://service.example.com") },
@@ -105,7 +109,7 @@ internal fun IntegrationScreen(state: MainUiState, viewModel: MainViewModel) {
                     )
                     OutlinedTextField(
                         value = state.integrationApiToken,
-                        onValueChange = viewModel::updateIntegrationApiToken,
+                        onValueChange = controller::updateIntegrationApiToken,
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("API Key / Token（可选）") },
                         leadingIcon = { Icon(Icons.Rounded.Key, null) },
@@ -115,14 +119,14 @@ internal fun IntegrationScreen(state: MainUiState, viewModel: MainViewModel) {
                     if (state.integrationKind == IntegrationKind.DISPATCHARR || state.integrationKind == IntegrationKind.TUNARR) {
                         OutlinedTextField(
                             value = state.integrationPlaylistUrl,
-                            onValueChange = viewModel::updateIntegrationPlaylistUrl,
+                            onValueChange = controller::updateIntegrationPlaylistUrl,
                             modifier = Modifier.fillMaxWidth(),
                             label = { Text("M3U 输出地址（Tunarr 可自动推导）") },
                             singleLine = true,
                         )
                         OutlinedTextField(
                             value = state.integrationEpgUrl,
-                            onValueChange = viewModel::updateIntegrationEpgUrl,
+                            onValueChange = controller::updateIntegrationEpgUrl,
                             modifier = Modifier.fillMaxWidth(),
                             label = { Text("XMLTV 地址（可选）") },
                             singleLine = true,
@@ -131,12 +135,12 @@ internal fun IntegrationScreen(state: MainUiState, viewModel: MainViewModel) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(
                             checked = state.integrationAllowInsecureHttp,
-                            onCheckedChange = viewModel::updateIntegrationAllowInsecure,
+                            onCheckedChange = controller::updateIntegrationAllowInsecure,
                         )
                         Text("允许受信任局域网 HTTP", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Button(
-                        onClick = viewModel::saveIntegration,
+                        onClick = controller::saveIntegration,
                         enabled = state.integrationName.isNotBlank() && state.integrationBaseUrl.isNotBlank() &&
                             !state.isSavingIntegration,
                         modifier = Modifier.fillMaxWidth(),
@@ -161,7 +165,7 @@ internal fun IntegrationScreen(state: MainUiState, viewModel: MainViewModel) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text("已连接服务", style = MaterialTheme.typography.titleLarge)
-                    FilledTonalButton(onClick = viewModel::refreshIntegrations) {
+                    FilledTonalButton(onClick = controller::refreshIntegrations) {
                         Icon(Icons.Rounded.Refresh, null)
                         Text("  全部诊断")
                     }
@@ -172,8 +176,8 @@ internal fun IntegrationScreen(state: MainUiState, viewModel: MainViewModel) {
             IntegrationCard(
                 connection = connection,
                 status = state.integrationStatuses[connection.id],
-                onImport = { viewModel.importVirtualChannels(connection) },
-                onRemove = { viewModel.removeIntegration(connection.id) },
+                onImport = { controller.importVirtualChannels(connection) },
+                onRemove = { controller.removeIntegration(connection.id) },
             )
         }
         state.integrationMessage?.let { message ->

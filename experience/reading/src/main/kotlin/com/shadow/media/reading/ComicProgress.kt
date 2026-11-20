@@ -6,5 +6,7 @@ internal fun comicSpreadCompleted(page: Int, count: Int, mode: String): Boolean 
 internal fun comicStripCompleted(lastVisible: Int, count: Int, canScrollForward: Boolean): Boolean =
     count > 0 && lastVisible == count - 1 && !canScrollForward
 
-internal fun comicSpreadIndex(page: Int, mode: String): Int = if (mode == "双页") (page + 1) / 2 else page
-internal fun comicSpreadStart(spread: Int, mode: String): Int = if (mode == "双页") (spread * 2 - 1).coerceAtLeast(0) else spread
+internal fun comicSpreadIndex(page: Int, mode: String): Int = if (comicDouble(mode)) (page + 1) / 2 else page
+internal fun comicSpreadStart(spread: Int, mode: String): Int = if (comicDouble(mode)) (spread * 2 - 1).coerceAtLeast(0) else spread
+
+internal fun comicDouble(mode: String) = mode == "双页" || mode == "双页RTL"

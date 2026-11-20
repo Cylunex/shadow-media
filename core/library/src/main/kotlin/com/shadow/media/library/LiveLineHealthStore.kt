@@ -7,7 +7,14 @@ import com.shadow.media.model.*
 
 class LiveLineHealthStore(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences("live_line_health", 0)
+    private val siteTimes = context.applicationContext.getSharedPreferences("tvbox_resolution", 0)
     private fun key(entry: ExternalMediaEntry) = MessageDigest.getInstance("SHA-256").digest(liveLineKey(entry).toByteArray()).joinToString("") { "%02x".format(it) }
+    fun resolveMs(source: String, site: String): Long? =
+        siteTimes.getLong("resolve:$source:$site", -1).takeIf { it >= 0 }
+    @Synchronized fun recordResolve(source: String, site: String, elapsed: Long) {
+        val old = resolveMs(source, site) ?: elapsed
+        siteTimes.edit().putLong("resolve:$source:$site", (old * 3 + elapsed) / 4).apply()
+    }
     @Synchronized fun health(entry: ExternalMediaEntry): LiveLineHealth = runCatching {
         val value = JSONObject(preferences.getString(key(entry), "{}")!!)
         LiveLineHealth(value.optInt("successes"), value.optInt("failures"), value.optInt("consecutive"), value.optLong("failedAt"))

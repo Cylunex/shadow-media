@@ -15,6 +15,35 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class ReaderNarrationServiceTest {
+    @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+    @Test fun comicCropsOnlyPaperMarginsAndKeepsBlankPagesIntact() {
+        val bitmap = android.graphics.Bitmap.createBitmap(160, 160, android.graphics.Bitmap.Config.ARGB_8888)
+        val file = java.io.File.createTempFile("comic-border", ".png")
+        try {
+            fun save() = file.outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            bitmap.eraseColor(android.graphics.Color.WHITE); save()
+            assertNull(comicContentRegion(file, 160, 160))
+            android.graphics.Canvas(bitmap).drawRect(24f, 24f, 136f, 136f, android.graphics.Paint().apply { color = android.graphics.Color.BLACK })
+            save()
+            val rect = requireNotNull(comicContentRegion(file, 160, 160))
+            assertTrue(rect.contains(24, 24) && rect.contains(135, 135))
+            assertTrue(rect.left > 0 && rect.right < 160)
+        } finally { bitmap.recycle(); file.delete() }
+    }
+
+    @Test fun carBrowserUsesTheExistingNarrationSessionAndOnlyGrantsTrustedRoots() {
+        val narrator = Robolectric.buildService(ReaderNarrationService::class.java).create()
+        val binder = narrator.get().onBind(null) as ReaderNarrationService.NarrationBinder
+        val name = android.content.ComponentName(narrator.get(), ReaderNarrationService::class.java)
+        shadowOf(RuntimeEnvironment.getApplication()).setComponentNameAndServiceForBindService(name, binder)
+        val browser = Robolectric.buildService(NarrationBrowserService::class.java).create()
+        try {
+            assertNotNull(browser.get().onGetRoot("android", android.os.Process.SYSTEM_UID, null))
+            assertNull(browser.get().onGetRoot("untrusted", 123456, null))
+            assertEquals(binder.token, browser.get().sessionToken)
+        } finally { browser.destroy(); narrator.destroy() }
+    }
+
     @Test fun notificationOwnsMediaControlsAndStopDoesNotAutoResume() {
         val context = RuntimeEnvironment.getApplication()
         val controller = Robolectric.buildService(ReaderNarrationService::class.java).create()

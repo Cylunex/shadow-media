@@ -69,6 +69,7 @@ class AppContainer(private val application: Application) {
     val providerRegistry = InMemoryProviderRegistry()
     val aggregateSearchEngine = AggregateSearchEngine()
     val handoffInbox = HandoffInbox()
+    internal val deviceHandoff by lazy { DeviceHandoff(application, this) }
     val playbackTelemetry = RoomPlaybackTelemetrySink(localMediaState, applicationScope)
     val clientIdentity = ClientIdentity(
         deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
@@ -190,6 +191,7 @@ class AppContainer(private val application: Application) {
     }
 
     fun recordEmbyHistory(session: EmbySession, item: MediaItem, positionMs: Long, durationMs: Long?) {
+        deviceHandoff.observe(session.providerId, item.id, item.name, positionMs)
         applicationScope.launch {
             val effectivePosition = castPlayback.returnedPosition(session.providerId, item.id) ?: positionMs
             localMediaState.recordHistory(
@@ -209,6 +211,7 @@ class AppContainer(private val application: Application) {
     }
 
     fun recordExternalHistory(entry: ExternalMediaEntry, positionMs: Long, durationMs: Long?, fromCast: Boolean = false) {
+        deviceHandoff.observe(entry.sourceId, entry.id, entry.title, positionMs)
         applicationScope.launch {
             val key = externalHistoryKey(entry.sourceId, entry.id, cached = entry.url.startsWith("shadow-cached:"))
             val effectivePosition = (if (fromCast) null else castPlayback.returnedPosition(key.providerId, key.itemId)) ?: positionMs

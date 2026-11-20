@@ -132,6 +132,7 @@ internal class MdcMediaProvider(
             connection.base().newBuilder().addPathSegments(it.removePrefix("/")).build().toString()
         },
         overview = row.optString("overview").takeUnless { it == "null" },
+        externalIds = row.optString("code").takeUnless { it.isBlank() || it == "null" }?.let { mapOf("code" to it) }.orEmpty(),
         durationMs = if (row.isNull("duration_ms")) null else row.getLong("duration_ms"),
     )
 
@@ -204,6 +205,31 @@ internal class MdcMediaProvider(
             nextPageToken = result.optString("next_cursor").takeUnless { it.isBlank() || it == "null" }) to result.getInt("total")
     }
     suspend fun facets(filters: JSONObject): JSONObject = api("catalog/facets", body = filters)
+    suspend fun workFilters(key: MediaKey): List<MdcWorkFilter> {
+        require(key.providerId == descriptor.id)
+        val rows = array("works/" + key.itemId + "/filters")
+        return (0 until rows.length()).mapNotNull { index ->
+            val row = rows.getJSONObject(index)
+            MdcWorkFilter.from(row.getString("dimension"), row.getString("id"), row.getString("name"))
+        }
+    }
+
+    suspend fun workSubtitles(key: MediaKey, plan: JSONObject): List<com.shadow.media.model.ExternalSubtitle> {
+        if (key.providerId != descriptor.id || !Regex("[a-zA-Z0-9_-]+").matches(key.itemId)) return emptyList()
+        val rows = plan.optJSONArray("subtitles") ?: return emptyList()
+        if (rows.length() == 0) return emptyList()
+        val base = connection.base()
+        val prefix = "/api/media/v1/works/" + key.itemId + "/subtitles/"
+        val headers = mapOf("Authorization" to "Bearer " + token())
+        return (0 until rows.length()).mapNotNull { index ->
+            val row = rows.optJSONObject(index) ?: return@mapNotNull null
+            val path = row.optString("url")
+            if (!path.startsWith(prefix) || !Regex("[a-f0-9]{32}").matches(path.removePrefix(prefix))) return@mapNotNull null
+            val url = base.newBuilder().addPathSegments("api/media/v1/works").addPathSegment(key.itemId)
+                .addPathSegment("subtitles").addPathSegment(path.removePrefix(prefix)).build()
+            com.shadow.media.model.ExternalSubtitle(url.toString(), "text/vtt", row.optString("label", "片库字幕"), headers, base.toString())
+        }
+    }
     suspend fun plan(key: MediaKey, online: Boolean = false): JSONObject =
         api("works/${key.itemId}/plan", query = if (online) mapOf("online" to "true") else emptyMap(), post = true)
 

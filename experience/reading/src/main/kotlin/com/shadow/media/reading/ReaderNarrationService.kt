@@ -53,7 +53,10 @@ class ReaderNarrationService : Service() {
     private val noisy = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) { pause() }
     }
-    override fun onBind(intent: Intent?): IBinder? = null
+    internal inner class NarrationBinder : android.os.Binder() {
+        val token get() = media.sessionToken
+    }
+    override fun onBind(intent: Intent?): IBinder = NarrationBinder()
     override fun onCreate() {
         super.onCreate()
         library = LibraryRepository(this); novel = NovelRepository(this, library); source = NativeTextSource(library, novel)
@@ -65,14 +68,24 @@ class ReaderNarrationService : Service() {
         speech = ReadAloud(this) { pause() }
         media = MediaSession(this, "ReaderNarration").apply {
             setCallback(object : MediaSession.Callback() {
-                override fun onPlay() { play() }
+                override fun onPlay() { if (snapshot.value.assetId != null) command(this@ReaderNarrationService, PLAY) }
+                override fun onPlayFromMediaId(mediaId: String?, extras: android.os.Bundle?) {
+                    if (mediaId == null || mediaId.length > 256) return
+                    scope.launch {
+                        val item = library.dao.asset(mediaId)?.takeIf { it.narratable() } ?: return@launch
+                        ProgressWriter.flush()
+                        val locator = library.dao.progress(item.id)?.locatorJson
+                        command(this@ReaderNarrationService, PLAY, item.id, locator)
+                    }
+                }
                 override fun onPause() { pause() }
                 override fun onStop() { finishPlayback() }
                 override fun onSkipToNext() { step(1) }
                 override fun onSkipToPrevious() { step(-1) }
             })
-            isActive = true
+            isActive = false
         }
+        updateTransport()
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, "阅读朗读", NotificationManager.IMPORTANCE_LOW))
         val filter = IntentFilter(android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY)
@@ -80,6 +93,7 @@ class ReaderNarrationService : Service() {
         else { @Suppress("DEPRECATION") registerReceiver(noisy, filter) }
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        media.isActive = true
         // Foreground ownership is established before requesting audio focus.
         startForeground(NOTIFICATION, notification())
         when (intent?.action) {
@@ -91,6 +105,9 @@ class ReaderNarrationService : Service() {
                     timer?.cancel()
                     snapshot.value = NarrationState(assetId = asset, locator = intent.getStringExtra("locator"), speed = snapshot.value.speed, voice = snapshot.value.voice, stopAtChapter = snapshot.value.stopAtChapter, deadline = snapshot.value.deadline)
                 }
+                val minutes = intent.getIntExtra("commute_minutes", 0)
+                if (minutes > 0) snapshot.value = snapshot.value.copy(stopAtChapter = false,
+                    deadline = SystemClock.elapsedRealtime() + minutes * 60000L)
                 play()
             }
             PAUSE -> pause()
@@ -323,13 +340,16 @@ class ReaderNarrationService : Service() {
             .addAction(Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel, "结束", action(STOP)).build())
             .setStyle(Notification.MediaStyle().setMediaSession(media.sessionToken).setShowActionsInCompactView(0, 1, 2)).build()
     }
-    private fun updateNotification() {
-        if (!::media.isInitialized || destroying) return
+    private fun updateTransport() {
         val state = snapshot.value
-        media.setPlaybackState(PlaybackState.Builder().setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_STOP or
+        media.setPlaybackState(PlaybackState.Builder().setActions(PlaybackState.ACTION_PLAY_FROM_MEDIA_ID or PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_STOP or
             PlaybackState.ACTION_SKIP_TO_NEXT or PlaybackState.ACTION_SKIP_TO_PREVIOUS)
             .setState(if (state.playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED, 0, if (state.playing) state.speed else 0f).build())
         media.setMetadata(MediaMetadata.Builder().putString(MediaMetadata.METADATA_KEY_TITLE, state.title).build())
+    }
+    private fun updateNotification() {
+        if (!::media.isInitialized || destroying) return
+        updateTransport()
         // Update the existing foreground media notification with the same ownership.
         startForeground(NOTIFICATION, notification())
     }
@@ -355,6 +375,9 @@ class ReaderNarrationService : Service() {
             private set
         private val snapshot = MutableStateFlow(NarrationState())
         internal val state = snapshot.asStateFlow()
+        fun startBook(context: Context, assetId: String, locator: String?, minutes: Int = 0) {
+            command(context, PLAY, assetId, locator) { putExtra("commute_minutes", minutes.coerceIn(0, 240)) }
+        }
         internal fun command(context: Context, action: String, asset: String? = null, locator: String? = null, options: Intent.() -> Unit = {}) {
             val intent = Intent(context, ReaderNarrationService::class.java).setAction(action).apply {
                 if (asset != null) putExtra("asset", asset)

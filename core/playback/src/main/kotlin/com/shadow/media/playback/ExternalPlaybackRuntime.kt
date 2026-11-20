@@ -85,9 +85,12 @@ class ExternalPlaybackRuntime(
         DefaultDataSource(context, RoutingDataSource(videoHttp.createDataSource(), networkStorageRepository, subtitleHttp))
     }
     private val sourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+    private val savedSubtitle = preferences.subtitle(preferenceKey)
     private var mediaItem = MediaItem.Builder().setUri(entry.url).setMediaId(entry.id).setMimeType(externalVideoMimeType(entry.mimeType))
         .setMediaMetadata(MediaMetadata.Builder().setTitle(entry.title).build())
-        .setSubtitleConfigurations((entry.subtitles + listOfNotNull(preferences.subtitle(preferenceKey))).distinctBy { it.uri }.mapIndexed { index, subtitle -> subtitle.configuration(index == 0) }).build()
+        .setSubtitleConfigurations((listOfNotNull(savedSubtitle) + entry.subtitles).distinctBy { it.uri }.mapIndexed { index, subtitle ->
+            subtitle.configuration(index == 0 && (savedSubtitle != null || entry.subtitles.size == 1))
+        }).build()
     private var pendingSubtitle: com.shadow.media.model.ExternalSubtitle? = null
     private val exoPlayer = ExoPlayer.Builder(context, videoRenderers(context, preferences.settings.value.decoder)).build().apply {
         setAudioAttributes(AudioAttributes.DEFAULT, true)
