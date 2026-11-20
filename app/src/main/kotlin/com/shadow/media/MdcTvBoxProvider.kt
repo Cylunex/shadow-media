@@ -18,6 +18,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
 
 internal data class MdcTvBoxChoice(val id: String, val name: String)
+internal data class MdcTvBoxGroup(val id: String, val name: String, val sites: List<String>)
 
 internal class MdcTvBoxProvider(private val mdc: MdcMediaProvider) : MediaProvider {
     override val descriptor = ProviderDescriptor(
@@ -29,9 +30,25 @@ internal class MdcTvBoxProvider(private val mdc: MdcMediaProvider) : MediaProvid
     )
     val includeInSearch get() = mdc.connection.includeInSearch
 
-    internal suspend fun supported(): Boolean {
-        val features = mdc.api("capabilities").getJSONArray("features")
-        return (0 until features.length()).any { features.optString(it) == "tvbox_v1" }
+    private var features: Set<String>? = null
+
+    private suspend fun features(): Set<String> {
+        features?.let { return it }
+        val values = mdc.api("capabilities").getJSONArray("features")
+        return (0 until values.length()).map { values.optString(it) }.toSet().also { features = it }
+    }
+
+    internal suspend fun supported(): Boolean = "tvbox_v1" in features()
+
+    suspend fun groups(): List<MdcTvBoxGroup> {
+        if ("tvbox_groups" !in features()) return emptyList()
+        val choices = mdc.api("tvbox/groups").getJSONArray("items")
+        return (0 until choices.length()).map { index ->
+            val row = choices.getJSONObject(index)
+            val members = row.getJSONArray("site_ids")
+            MdcTvBoxGroup(row.getString("id"), row.getString("name"),
+                (0 until members.length()).map(members::getString))
+        }
     }
 
     suspend fun sites(): List<MdcTvBoxChoice> = choices(mdc.api("tvbox/sites"))
@@ -51,8 +68,12 @@ internal class MdcTvBoxProvider(private val mdc: MdcMediaProvider) : MediaProvid
 
     override suspend fun search(request: ProviderSearchRequest): UnifiedMediaPage {
         if (!supported()) return UnifiedMediaPage(emptyList())
-        return parsePage(mdc.api("tvbox/search", mapOf("q" to request.query, "page" to (request.pageToken ?: "1"))))
+        return searchGroup(request.query, request.pageToken ?: "1", "")
     }
+
+    suspend fun searchGroup(query: String, page: String, group: String): UnifiedMediaPage =
+        parsePage(mdc.api("tvbox/search", mapOf("q" to query, "page" to page, "group_id" to group)
+            .filterValues(String::isNotBlank)))
 
     override suspend fun detail(key: MediaKey): MediaDetail {
         val target = target(key)

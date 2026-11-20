@@ -58,6 +58,26 @@ class MdcTvBoxProviderTest {
         }
     }
 
+    @Test fun `warehouse order and scoped search use the existing connection`() = runTest {
+        MockWebServer().use { server ->
+            val p = MdcTvBoxProvider(MdcMediaProvider(CatalogConnection(name = "MDC", kind = CatalogKind.OPDS,
+                url = server.url("/mdc/").toString(), token = "REPLACE_MDC_TOKEN", allowHttp = true), OkHttpClient()))
+            server.enqueue(MockResponse().setBody("""{"features":["tvbox_v1","tvbox_groups"]}"""))
+            server.enqueue(MockResponse().setBody("""
+                {"items":[{"id":"family","name":"Family","site_ids":["site-b","site-a"]}]}
+            """.trimIndent()))
+            assertEquals(listOf("site-b","site-a"), p.groups().single().sites)
+            server.enqueue(MockResponse().setBody("""{"items":[],"next_page":null}"""))
+            assertTrue(p.searchGroup("demo", "2", "family").items.isEmpty())
+            server.takeRequest()
+            server.takeRequest()
+            val request = server.takeRequest()
+            assertEquals("/mdc/api/media/v1/tvbox/search", request.requestUrl!!.encodedPath)
+            assertEquals("family", request.requestUrl!!.queryParameter("group_id"))
+            assertEquals("2", request.requestUrl!!.queryParameter("page"))
+        }
+    }
+
     @Test fun `capability discovery hides native entry for older MDC deployments`() = runTest {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setBody("""{"features":["catalog","playback_plan"]}"""))

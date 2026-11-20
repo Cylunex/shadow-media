@@ -40,6 +40,9 @@ import kotlinx.coroutines.ensureActive
 internal fun MdcTvBoxScreen(provider: MdcTvBoxProvider, viewModel: MainViewModel, onBack: () -> Unit) {
     val scroll = rememberLazyListState()
     var sites by remember { mutableStateOf(emptyList<MdcTvBoxChoice>()) }
+    var groups by remember { mutableStateOf(emptyList<MdcTvBoxGroup>()) }
+    var warehouse by rememberSaveable(provider.descriptor.id) { mutableStateOf("") }
+    var everywhere by rememberSaveable(provider.descriptor.id) { mutableStateOf(false) }
     var categories by remember { mutableStateOf(emptyList<MdcTvBoxChoice>()) }
     var site by rememberSaveable(provider.descriptor.id) { mutableStateOf("") }
     var category by rememberSaveable(provider.descriptor.id) { mutableStateOf("") }
@@ -51,6 +54,8 @@ internal fun MdcTvBoxScreen(provider: MdcTvBoxProvider, viewModel: MainViewModel
     var sitesLoading by remember { mutableStateOf(true) }
     var itemsLoading by remember { mutableStateOf(false) }
     val loading = sitesLoading || itemsLoading
+    val currentGroup = groups.firstOrNull { it.id == warehouse }
+    val visibleSites = currentGroup?.sites?.mapNotNull { id -> sites.firstOrNull { it.id == id } } ?: sites
     var error by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(provider, reload) {
@@ -60,14 +65,18 @@ internal fun MdcTvBoxScreen(provider: MdcTvBoxProvider, viewModel: MainViewModel
             val result = provider.sites()
             ensureActive()
             sites = result
-            if (sites.none { it.id == site }) {
-                site = sites.firstOrNull()?.id.orEmpty()
-                category = ""
-                page = "1"
-            }
+            groups = provider.groups()
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) { error = e.message }
         finally { sitesLoading = false }
+    }
+
+    LaunchedEffect(visibleSites, sitesLoading) {
+        if (!sitesLoading && visibleSites.none { it.id == site }) {
+            site = visibleSites.firstOrNull()?.id.orEmpty()
+            category = ""
+            page = "1"
+        }
     }
 
     LaunchedEffect(provider, site, reload) {
@@ -81,13 +90,14 @@ internal fun MdcTvBoxScreen(provider: MdcTvBoxProvider, viewModel: MainViewModel
         catch (e: Exception) { error = e.message }
     }
 
-    LaunchedEffect(provider, site, category, query, page, reload) {
+    LaunchedEffect(provider, site, category, query, page, reload, warehouse, everywhere) {
         if (site.isEmpty()) return@LaunchedEffect
         itemsLoading = true
         loaded = null
         error = null
         try {
-            val result = provider.items(site, category, page, query)
+            val result = if (everywhere && query.isNotBlank()) provider.searchGroup(query, page, warehouse)
+            else provider.items(site, category, page, query)
             ensureActive()
             loaded = result
         } catch (e: CancellationException) { throw e }
@@ -109,18 +119,26 @@ internal fun MdcTvBoxScreen(provider: MdcTvBoxProvider, viewModel: MainViewModel
         ) {
             error?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
             if (sites.isNotEmpty()) item {
+                if (groups.isNotEmpty()) ChoiceMenu(currentGroup?.name ?: "全部仓库",
+                    listOf(MdcTvBoxChoice("", "全部仓库")) + groups.map { MdcTvBoxChoice(it.id, it.name) }) {
+                    warehouse = it; category = ""; page = "1"
+                }
                 Row {
-                    ChoiceMenu(sites.firstOrNull { it.id == site }?.name ?: "站点", sites) {
+                    ChoiceMenu(visibleSites.firstOrNull { it.id == site }?.name ?: "站点", visibleSites) {
                         site = it; category = ""; categories = emptyList(); page = "1"
                     }
                     ChoiceMenu(categories.firstOrNull { it.id == category }?.name ?: "全部分类",
                         listOf(MdcTvBoxChoice("", "全部分类")) + categories) { category = it; page = "1" }
                 }
-                OutlinedTextField(input, { input = it.take(200) }, label = { Text("搜索本站") },
+                OutlinedTextField(input, { input = it.take(200) }, label = { Text("片名") },
                     singleLine = true, modifier = Modifier.fillMaxWidth())
-                Button(onClick = { query = input.trim(); page = "1" }) { Text("搜索") }
+                Row {
+                    Button(onClick = { everywhere = false; query = input.trim(); page = "1" }) { Text("搜索本站") }
+                    TextButton(onClick = { everywhere = true; query = input.trim(); page = "1" }) { Text("搜索当前仓库") }
+                }
             }
             if (!loading && error == null && sites.isEmpty()) item { Text("还没有站点。在 MDC 网页导入后刷新。") }
+            if (!loading && sites.isNotEmpty() && visibleSites.isEmpty()) item { Text("这个仓库暂无可用站点。") }
             if (loaded?.items?.isEmpty() == true) item { Text("没有找到影片") }
             items(loaded?.items.orEmpty().distinctBy { it.key }, key = { it.key.itemId }) { item ->
                 TextButton(onClick = { viewModel.openUnifiedItem(item) }, modifier = Modifier.fillMaxWidth()) {
