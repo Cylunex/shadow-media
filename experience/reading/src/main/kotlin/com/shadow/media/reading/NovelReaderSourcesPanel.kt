@@ -254,6 +254,7 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
                     "body_hash" -> "接着读相同正文"
                     "title" -> "从同名章开头读"
                     "locator" -> "接着读对应章节"
+                    "normalized_chapter" -> "从卷和章名匹配的位置继续"
                     else -> "继续阅读"
                 }
                 if (position != null && opening.optString("quality") != "needs_selection") TextButton(enabled = enabled && !busy, onClick = {

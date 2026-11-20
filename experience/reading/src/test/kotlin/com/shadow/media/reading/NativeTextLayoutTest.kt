@@ -17,6 +17,17 @@ import java.io.File
 @Config(sdk = [28], manifest = Config.NONE)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class NativeTextLayoutTest {
+    @Test fun projectedPhrasePreservesOriginalLocatorAndSelection() {
+        val original = chapter("頭髮😀發現")
+        val projection = ChineseDictionary(mapOf("頭髮" to "头发丝", "發現" to "发现")).project(original.text)
+        val displayed = original.copy(text = projection.rendered, projection = projection)
+        assertEquals("头发丝😀发现", displayed.text)
+        assertEquals(original.textHash, displayed.textHash)
+        assertEquals(0, displayed.canonicalOffset(1))
+        assertEquals(2, displayed.canonicalOffset(1, end = true))
+        assertEquals(5, displayed.restore(original.locator(4)))
+    }
+
     @Test fun titleAndSpacingControlsChangeLayoutWithoutDroppingBodyOrMovingStoredAnchors() = runBlocking {
         val content = chapter("山风穿过竹林，少年提灯前行。\n".repeat(80))
         val normal = layout(content)

@@ -1,5 +1,6 @@
 package com.shadow.media.reading
 
+import com.shadow.media.library.novelRowOffset
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -8,7 +9,7 @@ import com.shadow.media.database.LibraryAssetEntity
 import com.shadow.media.database.NovelPublicationEntity
 import com.shadow.media.library.*
 
-internal data class NativeChapterRef(val id: String, val title: String, val ordinal: Int, val href: String, val readable: Boolean = true)
+internal data class NativeChapterRef(val id: String, val title: String, val ordinal: Int, val href: String, val readable: Boolean = true, val rowOffset: Int = ordinal)
 
 internal data class NativeTextChapter(
     val ref: NativeChapterRef,
@@ -20,29 +21,36 @@ internal data class NativeTextChapter(
     val legacyLength: Int = text.length,
     val originalText: String? = null,
     val rulesWarning: String = "",
+    val projection: ChineseProjection? = null,
 ) {
-    val textHash = LibraryRepository.digest(text)
+    private val canonicalText = projection?.original ?: text
+    val textHash = LibraryRepository.digest(canonicalText)
+    val layoutHash = if (projection == null) textHash else LibraryRepository.digest(text)
+    fun canonicalOffset(offset: Int, end: Boolean = false): Int =
+        projection?.canonical(offset, end) ?: safeTextOffset(text, offset)
     fun locator(offset: Int): JSONObject {
-        val safe = safeTextOffset(text, offset)
+        val safe = canonicalOffset(offset)
         return JSONObject().put("href", ref.href).put("type", "application/xhtml+xml").put("title", ref.title)
-            .put("locations", JSONObject().put("progression", safe.toDouble() / text.length.coerceAtLeast(1)))
+            .put("locations", JSONObject().put("progression", safe.toDouble() / canonicalText.length.coerceAtLeast(1)))
             .put("native_text", JSONObject().put("schema", 1).put("chapter_id", ref.id).put("version_id", version)
                 .put("text_hash", textHash).put("offset", safe))
-            .put("text", JSONObject().put("after", text.substring(safe, (safe + 80).coerceAtMost(text.length))))
+            .put("text", JSONObject().put("after", canonicalText.substring(safe, safeTextOffset(canonicalText, safe + 80))))
     }
     fun restore(locator: JSONObject?): Int {
         if (locator == null) return 0
         val anchor = locator.optJSONObject("native_text")
         if (anchor != null && anchor.optInt("schema") == 1 && anchor.optString("chapter_id") == ref.id &&
             anchor.optString("version_id") == version && anchor.optString("text_hash") == textHash) {
-            return safeTextOffset(text, anchor.optInt("offset", 0))
+            val offset = anchor.optInt("offset", 0)
+            return projection?.display(offset) ?: safeTextOffset(text, offset)
         }
         // Removing an ad above the viewport changes offsets, but a unique surviving quote is exact.
         if (anchor?.optString("chapter_id") == ref.id && anchor.optString("version_id") == version) {
             val quote = locator.optJSONObject("text")?.optString("after").orEmpty()
             if (quote.length >= 4) {
-                val found = text.indexOf(quote)
-                if (found >= 0 && text.indexOf(quote, found + 1) < 0) return safeTextOffset(text, found)
+                val found = canonicalText.indexOf(quote)
+                if (found >= 0 && canonicalText.indexOf(quote, found + 1) < 0)
+                    return projection?.display(found) ?: safeTextOffset(text, found)
             }
         }
         val ratio = locator.optJSONObject("locations")?.optDouble("progression", 0.0) ?: 0.0
@@ -93,7 +101,7 @@ internal class NativeTextSource(private val library: LibraryRepository, private 
                 val item = library.dao.asset(pub.assetId)
                 if (item == null || !runCatching { library.localFile(item).isFile }.getOrDefault(false)) emptyList()
                 else NovelPublicationMap(JSONObject(pub.mappingJson)).chapters.map { json ->
-                    val ref = NativeChapterRef(json.getString("id"), json.optString("title"), json.getInt("ordinal"), json.getString("href"))
+                    val ref = NativeChapterRef(json.getString("id"), json.optString("title"), json.getInt("ordinal"), json.getString("href"), rowOffset = json.novelRowOffset())
                     NativeSearchEntry(item.id, ref) { chapter(item, pub, ref.href) }
                 }
             }.distinctBy { it.ref.id }.sortedBy { it.ref.ordinal }
@@ -118,7 +126,7 @@ internal class NativeTextSource(private val library: LibraryRepository, private 
         val body = (0 until paragraphs.length).joinToString("\n") { paragraphs.item(it).textContent }
         require(body.isNotBlank()) { "此章节没有可读正文" }
         require(body.length <= 512_000) { "此章节超过 50 万字，请先在 Novel 中拆分章节" }
-        val raw = NativeTextChapter(NativeChapterRef(ref.getString("id"), ref.getString("title"), ref.getInt("ordinal"), ref.getString("href")),
+        val raw = NativeTextChapter(NativeChapterRef(ref.getString("id"), ref.getString("title"), ref.getInt("ordinal"), ref.getString("href"), rowOffset = ref.novelRowOffset()),
             body, publication.versionId, mapping.json.getInt("total")).also { parsed.put(cacheKey, it) }
         purify(raw, publication.scope)
     }
@@ -155,7 +163,7 @@ internal class NativeTextSource(private val library: LibraryRepository, private 
                     }
                 }
             }
-            return chunks.mapIndexed { ordinal, chapter -> chapter.copy(ref = chapter.ref.copy(ordinal = ordinal), total = chunks.size) }
+            return chunks.mapIndexed { ordinal, chapter -> chapter.copy(ref = chapter.ref.copy(ordinal = ordinal, rowOffset = ordinal), total = chunks.size) }
         }
     }
 }

@@ -3,6 +3,9 @@ package com.shadow.media.library
 import org.json.JSONObject
 import java.net.URI
 
+// Older packages were admitted only when directory ordinals equaled row offsets.
+fun JSONObject.novelRowOffset(): Int = optInt("row_offset", optInt("ordinal", -1))
+
 /** Immutable package coordinates. Only an exact, unique href maps to a chapter. */
 class NovelPublicationMap(val json: JSONObject) {
     val workId = json.getString("work_id")

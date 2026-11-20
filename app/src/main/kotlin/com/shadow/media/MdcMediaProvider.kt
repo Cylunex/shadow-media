@@ -94,15 +94,36 @@ internal class MdcMediaProvider(
             check(it.isSuccessful) { "演员目录读取失败（${it.code}）" }
             val rows = org.json.JSONArray(it.body?.string().orEmpty())
             (0 until rows.length()).map { index ->
-                val row = rows.getJSONObject(index)
-                MdcPerson(row.getString("id"), row.getString("name"),
-                    row.getJSONArray("aliases").let { aliases ->
-                        (0 until aliases.length()).map { value -> aliases.getString(value) }
-                    }, row.getJSONArray("work_ids").length(),
-                    connection.base().newBuilder().addPathSegments("api/media/v1/catalog/people/${row.getString("id")}/image")
-                        .addQueryParameter("v", row.optInt("revision", 1).toString()).build().toString())
+                personCard(rows.getJSONObject(index))
             }
         }
+    }
+
+    internal data class PeopleBatch(val items: List<MdcPerson>, val next: String?)
+    private var peoplePaging: Boolean? = null
+
+    suspend fun peoplePage(query: String, cursor: String? = null): PeopleBatch {
+        val supported = peoplePaging ?: api("capabilities").optJSONArray("features")?.let { values ->
+            (0 until values.length()).any { values.optString(it) == "people_cards_paged" }
+        }.also { peoplePaging = it } ?: false
+        if (!supported) return PeopleBatch(people().filter { person ->
+            (listOf(person.name) + person.aliases).any { it.contains(query, ignoreCase = true) }
+        }, null)
+        val parameters = mutableMapOf("q" to query, "limit" to "48")
+        if (cursor != null) parameters["cursor"] = cursor
+        val page = api("catalog/people-cards", parameters)
+        val items = page.getJSONArray("items")
+        return PeopleBatch((0 until items.length()).map { personCard(items.getJSONObject(it)) },
+            page.optString("next_cursor").takeUnless { it.isBlank() || it == "null" })
+    }
+
+    private fun personCard(row: JSONObject): MdcPerson {
+        val id = row.getString("id")
+        val aliases = row.getJSONArray("aliases")
+        val url = connection.base().newBuilder().addPathSegments("api/media/v1/catalog/people/$id/image")
+            .addQueryParameter("v", row.optInt("revision", 1).toString()).build().toString()
+        return MdcPerson(id, row.getString("name"), (0 until aliases.length()).map { aliases.getString(it) },
+            row.optInt("work_count", row.optJSONArray("work_ids")?.length() ?: 0), url)
     }
 
     suspend fun person(id: String): JSONObject = api("catalog/people/$id")

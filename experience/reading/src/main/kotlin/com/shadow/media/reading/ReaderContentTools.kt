@@ -12,7 +12,7 @@ internal fun readerContentToolsScript() = """
     overlay = null;
     if (origin && origin.isConnected) origin.focus({preventScroll:true});
   };
-  const show = (title, content) => {
+  const show = (title, content, navigate = null) => {
     close();
     origin = document.activeElement;
     const dialog = document.createElement('dialog');
@@ -23,6 +23,12 @@ internal fun readerContentToolsScript() = """
     button.style.cssText = 'display:block;min-height:48px;padding:8px 16px;margin-bottom:12px;';
     button.onclick = close;
     dialog.append(button, content);
+    if (navigate) {
+      const open = document.createElement('button');
+      open.textContent = '在正文中打开脚注';
+      open.onclick = () => { close(); navigate(); };
+      dialog.append(open);
+    }
     dialog.addEventListener('cancel', e => {e.preventDefault();close();});
     document.documentElement.append(dialog); overlay = dialog;
     dialog.showModal(); button.focus({preventScroll:true});
@@ -50,11 +56,13 @@ internal fun readerContentToolsScript() = """
       show('插图预览',wrapper);return;
     }
     const link = target.closest('a[href]');
-    if (!link || !((link.getAttribute('epub:type')||'').split(/\s+/).includes('noteref') || link.getAttribute('role')==='doc-noteref')) return;
+    if (!link || !((link.getAttribute('epub:type')||'').split(/\s+/).includes('noteref') ||
+                   (link.getAttribute('role')||'').split(/\s+/).includes('doc-noteref'))) return;
     const url = new URL(link.href,location.href);
     if(url.origin!==location.origin || !url.hash) return;
     event.preventDefault();event.stopImmediatePropagation();
     const request = ++generation;
+    const follow = () => { bypass=true;try { link.click(); } finally { bypass=false; } };
     try {
       let doc = document;
       if(url.pathname!==location.pathname) {
@@ -66,10 +74,10 @@ internal fun readerContentToolsScript() = """
       if(!note) throw Error('missing footnote');
       if(request!==generation)return;
       const text = document.createElement('div');text.textContent=note.textContent;
-      link.focus({preventScroll:true});show('脚注',text);
+      link.focus({preventScroll:true});show('脚注',text,text.textContent.length > 480 ? follow : null);
     } catch(e) {
       if(request!==generation)return;
-      bypass=true;link.click();bypass=false;
+      follow();
     }
   },true);
 })();

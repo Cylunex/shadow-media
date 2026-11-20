@@ -9,6 +9,22 @@ data class NovelPublicationEntity(
     val mappingJson: String, val packageRevision: String,
 )
 
+@Entity(
+    tableName = "novel_chapter_memberships",
+    primaryKeys = ["assetId", "chapterId"],
+    foreignKeys = [ForeignKey(
+        entity = NovelPublicationEntity::class, parentColumns = ["assetId"], childColumns = ["assetId"],
+        onDelete = ForeignKey.CASCADE,
+    )],
+    indices = [Index(value = ["scope", "workId", "versionId", "chapterId"]),
+        Index(value = ["scope", "workId", "versionId", "rowOffset"])],
+)
+data class NovelChapterMembership(
+    val assetId: String, val chapterId: String, val scope: String, val workId: String, val versionId: String, val rowOffset: Int,
+)
+
+data class NovelChapterAsset(val chapterId: String, val assetId: String)
+
 /** A frozen request and the newest locator are independent durable slots. */
 @Entity(tableName = "novel_reading_states", indices = [Index("scope")])
 data class NovelReadingStateEntity(
@@ -31,6 +47,20 @@ data class NovelReadingStateEntity(
     @Query("SELECT * FROM novel_publications WHERE scope = :scope AND workId = :work AND versionId = :version")
     suspend fun windows(scope: String, work: String, version: String): List<NovelPublicationEntity>
     @Upsert suspend fun putPublication(value: NovelPublicationEntity)
+    @Query("""SELECT * FROM novel_publications AS p WHERE scope = :scope AND workId = :work AND versionId = :version
+        AND NOT EXISTS (SELECT 1 FROM novel_chapter_memberships AS m WHERE m.assetId = p.assetId) LIMIT 32""")
+    suspend fun unindexedWindows(scope: String, work: String, version: String): List<NovelPublicationEntity>
+    @Query("""SELECT chapterId, assetId FROM novel_chapter_memberships WHERE scope = :scope AND workId = :work
+        AND versionId = :version AND chapterId IN (:ids)""")
+    suspend fun chapterAssets(scope: String, work: String, version: String, ids: List<String>): List<NovelChapterAsset>
+    @Query("""SELECT chapterId, assetId FROM novel_chapter_memberships WHERE scope = :scope AND workId = :work
+        AND versionId = :version AND rowOffset = :offset""")
+    suspend fun chapterAssetsAt(scope: String, work: String, version: String, offset: Int): List<NovelChapterAsset>
+    @Upsert suspend fun putChapterMemberships(memberships: List<NovelChapterMembership>)
+    @Transaction suspend fun putIndexedPublication(value: NovelPublicationEntity, memberships: List<NovelChapterMembership>) {
+        putPublication(value)
+        putChapterMemberships(memberships)
+    }
     @Query("SELECT * FROM novel_reading_states WHERE id = :id") suspend fun state(id: String): NovelReadingStateEntity?
     @Query("SELECT * FROM novel_reading_states WHERE id = :id") fun observe(id: String): Flow<NovelReadingStateEntity?>
     @Query("SELECT * FROM novel_reading_states WHERE scope = :scope AND (localSequence > acknowledgedSequence OR requestJson != '')")

@@ -9,6 +9,7 @@ import android.speech.tts.UtteranceProgressListener
 import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import org.readium.r2.shared.publication.Locator
@@ -42,12 +43,11 @@ internal class ReadAloud(private val context: Context, private val onInterrupted
         while (currentCoroutineContext().isActive && iterator.hasNext()) {
             val element = iterator.next() as? Content.TextElement ?: continue
             if (element.text.isBlank()) continue
-            onLocation(element.locator)
-            for (chunk in element.text.chunked(2500)) speak(chunk)
+            for (chunk in element.text.chunked(2500)) speak(chunk) { onLocation(element.locator) }
         }
     }
 
-    suspend fun readText(text: String, offset: Int, onLocation: (Int) -> Unit) = narrate(
+    suspend fun readText(text: String, offset: Int, onRange: ((Int) -> Unit)? = null, onLocation: (Int) -> Unit) = narrate(
         if (text.any { it.code in 0x3400..0x9fff }) "zh" else Locale.getDefault().language
     ) {
         var start = safeTextOffset(text, offset)
@@ -59,8 +59,9 @@ internal class ReadAloud(private val context: Context, private val onInterrupted
             val maximum = (start + 1000).coerceAtMost(text.length)
             val sentence = text.indexOfAny(charArrayOf('。', '！', '？', '\n', '.', '!', '?'), start)
             val end = safeTextOffset(text, if (sentence in start until maximum) sentence + 1 else maximum)
-            onLocation(start)
-            speak(text.substring(start, end))
+            speak(text.substring(start, end), onRange?.let { callback ->
+                { point -> callback(safeTextOffset(text, start + point)) }
+            }) { started -> onLocation(if (started) start else end) }
             start = end
         }
     }
@@ -81,11 +82,35 @@ internal class ReadAloud(private val context: Context, private val onInterrupted
         } finally { audible.abandon(); engine.stop(); audio.abandonAudioFocusRequest(focus); speaking = null }
     }
 
-    private suspend fun speak(text: String) = suspendCancellableCoroutine<Unit> { continuation ->
+    private suspend fun speak(text: String, onRange: ((Int) -> Unit)? = null, onAudible: (Boolean) -> Unit) = coroutineScope {
+        val audible = CompletableDeferred<Boolean>()
+        val ranges = if (onRange != null) Channel<Int>(Channel.CONFLATED) else null
+        launch {
+            onAudible(audible.await())
+            if (ranges != null && onRange != null) for (point in ranges) onRange(point)
+        }
+        try { awaitSpeech(text, audible, ranges) }
+        finally { ranges?.close() }
+    }
+
+    private suspend fun awaitSpeech(text: String, audible: CompletableDeferred<Boolean>, ranges: Channel<Int>?) = suspendCancellableCoroutine<Unit> { continuation ->
         val requestId = UUID.randomUUID().toString()
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {}
-            override fun onDone(utteranceId: String?) { if (utteranceId == requestId && continuation.isActive) continuation.resume(Unit) }
+            override fun onStart(utteranceId: String?) {
+                if (utteranceId == requestId && continuation.isActive) audible.complete(true)
+            }
+            override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
+                if (utteranceId == requestId && continuation.isActive && start in text.indices) {
+                    audible.complete(true)
+                    ranges?.trySend(start)
+                }
+            }
+            override fun onDone(utteranceId: String?) {
+                if (utteranceId == requestId && continuation.isActive) {
+                    audible.complete(false)
+                    continuation.resume(Unit)
+                }
+            }
             @Deprecated("Platform callback") override fun onError(utteranceId: String?) { if (utteranceId == requestId && continuation.isActive) continuation.resumeWithException(IllegalStateException("系统朗读失败")) }
             override fun onStop(utteranceId: String?, interrupted: Boolean) { if (utteranceId == requestId) continuation.cancel() }
         })

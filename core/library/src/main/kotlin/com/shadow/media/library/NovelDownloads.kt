@@ -161,11 +161,11 @@ internal suspend fun downloadNovelContents(repository: NovelRepository, c: Catal
     var task = initial
     val directory = repository.cache.directory(c, task.workId, task.versionId)
     val end = task.end?.coerceAtMost(directory.getInt("total")) ?: directory.getInt("total")
-    val targets = directory.novelObjects("items").filter { it.getBoolean("readable") && it.getInt("ordinal") in task.start until end }
+    val targets = directory.novelObjects("items").filter { it.getBoolean("readable") && it.novelRowOffset() in task.start until end }
     require(targets.isNotEmpty()) { "所选范围没有可读章节" }
     val saved = repository.cache.chapters(task.scope, task.workId, task.versionId, verify = true).map { it.getString("id") }.toMutableSet()
     val targetIds = targets.map { it.getString("id") }.toSet()
-    val groups = targets.groupBy { task.start + (it.getInt("ordinal") - task.start) / 20 * 20 }
+    val groups = targets.groupBy { task.start + (it.novelRowOffset() - task.start) / 20 * 20 }
     var completedCount = saved.count { it in targetIds }
     fun downloaded(ids: List<String>) { ids.forEach { if (saved.add(it) && it in targetIds) completedCount++ } }
     val failures = mutableSetOf<String>()
@@ -209,7 +209,7 @@ internal suspend fun downloadNovelContents(repository: NovelRepository, c: Catal
                 currentCoroutineContext().ensureActive()
                 try {
                     val window = ResourceScheduler.process.run(ResourcePriority.OFFLINE) {
-                        repository.cache.window(c, task.workId, task.versionId, row.getInt("ordinal"), 1, row.getString("id"))
+                        repository.cache.window(c, task.workId, task.versionId, row.novelRowOffset(), 1, row.getString("id"))
                     }
                     downloaded(window.mapping.chapters.map { it.getString("id") })
                 } catch (cancelled: CancellationException) { throw cancelled }

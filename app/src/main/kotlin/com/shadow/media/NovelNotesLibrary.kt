@@ -13,10 +13,12 @@ import com.shadow.media.library.*
 import com.shadow.media.database.ContentAnnotationEntity
 import com.shadow.media.reading.ReaderActivity
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 @Composable internal fun NovelNotesLibrary(repository: NovelRepository, scope: String, workId: String? = null) {
     val context = LocalContext.current
     val library = remember { LibraryRepository(context) }
+    val coroutineScope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf<List<ContentAnnotationEntity>>(emptyList()) }
     var titles by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
@@ -41,7 +43,14 @@ import kotlinx.coroutines.CancellationException
         visible.groupBy { identities[it.assetId] ?: it.assetId }.forEach { (work, group) ->
             item(key = "work:$work") { Text(titles[group.first().assetId].orEmpty(), style = MaterialTheme.typography.titleMedium) }
             items(group, key = { it.id }) { note -> Card(onClick = {
-                context.startActivity(Intent(context, ReaderActivity::class.java).putExtra("assetId", note.assetId).putExtra("novelLocator", note.locatorJson))
+                coroutineScope.launch {
+                    try {
+                        val target = repository.bookmarkTarget(note.assetId, note.locatorJson)
+                        context.startActivity(Intent(context, ReaderActivity::class.java).putExtra("assetId", target.asset.id)
+                            .putExtra("novelLocator", target.locator))
+                    } catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { error = e.message ?: "原文暂不可用" }
+                }
             }) { Column(Modifier.padding(16.dp)) { Text(note.note.ifBlank { "书签" }); Text("点击回到原文", style = MaterialTheme.typography.labelSmall)
                 TextButton(onClick = { shareSaved(context, "quote", note.id, titles[note.assetId].orEmpty(), note.note) }) { Text("分享这条摘录") } } } }
         }

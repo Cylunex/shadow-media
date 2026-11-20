@@ -79,6 +79,9 @@ class ReaderActivity : FragmentActivity() {
     private var positions by mutableStateOf<List<Locator>>(emptyList())
     private var initial: Locator? = null
     private var followNarration = true
+    private var jumpHistory by mutableStateOf(NativeJumpHistory())
+    private var previewOrigin by mutableStateOf<Locator?>(null)
+    private var returningTo: Locator? = null
     private var searchJob: Job? = null
     private var progressJob: Job? = null
     private var progressSession: com.shadow.media.library.ProgressSession? = null
@@ -104,6 +107,9 @@ class ReaderActivity : FragmentActivity() {
         val id = intent.getStringExtra("assetId")
         val saved = savedInstanceState?.getString("locator")
         val savedRevision = savedInstanceState?.getString("revision")
+        val savedPreview = savedInstanceState?.getString("preview_origin")?.let {
+            runCatching { Locator.fromJSON(JSONObject(it)) }.getOrNull()
+        }
         settingsStore = ReaderSettingsStore(getSharedPreferences("reader_preferences", MODE_PRIVATE))
         readerSettings = settingsStore.load()
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -141,7 +147,19 @@ class ReaderActivity : FragmentActivity() {
                 val pub = readerOpeningStep(ReaderOpenStage.PUBLICATION) { engine.open(file) }
                 publication = pub
                 val preferences = readerOpeningStep(ReaderOpenStage.PREFERENCES) { prefs }
-                supportFragmentManager.fragmentFactory = readerOpeningStep(ReaderOpenStage.NAVIGATOR) { engine.navigator(pub, initial, preferences, selectionActions()) }
+                if (savedRevision == item.revision) {
+                    jumpHistory = NativeJumpHistory.restore(savedInstanceState?.getString("jump_history"))
+                    previewOrigin = savedPreview
+                }
+                supportFragmentManager.fragmentFactory = readerOpeningStep(ReaderOpenStage.NAVIGATOR) { engine.navigator(pub, initial, preferences, selectionActions(), object : EpubNavigatorFragment.Listener {
+                    override fun onExternalLinkActivated(url: org.readium.r2.shared.util.AbsoluteUrl) = Unit
+
+                    override fun shouldFollowInternalLink(link: Link, context: org.readium.r2.navigator.HyperlinkNavigator.LinkContext?): Boolean {
+                        // Explicit links can be reversed just like TOC and search jumps.
+                        rememberJump(locator, null)
+                        return true
+                    }
+                }) }
                 ready = true
                 lifecycleScope.launch {
                     try { positions = pub.positions() }
@@ -160,6 +178,8 @@ class ReaderActivity : FragmentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         asset?.let { outState.putString("revision", it.revision) }
         locator?.let { outState.putString("locator", it.toJSON().toString()) }
+        outState.putString("jump_history", jumpHistory.toJson())
+        previewOrigin?.let { outState.putString("preview_origin", it.toJSON().toString()) }
         super.onSaveInstanceState(outState)
     }
 
@@ -235,7 +255,12 @@ class ReaderActivity : FragmentActivity() {
             fragment.currentLocator.collectLatest { current ->
                 locator = current
                 applyPaper()
-                if (tracker != null && !tracker.moved(current.toJSON())) return@collectLatest
+                val moved = tracker?.moved(current.toJSON()) ?: true
+                returningTo?.let { destination ->
+                    if (current.href == destination.href) returningTo = null
+                    return@collectLatest
+                }
+                if (previewOrigin != null || !moved) return@collectLatest
                 if (ReaderNarrationService.state.value.let { it.playing && it.assetId == asset?.id }) return@collectLatest
                 progressSession?.let { ProgressWriter.save(library, it, "text", current.toJSON(), current.locations.totalProgression,
                     completed = novelPublication == null && (current.locations.totalProgression ?: 0.0) >= 0.999) }
@@ -370,14 +395,66 @@ class ReaderActivity : FragmentActivity() {
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean =
         if (handlesVolumeKey(keyCode)) true else super.onKeyUp(keyCode, event)
 
-    private fun jumpTo(location: Locator) {
+    private fun jumpLocation(location: Locator?) = asset?.id?.let { id ->
+        location?.let { NativeReaderLocation(id, it.toJSON().toString()) }
+    }
+
+    private fun rememberJump(origin: Locator?, destination: Locator?) {
+        jumpHistory = jumpHistory.remember(jumpLocation(origin), jumpLocation(destination))
+    }
+
+    private fun interruptTurn() {
         followNarration = false
-        turning?.cancel(); surface?.cancelTurn(); navigator?.go(location, animated = false)
+        turning?.cancel()
+        surface?.cancelTurn()
+    }
+
+    private fun jumpTo(location: Locator) {
+        val origin = previewOrigin ?: locator
+        interruptTurn()
+        if (navigator?.go(location, animated = false) == true) {
+            previewOrigin = null
+            rememberJump(origin, location)
+        }
     }
 
     private fun jumpTo(link: Link) {
-        followNarration = false
-        turning?.cancel(); surface?.cancelTurn(); navigator?.go(link, animated = false)
+        val origin = previewOrigin ?: locator
+        interruptTurn()
+        if (navigator?.go(link, animated = false) == true) {
+            previewOrigin = null
+            rememberJump(origin, null)
+        }
+    }
+
+    private fun preview(location: Locator) {
+        val origin = previewOrigin ?: locator ?: return
+        interruptTurn()
+        previewOrigin = origin
+        if (navigator?.go(location, animated = false) != true) previewOrigin = null
+    }
+
+    private fun returnFromJump() {
+        val preview = previewOrigin
+        val stored = jumpHistory.locations.lastOrNull()
+        val destination = preview ?: stored?.takeIf { it.assetId == asset?.id }
+            ?.let { runCatching { Locator.fromJSON(JSONObject(it.locator)) }.getOrNull() } ?: return
+        interruptTurn()
+        if (preview != null) returningTo = destination.takeIf { locator != destination }
+        if (navigator?.go(destination, animated = false) == true) {
+            previewOrigin = null
+            if (preview == null) jumpHistory = NativeJumpHistory(jumpHistory.locations.dropLast(1))
+        } else returningTo = null
+    }
+
+    private fun commitPreview() {
+        val origin = previewOrigin ?: return
+        val position = locator ?: return
+        previewOrigin = null
+        rememberJump(origin, position)
+        lifecycleScope.launch {
+            progressSession?.let { ProgressWriter.save(library, it, "text", position.toJSON(), position.locations.totalProgression, false) }
+        }
     }
 
     @Composable private fun ReaderChrome() {
@@ -538,6 +615,10 @@ class ReaderActivity : FragmentActivity() {
                     Text(panel!!, style = MaterialTheme.typography.titleLarge)
                     when (panel) {
                         "更多" -> {
+                            if (jumpHistory.locations.isNotEmpty() || previewOrigin != null)
+                                TextButton(onClick = { returnFromJump(); panel = null }) { Text("回到刚才") }
+                            if (previewOrigin != null)
+                                TextButton(onClick = { commitPreview(); panel = null }) { Text("从这里继续") }
                             TextButton(onClick = { panel = "搜索" }) { Text("搜正文") }
                             TextButton(onClick = { panel = "书签" }) { Text("书签与摘录") }
                             TextButton(onClick = { updateSettings(readerSettings.copy(fullScreen = !readerSettings.fullScreen)); panel = null }) { Text("切换全屏") }
@@ -579,7 +660,7 @@ class ReaderActivity : FragmentActivity() {
                             }) { Text("搜索") }
                             if (searching) LinearProgressIndicator(Modifier.fillMaxWidth())
                             LazyColumn(Modifier.heightIn(max = 380.dp)) { items(matches) { found ->
-                                TextButton(onClick = { jumpTo(found); panel = null }) { Text(listOfNotNull(found.text.before, found.text.highlight, found.text.after).joinToString(""), maxLines = 3) }
+                                TextButton(onClick = { preview(found); panel = null }) { Text(listOfNotNull(found.text.before, found.text.highlight, found.text.after).joinToString(""), maxLines = 3) }
                             } }
                             if (hasMore) TextButton(enabled = !searching, onClick = { searchJob = scope.launch {
                                 searching = true

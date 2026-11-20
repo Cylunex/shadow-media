@@ -1,6 +1,7 @@
 @file:OptIn(org.readium.r2.shared.ExperimentalReadiumApi::class)
 package com.shadow.media.reading
 
+import com.shadow.media.library.novelRowOffset
 import android.app.*
 import android.content.*
 import android.media.MediaMetadata
@@ -149,16 +150,18 @@ class ReaderNarrationService : Service() {
                         }
                         if (pub != null) novel.beginReading(pub, current.locator(offset))
                         val beganBeforeEnd = offset < current.text.length
-                        speech.readText(current.text, offset) { point ->
+                        speech.readText(current.text, offset, onRange = { point ->
+                            snapshot.value = snapshot.value.copy(locator = current.locator(point).toString())
+                        }) { point ->
                             offset = point
                             publish(item.id, current.ref.title, current.locator(point).toString())
-                            val fraction = (current.ref.ordinal + point.toDouble() / current.text.length.coerceAtLeast(1)) / current.total.coerceAtLeast(1)
+                            val fraction = (current.ref.rowOffset + point.toDouble() / current.text.length.coerceAtLeast(1)) / current.total.coerceAtLeast(1)
                             ProgressWriter.save(library, requireNotNull(writer), "text", current.locator(point), fraction, false)
                         }
                         offset = current.text.length
                         val finished = current.locator(offset)
                         ProgressWriter.save(library, requireNotNull(writer), "text", finished,
-                            (current.ref.ordinal + 1.0) / current.total.coerceAtLeast(1),
+                            (current.ref.rowOffset + 1.0) / current.total.coerceAtLeast(1),
                             pub == null && current.ref.ordinal == current.total - 1)
                         publish(item.id, current.ref.title, finished.toString())
                         if (snapshot.value.stopAtChapter && beganBeforeEnd) break
@@ -188,14 +191,19 @@ class ReaderNarrationService : Service() {
                             epubText = element.text; epubBase = element.locator
                             val start = if (first) saved?.optInt("speech_offset", 0) ?: 0 else 0
                             first = false
-                            speech.readText(element.text, start) { point ->
-                                spoke = true
-                                offset = point
+                            fun speechLocator(point: Int): JSONObject {
                                 val end = narrationSentenceStep(element.text, point, 1)
                                 val locator = element.locator.toJSON()
                                 locator.put("text", JSONObject().put("before", element.text.take(point).takeLast(80))
                                     .put("highlight", element.text.substring(point, end)).put("after", element.text.drop(end).take(80)))
-                                locator.put("speech_offset", point).put("speech_base", element.locator.toJSON())
+                                return locator.put("speech_offset", point).put("speech_base", element.locator.toJSON())
+                            }
+                            speech.readText(element.text, start, onRange = { point ->
+                                snapshot.value = snapshot.value.copy(locator = speechLocator(point).toString())
+                            }) { point ->
+                                spoke = true
+                                offset = point
+                                val locator = speechLocator(point)
                                 publish(item.id, element.locator.title ?: item.title, locator.toString())
                                 ProgressWriter.save(library, requireNotNull(writer), "epub", locator, element.locator.locations.totalProgression ?: 0.0, false)
                             }
@@ -229,19 +237,10 @@ class ReaderNarrationService : Service() {
         }
     }
     private suspend fun nextChapter(item: com.shadow.media.database.LibraryAssetEntity, pub: com.shadow.media.database.NovelPublicationEntity?, current: NativeTextChapter): NativeChapterRef? {
-        if (current.ref.ordinal >= current.total - 1) return null
-        if (pub == null) return source.local(item).getOrNull(current.ref.ordinal + 1)?.ref
-        val rows = novel.cachedContents(pub)
-        fun ref(row: JSONObject) = NativeChapterRef(row.getString("id"), row.optString("title"), row.getInt("ordinal"), "chapters/${row.getString("id")}.xhtml")
-        if (rows.isNotEmpty()) rows.firstOrNull { it.optInt("ordinal") == current.ref.ordinal + 1 && it.optBoolean("readable", true) }?.let { return ref(it) }
-        var start = current.ref.ordinal + 1
-        while (true) {
-            val page = novel.get(novel.connection(pub.scope), listOf("works", pub.workId, "contents"),
-                listOf("version_id" to pub.versionId, "offset" to start.toString(), "limit" to "100"))
-            page.novelObjects("items").firstOrNull { it.optBoolean("readable", true) }?.let { return ref(it) }
-            start += 100
-            if (start >= page.optInt("total")) return null
-        }
+        if (pub == null) return source.local(item).getOrNull(current.ref.rowOffset + 1)?.ref
+        val row = novel.adjacentChapter(pub, current.ref.rowOffset, 1) ?: return null
+        val id = row.getString("id")
+        return NativeChapterRef(id, row.optString("title"), row.getInt("ordinal"), "chapters/$id.xhtml", rowOffset = row.novelRowOffset())
     }
     private fun publish(asset: String, title: String, locator: String) {
         wakeLock.acquire(10 * 60_000L)

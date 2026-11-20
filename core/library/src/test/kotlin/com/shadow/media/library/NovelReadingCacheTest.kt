@@ -20,7 +20,7 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class NovelReadingCacheTest {
-    private class Service(val total: Int = 8, val volumes: Set<Int> = emptySet()) : AutoCloseable {
+    private class Service(val total: Int = 8, val volumes: Set<Int> = emptySet(), val sparse: Boolean = false) : AutoCloseable {
         val server = MockWebServer()
         val cached = mutableSetOf<Int>()
         val broken = mutableSetOf<Int>()
@@ -68,7 +68,12 @@ class NovelReadingCacheTest {
                         path == "works/work" -> json(JSONObject().put("id", detail))
                         path.endsWith("/open") -> json(JSONObject().put("version_id", version).put("quality", "exact").put("revision", 0)
                             .put("first_chapter_id", "c0").put("position", JSONObject.NULL)
-                            .put("chapters", JSONArray((0 until total).map(::chapter))))
+                            .put("chapters", if (sparse) JSONArray() else JSONArray((0 until total).map(::chapter))))
+                        path.endsWith("/contents") && sparse -> {
+                            val row = requireNotNull(url.queryParameter("anchor_id")).removePrefix("c").toInt()
+                            json(JSONObject().put("version_id", version).put("offset", row)
+                                .put("items", JSONArray().put(chapter(row))))
+                        }
                         path.endsWith("/reading-manifest") -> json(manifest(version, offset, limit))
                         path.startsWith("chapters/") -> {
                             val n = path.substringAfter("chapters/c").toInt()
@@ -89,7 +94,7 @@ class NovelReadingCacheTest {
             server.start()
             c = CatalogConnection(name = "isolated", kind = CatalogKind.OPDS, url = server.url("/").toString(), allowHttp = true)
         }
-        private fun chapter(n: Int) = JSONObject().put("id", "c$n").put("title", "第${n + 1}章").put("ordinal", n)
+        private fun chapter(n: Int) = JSONObject().put("id", "c$n").put("title", "第${n + 1}章").put("ordinal", if (sparse) (n + 1) * 10 else n)
             .put("readable", n !in volumes).put("cached", n in cached).put("href", if (n in volumes) JSONObject.NULL else "chapters/c$n.xhtml").put("body_hash", "h$n")
         fun manifest(version: String, offset: Int, limit: Int) = JSONObject().put("schema", "shadow.novel.reading/v1").put("work_id", canonical)
             .put("version_id", if (badVersion) "another-version" else version).put("title", "缓存测试").put("version_complete", complete)
@@ -116,6 +121,19 @@ class NovelReadingCacheTest {
         override fun close() { server.shutdown() }
     }
     private fun repository(service: Service): NovelRepository = NovelRepository(RuntimeEnvironment.getApplication(), api = NovelApi(), connectionLoader = { listOf(service.c) })
+
+    @Test fun sparseOrdinalsOpenUsingOldServiceAnchorAndCrossVolumeHeading() = runBlocking {
+        Service(volumes = setOf(2), sparse = true).use { service ->
+            val repository = repository(service)
+            val opened = repository.prepare(service.c, "work", "v1", "c1")
+            val publication = requireNotNull(repository.dao.publication(opened.asset.id))
+            val chapter = requireNotNull(NovelPublicationMap(JSONObject(publication.mappingJson)).chapter("c1"))
+            assertEquals(20, chapter.getInt("ordinal"))
+            assertEquals(1, chapter.novelRowOffset())
+            assertEquals("c3", repository.adjacentChapter(publication, chapter.novelRowOffset(), 1)?.getString("id"))
+            assertEquals(opened.asset.id, repository.cachedChapter(publication.scope, "work", "v1", "c1")?.asset?.id)
+        }
+    }
 
     @Test fun shelfResumeUsesNewestWindowAndSourceWithoutDiscardingOtherWindows() = runBlocking {
         Service().use { service ->

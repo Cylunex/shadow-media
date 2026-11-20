@@ -1,5 +1,6 @@
 package com.shadow.media.library
 
+import com.shadow.media.database.NovelChapterMembership
 import android.content.Context
 import android.util.AtomicFile
 import com.shadow.media.database.NovelDao
@@ -56,7 +57,7 @@ class NovelReadingCache(private val context: Context, private val library: Libra
             val entries = page.novelObjects("items")
             require(entries.isNotEmpty() || page.getInt("total") == 0) { "目录分页未前进" }
             rows += entries.map { row -> JSONObject().put("id", row.getString("id")).put("title", row.optString("title"))
-                .put("ordinal", row.getInt("ordinal")).put("readable", row.getBoolean("readable")) }
+                .put("ordinal", row.getInt("ordinal")).put("row_offset", row.novelRowOffset()).put("readable", row.getBoolean("readable")) }
             require(rows.size <= 100_000) { "目录超过十万节，请分卷阅读" }
             val next = page.opt("next_offset")
             if (next == null || next == JSONObject.NULL) break
@@ -66,7 +67,7 @@ class NovelReadingCache(private val context: Context, private val library: Libra
         }
         val metadata = requireNotNull(first)
         require(rows.size == metadata.getInt("total") && rows.map { it.getString("id") }.distinct().size == rows.size &&
-            rows.map { it.getInt("ordinal") } == rows.indices.toList()) { "目录缺少章节或包含重复章节" }
+            rows.zipWithNext().all { (left, right) -> left.getInt("ordinal") < right.getInt("ordinal") }) { "目录缺少章节或包含重复章节" }
         val result = JSONObject().put("work_id", metadata.getString("work_id")).put("version_id", version)
             .put("title", metadata.getString("title")).put("version_complete", metadata.getBoolean("version_complete"))
             .put("total", rows.size).put("readable_total", rows.count { it.getBoolean("readable") }).put("items", JSONArray(rows))
@@ -88,13 +89,18 @@ class NovelReadingCache(private val context: Context, private val library: Libra
             require(value.optString("schema") == "shadow.novel.reading/v1" && value.optString("version_id") == version &&
                 value.optInt("offset", -1) == offset && value.optInt("total", -1) >= 0 && value.novelObjects("items").size <= limit) { "阅读清单身份不匹配" }
             requireNovelWork(api, c, work, value.getString("work_id"))
-            value.novelObjects("items").forEachIndexed { index, row ->
-                require(row.getInt("ordinal") == offset + index) { "阅读清单章节顺序不匹配" }
+            val items = value.novelObjects("items")
+            require(items.zipWithNext().all { (left, right) -> left.getInt("ordinal") < right.getInt("ordinal") } &&
+                items.map { it.getString("id") }.distinct().size == items.size &&
+                (items.isEmpty() || offset + items.size <= value.getInt("total"))) { "阅读清单章节顺序不匹配" }
+            items.forEachIndexed { index, row ->
+                require(row.isNull("row_offset") || row.getInt("row_offset") == offset + index) { "阅读清单行号不匹配" }
+                row.put("row_offset", offset + index)
                 if (row.getBoolean("readable")) require(row.getString("href") == "chapters/${row.getString("id")}.xhtml") { "阅读清单章节路径不匹配" }
             }
             val key = pagePrefix(novelScope(c), work, version) + offset
             val rows = value.novelObjects("items").map { row -> JSONObject().put("id", row.getString("id")).put("title", row.optString("title"))
-                .put("ordinal", row.getInt("ordinal")).put("readable", row.getBoolean("readable")) }
+                .put("ordinal", row.getInt("ordinal")).put("row_offset", row.novelRowOffset()).put("readable", row.getBoolean("readable")) }
             pageLocks[(key.hashCode() and Int.MAX_VALUE) % pageLocks.size].withLock {
                 val old = pages.catalogPage(key)?.let { JSONObject(it.payload) }
                 if (rows.size >= (old?.novelObjects("items")?.size ?: 0)) {
@@ -111,7 +117,7 @@ class NovelReadingCache(private val context: Context, private val library: Libra
         val directory = savedDirectory(scope, work, version)
         val snapshots = if (directory != null) listOf(directory) else pages.catalogPages(pagePrefix(scope, work, version) + "%").map { JSONObject(it.payload) }
         val total = snapshots.firstOrNull()?.optInt("total") ?: return null
-        val known = snapshots.flatMap { it.novelObjects("items") }.associateBy { it.getInt("ordinal") }
+        val known = snapshots.flatMap { it.novelObjects("items") }.associateBy { it.novelRowOffset() }
         var next = ordinal + direction
         while (next in 0 until total) {
             val row = known[next] ?: return null
@@ -126,7 +132,9 @@ class NovelReadingCache(private val context: Context, private val library: Libra
         requiredChapter: String? = null, allowPartial: Boolean = false): NovelCachedWindow {
         val key = "${novelScope(c)}/$work/$version/$offset/$limit"
         return locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
-            cachedWindow(novelScope(c), work, version, offset, limit)?.let { return@withLock it }
+            cachedWindow(novelScope(c), work, version, offset, limit)
+                ?.takeIf { requiredChapter == null || it.mapping.chapter(requiredChapter) != null }
+                ?.let { return@withLock it }
             var size = limit
             var page = manifest(c, work, version, offset, size)
             var rows = page.novelObjects("items").filter { it.getBoolean("readable") }
@@ -172,6 +180,11 @@ class NovelReadingCache(private val context: Context, private val library: Libra
                     mapping.json.getInt("total") == page.getInt("total") && mapping.json.getInt("limit") == size &&
                     mapping.chapters.map { it.getString("id") } == rows.map { it.getString("id") } &&
                     (requiredChapter == null || mapping.chapter(requiredChapter) != null)) { "阅读包与所选目录不一致" }
+                mapping.chapters.zip(rows).forEach { (chapter, row) ->
+                    require(chapter.getInt("ordinal") == row.getInt("ordinal") &&
+                        (!chapter.has("row_offset") || chapter.getInt("row_offset") == row.novelRowOffset())) { "阅读包目录行号不匹配" }
+                    chapter.put("row_offset", row.novelRowOffset())
+                }
                 withContext(Dispatchers.IO) { mapping.chapters.forEach { row ->
                     ensureActive()
                     try {
@@ -189,7 +202,7 @@ class NovelReadingCache(private val context: Context, private val library: Libra
                     val existing = dao.windows(novelScope(c), work, version)
                     val asset = library.importPrepared(id, novelScope(c), version, page.getString("title"), "epub", temp)
                     val publication = NovelPublicationEntity(id, novelScope(c), work, version, mapping.json.toString(), revision)
-                    dao.putPublication(publication)
+                    dao.putIndexedPublication(publication, memberships(publication, mapping))
                     // Transport windows are one book, rather than a new shelf book for every prefetch.
                     library.dao.seedPersonalState(id)
                     if (existing.any { it.assetId != id && valid(it) }) library.dao.hideCacheWindow(id)
@@ -218,6 +231,51 @@ class NovelReadingCache(private val context: Context, private val library: Libra
         } catch (e: CancellationException) { throw e } catch (_: Exception) { false }
     }
 
+    private fun memberships(publication: NovelPublicationEntity, mapping: NovelPublicationMap) = mapping.chapters.map { chapter ->
+        NovelChapterMembership(publication.assetId, chapter.getString("id"), publication.scope, publication.workId, publication.versionId, chapter.novelRowOffset())
+    }
+
+    private suspend fun indexLegacyWindows(scope: String, work: String, version: String): Int {
+        val legacy = dao.unindexedWindows(scope, work, version)
+        for (window in legacy) {
+            val mapping = runCatching { NovelPublicationMap(JSONObject(window.mappingJson)) }.getOrNull() ?: continue
+            dao.putChapterMemberships(memberships(window, mapping))
+        }
+        return legacy.size
+    }
+
+    suspend fun cachedChapterAt(publication: NovelPublicationEntity, offset: Int): JSONObject? {
+        if (offset < 0) return null
+        indexLegacyWindows(publication.scope, publication.workId, publication.versionId)
+        for (candidate in dao.chapterAssetsAt(publication.scope, publication.workId, publication.versionId, offset)) {
+            val window = dao.publication(candidate.assetId) ?: continue
+            if (valid(window)) return NovelPublicationMap(JSONObject(window.mappingJson)).chapter(candidate.chapterId)
+        }
+        return null
+    }
+
+    suspend fun chapterWindows(scope: String, work: String, version: String, ids: List<String>, verify: Boolean = false): Map<String, NovelPublicationEntity> {
+        if (ids.isEmpty()) return emptyMap()
+        val legacy = indexLegacyWindows(scope, work, version)
+        val candidates = dao.chapterAssets(scope, work, version, ids)
+        val result = mutableMapOf<String, NovelPublicationEntity>()
+        for ((assetId, matches) in candidates.groupBy { it.assetId }) {
+            if (matches.all { it.chapterId in result }) continue
+            val window = dao.publication(assetId) ?: continue
+            if (valid(window, verify)) matches.forEach { result.putIfAbsent(it.chapterId, window) }
+        }
+        if (legacy == 32 && ids.any { it !in result }) {
+            // Only an unfinished migration can hide an older overlapping window.
+            for (window in dao.windows(scope, work, version)) {
+                val mapping = runCatching { NovelPublicationMap(JSONObject(window.mappingJson)) }.getOrNull() ?: continue
+                val missing = ids.filter { it !in result && mapping.chapter(it) != null }
+                if (missing.isNotEmpty() && valid(window, verify)) missing.forEach { result[it] = window }
+                if (result.size == ids.distinct().size) break
+            }
+        }
+        return result
+    }
+
     suspend fun chapters(scope: String, work: String, version: String, verify: Boolean = false): List<JSONObject> = dao.windows(scope, work, version)
         .filter { valid(it, verify) }
         .flatMap { NovelPublicationMap(JSONObject(it.mappingJson)).chapters }.distinctBy { it.getString("id") }.sortedBy { it.getInt("ordinal") }
@@ -238,7 +296,7 @@ class NovelReadingCache(private val context: Context, private val library: Libra
             val next = page.getInt("next_offset")
             require(next > start) { "预取目录未前进" }; start = next
         }
-        val cached = chapters(publication.scope, publication.workId, publication.versionId).map { it.getString("id") }.toSet()
+        val cached = chapterWindows(publication.scope, publication.workId, publication.versionId, wanted.map { it.getString("id") })
         var failure: Exception? = null
         for ((index, row) in wanted.withIndex()) {
             currentCoroutineContext().ensureActive()
@@ -246,7 +304,7 @@ class NovelReadingCache(private val context: Context, private val library: Libra
             try {
                 if (row.getString("id") !in cached) {
                     com.shadow.media.network.ResourceScheduler.process.run(com.shadow.media.network.ResourcePriority.ADJACENT) {
-                        window(c, publication.workId, publication.versionId, row.getInt("ordinal"), 1, row.getString("id"))
+                        window(c, publication.workId, publication.versionId, row.novelRowOffset(), 1, row.getString("id"))
                     }
                 }
                 // Make the immediate next chapter renderable before fetching farther chapters.

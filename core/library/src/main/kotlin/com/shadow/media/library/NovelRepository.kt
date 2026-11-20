@@ -120,7 +120,70 @@ class NovelRepository(private val context: Context, private val library: Library
         }
     }
 
+    private suspend fun chapterOffset(c: CatalogConnection, workId: String, versionId: String, chapterId: String, complete: List<JSONObject>): Int {
+        val scope = novelScope(c)
+        val saved = cache.savedDirectory(scope, workId, versionId)?.novelObjects("items").orEmpty()
+        for (rows in listOf(complete, saved)) {
+            val exact = rows.indexOfFirst { it.getString("id") == chapterId && it.optBoolean("readable") }
+            if (exact >= 0) return exact
+        }
+        val path = listOf("works", workId, "contents")
+        val fixed = listOf("version_id" to versionId, "order" to "asc")
+        try {
+            val anchored = live(c, path, fixed + listOf("anchor_id" to chapterId, "limit" to "1"))
+            val offset = anchored.optInt("offset", -1)
+            if (offset >= 0 && anchored.optString("version_id") == versionId &&
+                anchored.novelObjects("items").singleOrNull()?.let { it.getString("id") == chapterId && it.optBoolean("readable") } == true) return offset
+        } catch (e: NovelApiException) {
+            if (e.status !in setOf(400, 404, 422)) throw e
+        }
+        var offset = 0
+        repeat(500) {
+            val page = cache.manifest(c, workId, versionId, offset, 200)
+            page.novelObjects("items").firstOrNull { it.getString("id") == chapterId && it.optBoolean("readable") }
+                ?.let { return it.novelRowOffset() }
+            offset = novelContentsNext(page) ?: error("章节不属于所选版本")
+        }
+        error("目录过长，未能定位所选章节")
+    }
+
+    suspend fun adjacentChapter(publication: NovelPublicationEntity, offset: Int, direction: Int): JSONObject? {
+        require(direction in listOf(-1, 1))
+        val scope = publication.scope
+        val work = publication.workId
+        val version = publication.versionId
+        cache.adjacent(scope, work, version, offset, direction)?.let { return it.chapter }
+        cache.cachedChapterAt(publication, offset + direction)?.let { return it }
+        val mapping = NovelPublicationMap(JSONObject(publication.mappingJson))
+        val total = mapping.json.getInt("total")
+        var edge = offset + direction
+        while (edge in 0 until total) {
+            val start = if (direction > 0) edge else (edge - 99).coerceAtLeast(0)
+            val count = if (direction > 0) minOf(100, total - edge) else edge - start + 1
+            val page = cache.manifest(connection(scope), work, version, start, count)
+            val rows = page.novelObjects("items")
+            check(rows.size == count) { "目录页不完整" }
+            (if (direction > 0) rows else rows.asReversed()).firstOrNull { it.optBoolean("readable") }?.let { return it }
+            edge = if (direction > 0) start + count else start - 1
+        }
+        return null
+    }
+
     data class Prepared(val asset: LibraryAssetEntity, val locator: String?)
+
+    suspend fun bookmarkTarget(assetId: String, locator: String): Prepared {
+        val publication = dao.publication(assetId)
+        val asset = library.dao.asset(assetId)
+        if (publication == null) return Prepared(requireNotNull(asset) { "书签对应文件已移除" }, locator)
+        val position = JSONObject(locator)
+        val mapping = NovelPublicationMap(JSONObject(publication.mappingJson))
+        val chapter = mapping.chapterForHref(position.optString("href"))?.getString("id")
+            ?: error("书签未包含有效章节")
+        val target = cachedChapter(publication.scope, publication.workId, publication.versionId, chapter)
+            ?: prepare(connection(publication.scope), publication.workId, publication.versionId, chapter)
+        return target.copy(locator = locator)
+    }
+
     /** A logical shelf card can point at an older window; resume the work's newest local locator. */
     suspend fun resumeCached(publication: NovelPublicationEntity): Prepared? {
         val position = dao.state(stateId(publication.scope, publication.workId))?.localPosition
@@ -140,8 +203,7 @@ class NovelRepository(private val context: Context, private val library: Library
     }
 
     suspend fun cachedChapter(scope: String, workId: String, versionId: String, chapterId: String): Prepared? {
-        val existing = dao.publications(scope).firstOrNull { it.workId == workId && it.versionId == versionId &&
-            NovelPublicationMap(JSONObject(it.mappingJson)).chapter(chapterId) != null && library.dao.asset(it.assetId)?.let { asset -> runCatching { library.localFile(asset).isFile }.getOrDefault(false) } == true } ?: return null
+        val existing = cache.chapterWindows(scope, workId, versionId, listOf(chapterId), verify = true)[chapterId] ?: return null
         val mapping = NovelPublicationMap(JSONObject(existing.mappingJson))
         return Prepared(requireNotNull(library.dao.asset(existing.assetId)), mapping.locator(JSONObject().put("version_id", versionId).put("chapter_id", chapterId).put("ratio", 0))?.toString())
     }
@@ -184,10 +246,8 @@ class NovelRepository(private val context: Context, private val library: Library
         val remote = open.optJSONObject("position")
         if (chapterId == null && open.optString("quality") != "exact" && !open.optBoolean("offset_preserved")) throw NovelVersionSelectionRequired(workId, selectedVersion)
         val chosen = chapterId ?: remote?.optString("chapter_id")?.takeIf(String::isNotBlank) ?: open.getString("first_chapter_id")
-        val chapters = open.novelObjects("chapters")
-        val offset = if (open.has("chapter_ordinal") && !open.isNull("chapter_ordinal")) open.getInt("chapter_ordinal")
-            else chapters.indexOfFirst { it.getString("id") == chosen && it.optBoolean("readable") }
-        require(offset >= 0) { "章节不属于所选版本" }
+        val offset = open.optInt("chapter_offset", -1).takeIf { it >= 0 }
+            ?: chapterOffset(c, workId, selectedVersion, chosen, open.novelObjects("chapters"))
         val cached = try { cache.window(c, workId, selectedVersion, offset, 1, chosen) }
         catch (e: NovelCachedChapterUnreadable) {
             if (e.chapterId == chosen) throw e

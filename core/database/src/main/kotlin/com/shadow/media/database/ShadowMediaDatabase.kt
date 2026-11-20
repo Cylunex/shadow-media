@@ -30,9 +30,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         UserCollectionEntity::class, WorkEntity::class, RenditionEntity::class, PlaylistExportEntity::class, CatalogPageEntity::class, RemoteUserStateEntity::class,
         ResourceTaskEntity::class, CatalogScopeEntity::class, CatalogEntryEntity::class,
         AudioChapterEntity::class, MusicTrackEntity::class, MusicListeningEntity::class, MusicPlaylistEntity::class, MusicPlaylistEntryEntity::class,
-        NovelPublicationEntity::class, NovelReadingStateEntity::class, LocalShelfMetadataEntity::class,
+        NovelPublicationEntity::class, NovelChapterMembership::class, NovelReadingStateEntity::class, LocalShelfMetadataEntity::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = true,
 )
 abstract class ShadowMediaDatabase : RoomDatabase() {
@@ -54,7 +54,17 @@ abstract class ShadowMediaDatabase : RoomDatabase() {
                 context.applicationContext,
                 ShadowMediaDatabase::class.java,
                 "shadow-media.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12).build().also { instance = it }
+        }
+
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""CREATE TABLE IF NOT EXISTS novel_chapter_memberships (
+                    assetId TEXT NOT NULL, chapterId TEXT NOT NULL, scope TEXT NOT NULL, workId TEXT NOT NULL, versionId TEXT NOT NULL, rowOffset INTEGER NOT NULL,
+                    PRIMARY KEY(assetId, chapterId), FOREIGN KEY(assetId) REFERENCES novel_publications(assetId) ON UPDATE NO ACTION ON DELETE CASCADE)""")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_novel_chapter_memberships_scope_workId_versionId_chapterId ON novel_chapter_memberships(scope, workId, versionId, chapterId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_novel_chapter_memberships_scope_workId_versionId_rowOffset ON novel_chapter_memberships(scope, workId, versionId, rowOffset)")
+            }
         }
 
         val MIGRATION_10_11 = object : Migration(10, 11) {

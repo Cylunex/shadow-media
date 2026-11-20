@@ -1,6 +1,7 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 package com.shadow.media.reading
 
+import com.shadow.media.library.novelRowOffset
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.os.Bundle
@@ -52,6 +53,21 @@ class NativeTextReaderActivity : ComponentActivity() {
             ReaderSettingsStore(getSharedPreferences("reader_preferences", MODE_PRIVATE)))
     }
     private var style by mutableStateOf(ReaderSettings())
+    private val scriptConverter by lazy { ChineseDisplayConverter(assets) }
+    private var chineseDisplay by mutableStateOf(ChineseDisplay.ORIGINAL)
+
+    private fun storedChineseDisplay(key: String): ChineseDisplay {
+        val stored = getSharedPreferences("reading_script", MODE_PRIVATE).getString(key, null)
+        return ChineseDisplay.entries.firstOrNull { it.name == stored } ?: ChineseDisplay.ORIGINAL
+    }
+
+    private fun changeChineseDisplay(mode: ChineseDisplay) = navigate(flushProgress = false) {
+        val item = requireNotNull(asset)
+        val position = chapter?.locator(offset)
+        val key = readerBookSettingsKey(item.id, publication)
+        getSharedPreferences("reading_script", MODE_PRIVATE).edit().putString(key, mode.name).apply()
+        open(item, position)
+    }
     private var asset by mutableStateOf<LibraryAssetEntity?>(null)
     private var publication by mutableStateOf<NovelPublicationEntity?>(null)
     private var chapter by mutableStateOf<NativeTextChapter?>(null)
@@ -114,7 +130,8 @@ class NativeTextReaderActivity : ComponentActivity() {
                 if (playing.error != null) message = playing.error
                 val locator = playing.locator?.let(::JSONObject) ?: return@collectLatest
                 narrationChapter = locator.optJSONObject("native_text")?.optString("chapter_id")
-                narrationOffset = locator.optJSONObject("native_text")?.optInt("offset") ?: 0
+                narrationOffset = chapter?.takeIf { it.ref.id == narrationChapter }?.restore(locator)
+                    ?: locator.optJSONObject("native_text")?.optInt("offset") ?: 0
                 if (!followNarration || !lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) return@collectLatest
                 if (chapter?.ref?.id != narrationChapter && !busy) open(item, locator)
                 if (chapter?.ref?.id == narrationChapter) {
@@ -145,7 +162,10 @@ class NativeTextReaderActivity : ComponentActivity() {
         openPrepared(PreparedChapter(item, pub, content), locator, lastPage, savePosition)
     }
     private suspend fun openPrepared(prepared: PreparedChapter, locator: JSONObject?, lastPage: Boolean = false, savePosition: Boolean = false) {
-        val (item, pub, content) = prepared
+        val (item, pub, raw) = prepared
+        val display = storedChineseDisplay(readerBookSettingsKey(item.id, pub))
+        val content = scriptConverter.chapter(raw, display)
+        chineseDisplay = display
         val restored = if (lastPage) content.text.length else content.restore(locator)
         val sameWork = pub != null && pub.scope == publication?.scope && pub.workId == publication?.workId
         if (pub != null && !sameWork) novel.beginReading(pub, locator ?: content.locator(restored))
@@ -168,7 +188,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         pendingShow = Triple(content, item.title, restored)
         acquiring = false
         view?.let { it.isEnabled = false; it.show(content, item.title, restored, style); pendingShow = null }
-        prefetchFollowing(pub, content.ref.ordinal)
+        prefetchFollowing(pub, content.ref.rowOffset)
         val hints = getSharedPreferences("reader_hints", MODE_PRIVATE)
         if (!hints.getBoolean("gestures", false)) {
             message = "轻点中间打开菜单，左右两侧翻页；长按文字可选句。更多中可再次查看手势帮助。"
@@ -199,29 +219,29 @@ class NativeTextReaderActivity : ComponentActivity() {
                 val local = source.local(item)
                 for (direction in listOf(1, -1)) local.getOrNull(ordinal + direction)?.let { raw ->
                     val warmed = warmedChapters[direction]?.takeIf { it.content.ref.id == raw.ref.id }
-                    if (warmed != null) view?.prepareChapter(warmed.content)
+                    if (warmed != null) view?.prepareChapter(scriptConverter.chapter(warmed.content, chineseDisplay))
                     else {
                         val content = source.chapter(item, null, raw.ref.href)
                         warmedChapters[direction] = PreparedChapter(item, null, content)
-                        view?.prepareChapter(content)
+                        view?.prepareChapter(scriptConverter.chapter(content, chineseDisplay))
                     }
                 }
             } else {
                 val mapping = NovelPublicationMap(JSONObject(pub.mappingJson))
                 for (direction in listOf(1, -1)) {
-                    val row = mapping.chapters.firstOrNull { it.optInt("ordinal") == ordinal + direction }
+                    val row = mapping.chapters.firstOrNull { it.novelRowOffset() == ordinal + direction }
                         ?: novel.cache.adjacent(pub.scope, pub.workId, pub.versionId, ordinal, direction)?.chapter
-                        ?: novel.cachedContents(pub).firstOrNull { it.optInt("ordinal") == ordinal + direction }
+                        ?: novel.cache.cachedChapterAt(pub, ordinal + direction)
                         ?: continue
                     val id = row.getString("id")
                     val warmed = warmedChapters[direction]?.takeIf { it.content.ref.id == id }
-                    if (warmed != null) { view?.prepareChapter(warmed.content); continue }
+                    if (warmed != null) { view?.prepareChapter(scriptConverter.chapter(warmed.content, chineseDisplay)); continue }
                     val prepared = if (mapping.chapter(id) != null) NovelRepository.Prepared(item, null)
                         else novel.cachedChapter(pub.scope, pub.workId, pub.versionId, id) ?: continue
                     val window = novel.dao.publication(prepared.asset.id) ?: continue
                     val content = source.chapter(prepared.asset, window, "chapters/$id.xhtml")
                     warmedChapters[direction] = PreparedChapter(prepared.asset, window, content)
-                    view?.prepareChapter(content)
+                    view?.prepareChapter(scriptConverter.chapter(content, chineseDisplay))
                 }
             }
         } catch (e: CancellationException) { throw e }
@@ -234,7 +254,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         if (!user || busy || narrating) return
         val content = chapter ?: return
         val locator = content.locator(value)
-        val fraction = (content.ref.ordinal + value.toDouble() / content.text.length.coerceAtLeast(1)) / content.total.coerceAtLeast(1)
+        val fraction = (content.ref.rowOffset + value.toDouble() / content.text.length.coerceAtLeast(1)) / content.total.coerceAtLeast(1)
         session?.let { ProgressWriter.save(library, it, "text", locator, fraction, publication == null && value >= content.text.length - 1 && content.ref.ordinal == content.total - 1) }
         if (publication != null) {
             sync?.cancel(); sync = lifecycleScope.launch { delay(1000); ProgressWriter.flush(); NovelRepository.schedule(this@NativeTextReaderActivity) }
@@ -261,7 +281,8 @@ class NativeTextReaderActivity : ComponentActivity() {
     }
     private fun jumpTo(target: NativeReaderLocation) = navigate {
         val origin = location()
-        open(requireNotNull(library.dao.asset(target.assetId)) { "跳转对应内容已移除" }, JSONObject(target.locator), savePosition = true)
+        val prepared = novel.bookmarkTarget(target.assetId, target.locator)
+        open(prepared.asset, JSONObject(prepared.locator ?: target.locator), savePosition = true)
         jumpHistory = jumpHistory.remember(origin, location())
         closePanel()
     }
@@ -269,7 +290,8 @@ class NativeTextReaderActivity : ComponentActivity() {
         val target = jumpHistory.locations.lastOrNull()
         if (target == null) { busy = false; view?.isEnabled = true }
         else {
-            open(requireNotNull(library.dao.asset(target.assetId)) { "原位置对应内容已移除" }, JSONObject(target.locator), savePosition = true)
+            val prepared = novel.bookmarkTarget(target.assetId, target.locator)
+            open(prepared.asset, JSONObject(prepared.locator ?: target.locator), savePosition = true)
             jumpHistory = NativeJumpHistory(jumpHistory.locations.dropLast(1))
             closePanel()
         }
@@ -293,7 +315,7 @@ class NativeTextReaderActivity : ComponentActivity() {
     private var saveAfterLayout = false
     private fun boundary(direction: Int) = navigate(flushProgress = false) {
         val current = requireNotNull(chapter)
-        val next = adjacent(current.ref.ordinal, direction)
+        val next = adjacent(current.ref.rowOffset, direction)
         if (next == null) {
             busy = false; view?.isEnabled = true
             if (direction > 0 && publication == null) view?.seek(current.text.length)
@@ -302,7 +324,7 @@ class NativeTextReaderActivity : ComponentActivity() {
     }
     private fun skipChapter(direction: Int) = navigate(flushProgress = false) {
         val origin = location()
-        val next = adjacent(requireNotNull(chapter).ref.ordinal, direction)
+        val next = adjacent(requireNotNull(chapter).ref.rowOffset, direction)
         if (next == null) {
             busy = false; view?.isEnabled = true
             message = if (direction > 0) "已到本书末尾" else "已到本书开头"
@@ -313,24 +335,14 @@ class NativeTextReaderActivity : ComponentActivity() {
         }
     }
     private suspend fun adjacent(ordinal: Int, direction: Int): NativeChapterRef? {
-        warmedChapters[direction]?.takeIf { chapter?.ref?.ordinal == ordinal }?.let { return it.content.ref }
+        warmedChapters[direction]?.takeIf { chapter?.ref?.rowOffset == ordinal }?.let { return it.content.ref }
         val pub = publication ?: return source.local(requireNotNull(asset)).getOrNull(ordinal + direction)?.ref
         val mapping = NovelPublicationMap(JSONObject(pub.mappingJson))
-        if (direction < 0 && ordinal == 0 || direction > 0 && ordinal >= mapping.json.getInt("total") - 1) return null
-        mapping.chapters.map(::ref).firstOrNull { it.readable && it.ordinal == ordinal + direction }?.let { return it }
-        val cached = novel.cachedContents(pub).map(::ref)
-        cached.firstOrNull { it.readable && it.ordinal == ordinal + direction }?.let { return it }
-        novel.cache.adjacent(pub.scope, pub.workId, pub.versionId, ordinal, direction)?.let { return it.chapter?.let(::ref) }
-        var start = if (direction > 0) ordinal + 1 else (ordinal - 100).coerceAtLeast(0)
-        while (true) {
-            val page = novel.get(novel.connection(pub.scope), listOf("works", pub.workId, "contents"), listOf("version_id" to pub.versionId, "offset" to start.toString(), "limit" to "100"))
-            val candidates = page.novelObjects("items").map(::ref).filter { it.readable && if (direction > 0) it.ordinal > ordinal else it.ordinal < ordinal }
-            (if (direction > 0) candidates.firstOrNull() else candidates.lastOrNull())?.let { return it }
-            if (direction > 0) { start += 100; if (start >= page.optInt("total")) return null }
-            else { if (start == 0) return null; start = (start - 100).coerceAtLeast(0) }
-        }
+        mapping.chapters.firstOrNull { it.novelRowOffset() == ordinal + direction }?.let { return ref(it) }
+        return novel.adjacentChapter(pub, ordinal, direction)?.let(::ref)
     }
-    private fun ref(json: JSONObject) = NativeChapterRef(json.getString("id"), json.optString("title"), json.getInt("ordinal"), "chapters/${json.getString("id")}.xhtml", json.optBoolean("readable", true))
+    private fun ref(json: JSONObject) = NativeChapterRef(json.getString("id"), json.optString("title"), json.getInt("ordinal"),
+        "chapters/${json.getString("id")}.xhtml", json.optBoolean("readable", true), json.novelRowOffset())
     private fun update(value: ReaderSettings) {
         if (value.leftHanded != style.leftHanded) message = if (value.leftHanded) "左手点击：左侧下一页，中央菜单，右侧上一页" else "常规点击：左侧上一页，中央菜单，右侧下一页"
         style = value.normalized(); store.save(style); view?.configure(style); applyWindow() }
@@ -561,6 +573,12 @@ class NativeTextReaderActivity : ComponentActivity() {
                                     TextButton(onClick = { store.followDefaults(); style = store.load(); view?.configure(style); applyWindow() }) { Text("跟随默认") }
                                     TextButton(onClick = { store.makeDefault(style) }) { Text("设为默认排版") }
                                 }
+                                FlowRow {
+                                    ChineseDisplay.entries.forEach { display ->
+                                        FilterChip(chineseDisplay == display, { if (chineseDisplay != display) changeChineseDisplay(display) },
+                                            label = { Text(display.label) })
+                                    }
+                                }
                                 ReaderPreferencesPanel(style, ::update, nativeText = true,
                                 importFont = { fontPicker.launch(arrayOf("font/*", "application/x-font-ttf", "application/vnd.ms-opentype", "application/octet-stream")) }, encoding = if (asset?.format == "txt") ({
                                 Text("文本编码：${asset?.let { library.textEncoding(it.id) }}")
@@ -612,7 +630,7 @@ class NativeTextReaderActivity : ComponentActivity() {
                 }
             }
             excerpt?.let { (text, position) -> AlertDialog(onDismissRequest = { excerpt = null }, title = { Text("摘录") }, text = { androidx.compose.foundation.text.selection.SelectionContainer { Text(if (text.length > 1000) "最多保存 1000 字，请返回缩短选区。\n\n$text" else text) } },
-                confirmButton = { TextButton(enabled = !savingMark && text.length <= 1000, onClick = { chapter?.let { mark(it.locator(position).put("selection_end", position + text.length), text) } }) { Text("保存摘录") } },
+                confirmButton = { TextButton(enabled = !savingMark && text.length <= 1000, onClick = { chapter?.let { mark(it.locator(position).put("selection_end", it.canonicalOffset(position + text.length, end = true)), text) } }) { Text("保存摘录") } },
                 dismissButton = { TextButton(onClick = { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("正文", text)); message = "已复制正文"; excerpt = null }) { Text("复制") } }) }
         }
     }
@@ -627,7 +645,7 @@ class NativeTextReaderActivity : ComponentActivity() {
         return super.onKeyDown(keyCode, event)
     }
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean = if (style.volumeToTurn && !menu && panel == null && excerpt == null && !narrating && keyCode in setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN)) true else super.onKeyUp(keyCode, event)
-    override fun onStart() { super.onStart(); chapter?.let { prefetchFollowing(publication, it.ref.ordinal) } }
+    override fun onStart() { super.onStart(); chapter?.let { prefetchFollowing(publication, it.ref.rowOffset) } }
     override fun onStop() { prefetch?.cancel(); warmedChapters.clear(); view?.pause(); if (publication != null) lifecycleScope.launch { ProgressWriter.flush(); NovelRepository.schedule(this@NativeTextReaderActivity) }; super.onStop() }
     override fun onDestroy() { view?.dispose(); view = null; super.onDestroy() }
 

@@ -87,40 +87,81 @@ internal fun MdcScreen(viewModel: MainViewModel) {
         finally { busy = false }
     }
     DisposableEffect(loader) { onDispose { loader?.shutdown() } }
+    var facetJob by remember { mutableStateOf<Job?>(null) }
+    var actorJob by remember { mutableStateOf<Job?>(null) }
+    var facetError by remember { mutableStateOf<String?>(null) }
+    var actorError by remember { mutableStateOf<String?>(null) }
+    var loadedFilters by remember { mutableStateOf<org.json.JSONObject?>(null) }
+
+    fun loadFacets(p: MdcMediaProvider, filters: org.json.JSONObject) {
+        facetJob?.cancel()
+        facetError = null
+        facetJob = scope.launch {
+            try {
+                val result = p.facets(filters)
+                ensureActive()
+                facetData = result
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { facetError = e.message ?: "筛选统计暂不可用" }
+        }
+    }
+
+    fun loadActor(p: MdcMediaProvider, id: String) {
+        actorJob?.cancel()
+        actorError = null
+        actorProfile = null
+        if (id.isBlank()) return
+        actorJob = scope.launch {
+            try {
+                val result = p.person(id)
+                ensureActive()
+                actorProfile = result
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { actorError = e.message ?: "演员资料暂不可用" }
+        }
+    }
+
     fun load(next: String? = null) {
         val previous = job
         previous?.cancel()
+        val p = provider ?: return
+        val requestedWork = workId
+        val requestedMode = mode
+        val requestedPlaylist = selectedPlaylist
+        val requestedActor = actor
         if (next == null) submittedQuery = query
+        val filters = if (next != null) {
+            org.json.JSONObject(loadedFilters?.toString() ?: return).put("cursor", next)
+        } else org.json.JSONObject().apply {
+            put("q", submittedQuery).put("sort", sort).put("unknown_year", unknownYear).put("status", status)
+            for ((key, value) in listOf("genres" to genre, "forms" to form, "regions" to region, "organizations" to studio,
+                "series" to series, "labels" to label, "platforms" to platform, "tags" to tag, "actors" to requestedActor)) {
+                if (value.isNotBlank()) put(key, org.json.JSONArray().put(value))
+            }
+            (year.toIntOrNull() ?: decade.toIntOrNull())?.let { put("year_from", it).put("year_to", if (year.isNotBlank()) it else it + 9) }
+        }
+        if (next == null && requestedWork == null) {
+            facetJob?.cancel()
+            actorJob?.cancel()
+            if (requestedMode == "works") {
+                facetData = org.json.JSONObject()
+                loadFacets(p, filters)
+                loadActor(p, requestedActor)
+            }
+        }
         job = scope.launch {
             previous?.join()
             busy = true; error = null
             try {
-                val p = provider ?: return@launch
-                if (workId != null) detail = p.detail(com.shadow.media.model.MediaKey(p.descriptor.id, workId!!)).item
-                else if (mode == "playlists") {
+                if (requestedWork != null) detail = p.detail(com.shadow.media.model.MediaKey(p.descriptor.id, requestedWork)).item
+                else if (requestedMode == "playlists") {
                     playlists = p.playlists()
-                    if (selectedPlaylist.isNotBlank()) playlistWorks = p.playlistWorks(selectedPlaylist)
+                    if (requestedPlaylist.isNotBlank()) playlistWorks = p.playlistWorks(requestedPlaylist)
                 } else {
-                    val filters = org.json.JSONObject().put("q", submittedQuery).put("sort", sort)
-                    filters.put("unknown_year", unknownYear).put("status", status)
-                    if (genre.isNotBlank()) filters.put("genres", org.json.JSONArray().put(genre))
-                    if (form.isNotBlank()) filters.put("forms", org.json.JSONArray().put(form))
-                    if (region.isNotBlank()) filters.put("regions", org.json.JSONArray().put(region))
-                    decade.toIntOrNull()?.let { filters.put("year_from", it).put("year_to", it + 9) }
-                    year.toIntOrNull()?.let { filters.put("year_from", it).put("year_to", it) }
-                    if (studio.isNotBlank()) filters.put("organizations", org.json.JSONArray().put(studio))
-                    if (series.isNotBlank()) filters.put("series", org.json.JSONArray().put(series))
-                    if (label.isNotBlank()) filters.put("labels", org.json.JSONArray().put(label))
-                    if (platform.isNotBlank()) filters.put("platforms", org.json.JSONArray().put(platform))
-                    if (tag.isNotBlank()) filters.put("tags", org.json.JSONArray().put(tag))
-                    if (actor.isNotBlank()) filters.put("actors", org.json.JSONArray().put(actor))
-                    if (next != null) filters.put("cursor", next)
                     val (page, count) = p.catalog(filters)
-                    if (next == null) facetData = p.facets(filters)
-                    if (actor.isNotBlank() && next == null) actorProfile = p.person(actor)
-                    else if (actor.isBlank()) actorProfile = null
                     ensureActive()
                     rows = if (next == null) page.items else (rows + page.items).distinctBy { it.key }
+                    if (next == null) loadedFilters = filters
                     cursor = page.nextPageToken
                     total = count
                 }
@@ -128,6 +169,34 @@ internal fun MdcScreen(viewModel: MainViewModel) {
             catch (e: Exception) { error = e.message }
             finally { busy = false }
         }
+    }
+    var peopleCursor by remember { mutableStateOf<String?>(null) }
+    var peopleError by remember { mutableStateOf<String?>(null) }
+    var peopleBusy by remember { mutableStateOf(false) }
+    var peopleGeneration by remember { mutableIntStateOf(0) }
+    var peoplePageJob by remember { mutableStateOf<Job?>(null) }
+    suspend fun loadPeoplePage(p: MdcMediaProvider, term: String, cursor: String?, generation: Int) {
+        peopleBusy = true
+        peopleError = null
+        try {
+            val page = p.peoplePage(term, cursor)
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (generation != peopleGeneration) return
+            people = if (cursor == null) page.items else (people + page.items).distinctBy { it.id }
+            peopleCursor = page.next
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { if (generation == peopleGeneration) peopleError = e.message ?: "演员目录读取失败" }
+        finally { if (generation == peopleGeneration) peopleBusy = false }
+    }
+    LaunchedEffect(provider, mode, query) {
+        peoplePageJob?.cancel()
+        val generation = ++peopleGeneration
+        peopleCursor = null
+        if (mode != "actors") return@LaunchedEffect
+        val p = provider ?: return@LaunchedEffect
+        people = emptyList()
+        delay(180)
+        loadPeoplePage(p, query.trim(), null, generation)
     }
     LaunchedEffect(provider, workId) { if (provider != null) load() }
     fun back() {
@@ -215,17 +284,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                     Row {
                         TextButton(onClick = { mode = "works"; actor = ""; query = ""; load() }) { Text("全部作品") }
                         TextButton(enabled = !busy, onClick = { mode = "playlists"; load() }) { Text("我的片单") }
-                        TextButton(enabled = !busy, onClick = {
-                            mode = "actors"
-                            job?.cancel()
-                            job = scope.launch {
-                                busy = true; error = null
-                                try { people = provider!!.people() }
-                                catch (e: CancellationException) { throw e }
-                                catch (e: Exception) { error = e.message }
-                                finally { busy = false }
-                            }
-                        }) { Text("演员库") }
+                        TextButton(enabled = !busy, onClick = { mode = "actors"; query = "" }) { Text("演员库") }
                     }
                     if (mode == "works" && actor.isNotBlank()) actorProfile?.let { profile ->
                         Text(profile.optString("name"), style = MaterialTheme.typography.headlineSmall)
@@ -255,7 +314,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                             }
                         }
                     }
-                    OutlinedTextField(query, { query = it }, label = { Text("番号、标题或演员") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(query, { query = it }, label = { Text(if (mode == "actors") "搜索演员姓名或别名" else "番号、标题或演员") }, modifier = Modifier.fillMaxWidth())
                     if (mode == "works") {
                     Text("$total 部作品", style = MaterialTheme.typography.titleSmall)
                     TextButton(onClick = { expandedFilters = !expandedFilters }) { Text(if (expandedFilters) "收起筛选" else "分类与筛选") }
@@ -300,6 +359,14 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                             }
                         }
                     }
+                    if (facetError != null) TextButton(onClick = {
+                        val p = provider
+                        val current = loadedFilters
+                        if (p != null && current != null) loadFacets(p, current)
+                    }) { Text("重试筛选统计") }
+                    if (actorError != null && actor.isNotBlank()) TextButton(onClick = {
+                        provider?.let { loadActor(it, actor) }
+                    }) { Text("重试演员资料") }
                     MdcTagFilters(facetData.optJSONArray("tags"), tag) { tag = it; load() }
                     Row {
                         Checkbox(unknownYear, { unknownYear = it; year = ""; decade = ""; load() })
@@ -353,9 +420,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                         }
                     }
                 }
-                if (mode == "actors") items(people.filter {
-                    (it.name + it.aliases.joinToString()).contains(query, ignoreCase = true)
-                }, key = { it.id }) { person ->
+                if (mode == "actors") items(people, key = { it.id }) { person ->
                     Card(onClick = { actor = person.id; mode = "works"; query = ""; actorProfile = null; load() }) {
                         Column(Modifier.padding(16.dp)) {
                             if (loader != null) MdcArtwork(person.imageUrl, person.name, loader,
@@ -365,6 +430,15 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                             Text("${person.workCount} 部作品")
                         }
                     }
+                }
+                if (mode == "actors" && (peopleCursor != null || peopleError != null || peopleBusy)) item(span = { GridItemSpan(maxLineSpan) }) {
+                    if (peopleBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    else TextButton(onClick = {
+                        val p = provider ?: return@TextButton
+                        val generation = peopleGeneration
+                        val next = peopleCursor.takeIf { peopleError == null }
+                        peoplePageJob = scope.launch { loadPeoplePage(p, query.trim(), next, generation) }
+                    }) { Text(if (peopleError == null) "加载更多演员" else "重试演员目录") }
                 }
                 if (mode == "works") {
                 items(rows, key = { it.key.stableId }) { item ->

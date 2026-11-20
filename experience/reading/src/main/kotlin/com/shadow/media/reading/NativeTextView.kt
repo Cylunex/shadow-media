@@ -172,7 +172,7 @@ internal class NativeTextView(context: Context) : View(context) {
     private var layoutJob: Job? = null
     private val layouts = NativeTextLayoutCache(scope)
     private fun layoutCacheKey(content: NativeTextChapter, w: Int, h: Int, style: ReaderSettings) =
-        "${content.version}:${content.ref.id}:${content.textHash}:${content.ref.title}:${content.total}:$w:$h:${layoutKey(style)}"
+        "${content.version}:${content.ref.id}:${content.layoutHash}:${content.ref.title}:${content.total}:$w:$h:${layoutKey(style)}"
 
     /** Warm only adjacent text layouts, never page bitmaps or reading progress. Called on Main. */
     suspend fun prepareChapter(content: NativeTextChapter) {
