@@ -240,6 +240,7 @@ class AppContainer(private val application: Application) {
 /** Shared with resume so historical external-provider keys remain usable after an update. */
 internal fun externalHistoryKey(sourceId: String, itemId: String, cached: Boolean = false): MediaKey {
     val nativeScope = cached || sourceId == "local-video" || sourceId.startsWith("catalog:") ||
-        sourceId.startsWith("emby:") || sourceId.startsWith("storage:") || sourceId.startsWith("live:")
+        sourceId.startsWith("emby:") || sourceId.startsWith("storage:") || sourceId.startsWith("live:") ||
+        sourceId.startsWith("mdc-tvbox:")
     return MediaKey(if (nativeScope) sourceId else "external:$sourceId", itemId)
 }

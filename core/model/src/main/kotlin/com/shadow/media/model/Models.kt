@@ -424,6 +424,7 @@ data class PlaybackCandidate(
     val subtitles: List<ExternalSubtitle> = emptyList(),
     /** Candidate-specific source used when PlaybackInfo exposes multiple versions. */
     val mediaSourceId: String? = null,
+    val mimeType: String? = null,
 )
 
 data class PlaybackPlan(

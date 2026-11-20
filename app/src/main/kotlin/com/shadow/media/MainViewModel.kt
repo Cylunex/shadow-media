@@ -881,7 +881,8 @@ class MainViewModel(
             try {
                 aggregateSearchEngine.searchSnapshots(
                     providerRegistry.providers.first().filterNot {
-                        it is MdcMediaProvider && !it.connection.includeInSearch
+                        (it is MdcMediaProvider && !it.connection.includeInSearch) ||
+                            (it is MdcTvBoxProvider && !it.includeInSearch)
                     },
                     ProviderSearchRequest(query = query, pageSize = 60),
                 ).collect { result ->
@@ -1041,6 +1042,11 @@ class MainViewModel(
                     if (candidate == null) {
                         update { copy(isLoading = false, errorMessage = "这个 Provider 没有返回可播放线路") }
                     } else {
+                        val position = if (provider is MdcTvBoxProvider && item.progressMs == 0L) {
+                            localMediaState.history(externalHistoryKey(item.key.providerId, item.key.itemId).stableId)
+                                ?.takeUnless { it.completed }?.positionMs ?: 0L
+                        } else item.progressMs
+                        ensureActive()
                         update {
                             copy(
                                 screen = Screen.EXTERNAL_PLAYER,
@@ -1056,7 +1062,8 @@ class MainViewModel(
                                     requestHeaders = candidate.requiredHeaders,
                                     subtitles = candidate.subtitles,
                                     credentialOrigin = candidate.credentialOrigin,
-                                    startPositionMs = item.progressMs,
+                                    startPositionMs = position,
+                                    mimeType = candidate.mimeType,
                                     isDiscImage = candidate.isDiscImage || item.key.itemId.substringBefore('|')
                                         .substringBefore('?').substringAfterLast('.', "")
                                         .equals("iso", ignoreCase = true) ||
@@ -1718,6 +1725,7 @@ class MainViewModel(
                 if (state.value.screen == Screen.EXTERNAL_PLAYER && state.value.selectedExternalEntry == entry) update {
                     copy(selectedExternalEntry = entry.copy(url = candidate.url, requestHeaders = candidate.requiredHeaders,
                         credentialOrigin = candidate.credentialOrigin, subtitles = candidate.subtitles, startPositionMs = positionMs,
+                        mimeType = candidate.mimeType ?: entry.mimeType,
                         playWhenReady = playWhenReady, playbackRevision = entry.playbackRevision + 1,
                         refreshAttempts = if (automatic) entry.refreshAttempts + 1 else 0), errorMessage = null)
                 }
@@ -1756,7 +1764,11 @@ class MainViewModel(
         val storedNetworkConnections = loadNetworkStorageConnections().orEmpty()
         val providers = buildList {
             addAll(nativeProviders())
-            mdcConnections().forEach { add(mdcProvider(it)) }
+            mdcConnections().forEach {
+                val provider = mdcProvider(it)
+                add(provider)
+                add(MdcTvBoxProvider(provider))
+            }
             library?.let { add(com.shadow.media.library.LibraryMediaProvider(it)) }
             sessionStore.loadAll().distinctBy { it.providerId }.forEach { add(EmbyMediaProvider(it, repository)) }
             storedNetworkConnections.forEach { connection ->

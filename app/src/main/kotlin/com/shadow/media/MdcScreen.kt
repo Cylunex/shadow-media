@@ -73,6 +73,20 @@ internal fun MdcScreen(viewModel: MainViewModel) {
     var job by remember { mutableStateOf<Job?>(null) }
     val connection = connections.singleOrNull { it.id == selected }
     val provider = remember(connection) { connection?.let(viewModel::mdcProvider) }
+    val tvbox = remember(provider) { provider?.let(::MdcTvBoxProvider) }
+    var showTvBox by rememberSaveable { mutableStateOf(false) }
+    var supportsTvBox by remember(tvbox) { mutableStateOf(false) }
+    LaunchedEffect(tvbox) {
+        if (tvbox != null) {
+            try { supportsTvBox = tvbox.supported() }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { supportsTvBox = false }
+        }
+    }
+    if (showTvBox && tvbox != null) {
+        MdcTvBoxScreen(tvbox, viewModel) { showTvBox = false }
+        return
+    }
     val libraryScroll = rememberLazyGridState()
     val detailScroll = rememberLazyGridState()
     val loader = remember(provider) {
@@ -282,6 +296,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
             } else {
                 item(span = { GridItemSpan(maxLineSpan) }) { Column {
                     Row {
+                        if (supportsTvBox) TextButton(onClick = { showTvBox = true }) { Text("TVBox") }
                         TextButton(onClick = { mode = "works"; actor = ""; query = ""; load() }) { Text("全部作品") }
                         TextButton(enabled = !busy, onClick = { mode = "playlists"; load() }) { Text("我的片单") }
                         TextButton(enabled = !busy, onClick = { mode = "actors"; query = "" }) { Text("演员库") }
