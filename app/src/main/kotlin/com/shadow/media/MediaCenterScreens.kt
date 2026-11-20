@@ -127,6 +127,9 @@ import coil3.compose.AsyncImage
 @Composable
 internal fun DiscoverScreen(state: MainUiState, viewModel: MainViewModel) {
     BackHandler(onBack = viewModel::back)
+    val loaders = state.discoverResults.map { it.key.providerId }.distinct().associateWith { id ->
+        androidx.compose.runtime.key(id) { rememberMdcImageLoader(viewModel.artworkProvider(id)) }
+    }
     val providerNames = remember(state.providerDescriptors) {
         state.providerDescriptors.associate { it.id to it.name }
     }
@@ -223,6 +226,7 @@ internal fun DiscoverScreen(state: MainUiState, viewModel: MainViewModel) {
             UnifiedResultCard(
                 item = item,
                 providerName = providerNames[item.key.providerId].orEmpty(),
+                loader = loaders[item.key.providerId],
                 onClick = { viewModel.openUnifiedItem(item) },
             )
         }
@@ -239,7 +243,7 @@ internal fun DiscoverScreen(state: MainUiState, viewModel: MainViewModel) {
 }
 
 @Composable
-private fun UnifiedResultCard(item: UnifiedMediaItem, providerName: String, onClick: () -> Unit) {
+private fun UnifiedResultCard(item: UnifiedMediaItem, providerName: String, loader: MdcImageLoader?, onClick: () -> Unit) {
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).shadowTvFocus(),
@@ -249,7 +253,7 @@ private fun UnifiedResultCard(item: UnifiedMediaItem, providerName: String, onCl
         ),
     ) {
         Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            UnifiedPoster(item, Modifier.size(width = 78.dp, height = 108.dp))
+            UnifiedPoster(item, Modifier.size(width = 78.dp, height = 108.dp), loader)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text(item.title.withoutEmoji(), style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(
@@ -273,6 +277,15 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
     BackHandler(onBack = viewModel::back)
     val context = LocalContext.current
     val detail = state.selectedUnifiedDetail
+    val loader = rememberMdcImageLoader(detail?.item?.key?.providerId?.let(viewModel::artworkProvider))
+    val lines = remember(detail) {
+        if (detail?.item?.key?.providerId?.startsWith("mdc-tvbox:") == true)
+            detail.children.map { it.subtitle.orEmpty() }.distinct() else emptyList()
+    }
+    var selectedLine by rememberSaveable(detail?.item?.key?.stableId) { mutableStateOf<String?>(null) }
+    var descending by rememberSaveable(detail?.item?.key?.stableId) { mutableStateOf(false) }
+    val line = selectedLine?.takeIf { it in lines } ?: lines.firstOrNull()
+    val episodes = remember(detail, line) { detail?.children.orEmpty().filter { line == null || it.subtitle.orEmpty() == line } }
     LazyColumn(
         modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
         contentPadding = PaddingValues(bottom = 36.dp),
@@ -287,15 +300,15 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
             )
         }
         if (detail != null) {
-            val firstTarget = detail.children.firstOrNull { !it.type.equals("Folder", true) }
-                ?: detail.children.firstOrNull()
+            val firstTarget = episodes.firstOrNull { !it.type.equals("Folder", true) }
+                ?: episodes.firstOrNull()
                 ?: detail.item.takeUnless { it.type.equals("Folder", true) }
             item {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                     horizontalArrangement = Arrangement.spacedBy(18.dp),
                 ) {
-                    UnifiedPoster(detail.item, Modifier.size(width = 116.dp, height = 164.dp))
+                    UnifiedPoster(detail.item, Modifier.size(width = 116.dp, height = 164.dp), loader)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(detail.item.title.withoutEmoji(), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                         Text(
@@ -331,7 +344,7 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                         if (detail.children.isEmpty() && detail.item.type.lowercase() in setOf("movie", "video", "episode", "music", "audio", "audiobook")) OutlinedButton(onClick = { viewModel.downloadUnified(detail.item) }) { Text("保存离线副本") }
                         OutlinedButton(
                             onClick = {
-                                val target = detail.children.firstOrNull() ?: detail.item
+                                val target = episodes.firstOrNull() ?: detail.item
                                 val link = target.key.toHandoffUri(target.progressMs).toString()
                                 context.startActivity(
                                     Intent.createChooser(
@@ -400,7 +413,14 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                         fontWeight = FontWeight.Bold,
                     )
                 }
-                items(detail.children, key = { it.key.stableId }) { child ->
+                if (lines.isNotEmpty()) item {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (lines.size > 1) ChoiceMenu(line.orEmpty().ifBlank { "默认线路" },
+                            lines.map { MdcTvBoxChoice(it, it.ifBlank { "默认线路" }) }) { selectedLine = it }
+                        if (episodes.size > 1) TextButton(onClick = { descending = !descending }) { Text(if (descending) "倒序" else "正序") }
+                    }
+                }
+                items(if (descending) episodes.asReversed() else episodes, key = { it.key.stableId }) { child ->
                     Card(
                         onClick = {
                             if (child.type.equals("Folder", true)) viewModel.openUnifiedItem(child)
@@ -413,7 +433,7 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                         ),
                     ) {
                         Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
-                            UnifiedPoster(child, Modifier.size(width = 58.dp, height = 82.dp))
+                            UnifiedPoster(child, Modifier.size(width = 58.dp, height = 82.dp), loader)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(child.title.withoutEmoji(), style = MaterialTheme.typography.titleMedium)
@@ -446,7 +466,7 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
 }
 
 @Composable
-private fun UnifiedPoster(item: UnifiedMediaItem, modifier: Modifier) {
+private fun UnifiedPoster(item: UnifiedMediaItem, modifier: Modifier, loader: MdcImageLoader?) {
     Surface(modifier = modifier.clip(MaterialTheme.shapes.medium), color = MaterialTheme.colorScheme.primaryContainer) {
         Box(contentAlignment = Alignment.Center) {
             Icon(
@@ -455,7 +475,9 @@ private fun UnifiedPoster(item: UnifiedMediaItem, modifier: Modifier) {
                 modifier = Modifier.size(30.dp),
                 tint = MaterialTheme.colorScheme.primary,
             )
-            if (item.posterUrl != null) {
+            if (loader != null && item.posterUrl != null) {
+                MdcArtwork(item.posterUrl, item.title, loader, Modifier.fillMaxSize())
+            } else if (item.posterUrl != null) {
                 AsyncImage(
                     model = item.posterUrl,
                     contentDescription = item.title,
@@ -767,6 +789,7 @@ internal fun ExternalSourcesScreen(
     viewModel: MainViewModel,
     onBack: () -> Unit = viewModel::back,
     onBrowseMdc: (() -> Unit)? = null,
+    discoveryStatus: @Composable () -> Unit = {},
 ) {
     BackHandler(onBack = onBack)
     val context = LocalContext.current
@@ -797,6 +820,7 @@ internal fun ExternalSourcesScreen(
                 onAction = onBack,
             )
         }
+        item { discoveryStatus() }
         item {
             Card(
                 modifier = Modifier.padding(horizontal = 20.dp),
@@ -871,6 +895,7 @@ internal fun ExternalSourcesScreen(
                     Spacer(Modifier.width(8.dp))
                     Text("从本地文件导入")
                 }
+                state.externalSourceReadError?.let { TextButton(onClick = viewModel::refreshExternalSources) { Text("$it · 重试") } }
                 state.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         }

@@ -108,6 +108,7 @@ data class MainUiState(
     val playerReturnScreen: Screen = Screen.ITEMS,
     val feedMode: Boolean = false,
     val externalSources: List<ExternalSourceSummary> = emptyList(),
+    val externalSourceReadError: String? = null,
     val sourceUrl: String = "",
     val sourceAllowInsecureHttp: Boolean = false,
     val isInspectingSource: Boolean = false,
@@ -204,8 +205,9 @@ class MainViewModel(
     private val playbackNetwork: StateFlow<Boolean> = MutableStateFlow(true),
     private val retryLimit: () -> Int = { 2 },
     private val mdcConnections: () -> List<com.shadow.media.library.CatalogConnection> = { emptyList() },
-    private val discoverSharedMdc: suspend () -> List<com.shadow.media.library.CatalogConnection> = { emptyList() },
-    private val sharedMdcToken: (suspend (com.shadow.media.library.CatalogConnection, Boolean) -> String)? = null,
+    private val sharedMdcConnections: () -> List<com.shadow.media.library.CatalogConnection> = { emptyList() },
+    private val discoverSharedMdc: suspend () -> List<String> = { emptyList() },
+    private val sharedMdcToken: (suspend (com.shadow.media.library.CatalogConnection, String?) -> String)? = null,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MainUiState())
     var feedPreloader: com.shadow.media.playback.FeedPreloadPool? = null
@@ -327,6 +329,7 @@ class MainViewModel(
             return
         }
         restoreSession(session, sessionStore.loadAll())
+        syncProviders()
     }
 
     fun requestRemoveServer(session: EmbySession) =
@@ -375,7 +378,6 @@ class MainViewModel(
                     serverUrl = session.serverUrl,
                     userName = session.userName,
                     screen = Screen.HOME,
-                    externalSources = externalSourceStore.loadAll(),
                     isLoading = true,
                 )
                 syncProviders()
@@ -419,13 +421,24 @@ class MainViewModel(
 
     internal fun mdcProvider(connection: com.shadow.media.library.CatalogConnection) =
         MdcMediaProvider(connection, externalClient, if (connection.isSharedMdc()) {
-            { force -> checkNotNull(sharedMdcToken) { "统一服务连接不可用" }.invoke(connection, force) }
+            { rejected -> checkNotNull(sharedMdcToken) { "统一服务连接不可用" }.invoke(connection, rejected) }
         } else null)
 
-    internal suspend fun discoverMdcConnections(): List<com.shadow.media.library.CatalogConnection> {
-        discoverSharedMdc()
-        syncProviders()
-        return mdcConnections()
+    internal fun artworkProvider(id: String): MdcMediaProvider? = when (val provider = providerRegistry.provider(id)) {
+        is MdcMediaProvider -> provider
+        is MdcTvBoxProvider -> provider.mdc
+        else -> null
+    }
+
+    internal fun knownMdcConnections() = readMdcConnections(mdcConnections, sharedMdcConnections)
+
+    internal suspend fun discoverMdcConnections(): MdcDiscovery {
+        val failed = try { discoverSharedMdc() }
+        catch (e: CancellationException) { throw e }
+        catch (e: IllegalStateException) { listOf(e.message ?: "统一账号") }
+        val known = knownMdcConnections()
+        syncProviders(known)
+        return known.copy(failedAccounts = (known.failedAccounts + failed).distinct())
     }
 
     internal suspend fun playMdc(
@@ -489,15 +502,11 @@ class MainViewModel(
 
     fun showLibraries() = navigate { copy(screen = Screen.LIBRARIES, errorMessage = null) }
 
-    fun refreshExternalSources() = update { copy(externalSources = externalSourceStore.loadAll()) }
+    fun refreshExternalSources() = syncProviders()
 
-    fun showSources() = navigate {
-        copy(
-            screen = Screen.SOURCES,
-            externalSources = externalSourceStore.loadAll(),
-            sourceUrl = "",
-            errorMessage = null,
-        )
+    fun showSources() {
+        navigate { copy(screen = Screen.SOURCES, sourceUrl = "", errorMessage = null) }
+        refreshExternalSources()
     }
 
     fun showSettings() = navigate { copy(screen = Screen.SETTINGS, errorMessage = null) }
@@ -816,12 +825,11 @@ class MainViewModel(
                     summary = imported.summary.copy(name = connection.name, allowInsecureHttp = connection.allowInsecureHttp),
                     resolvedEntries = entries,
                 )
-            }.onSuccess { imported ->
+            }.mapCatching { imported ->
                 externalSourceStore.save(imported)
                 syncProviders()
                 update {
                     copy(
-                        externalSources = externalSourceStore.loadAll(),
                         isSavingIntegration = false,
                         integrationMessage = "虚拟频道已加入直播中心",
                     )
@@ -899,7 +907,8 @@ class MainViewModel(
     fun loadSearchPage(providerId: String, retry: Boolean = false) {
         if (state.value.isSearchingProviders || providerId in state.value.loadingSearchPages || submittedQuery.isBlank()) return
         val provider = providerRegistry.provider(providerId) ?: return
-        val token = if (retry) null else state.value.providerSearchNext[providerId] ?: return
+        val token = if (retry) state.value.providerSearchFailures.firstOrNull { it.providerId == providerId }?.pageToken
+            else state.value.providerSearchNext[providerId] ?: return
         val generation = searchGeneration; val query = submittedQuery
         update { copy(loadingSearchPages = loadingSearchPages + providerId) }
         searchPageJobs[providerId] = viewModelScope.launch {
@@ -908,7 +917,10 @@ class MainViewModel(
                 if (generation == searchGeneration) update { copy(
                     discoverResults = (discoverResults + page.items).distinctBy { it.key },
                     providerSearchNext = (providerSearchNext - providerId) + (page.nextPageToken?.takeUnless { it == token }?.let { mapOf(providerId to it) } ?: emptyMap()),
-                    providerSearchFailures = providerSearchFailures.filterNot { it.providerId == providerId }) }
+                    providerSearchFailures = providerSearchFailures.filterNot { it.providerId == providerId } +
+                        listOfNotNull(page.failedSources.takeIf { it.isNotEmpty() }?.let {
+                            ProviderSearchFailure(providerId, provider.descriptor.name, "未响应站点：" + it.joinToString("、"), token)
+                        })) }
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                 if (generation == searchGeneration) update { copy(errorMessage = "${provider.descriptor.name} 加载超时，可重试") }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -1042,7 +1054,7 @@ class MainViewModel(
                     if (candidate == null) {
                         update { copy(isLoading = false, errorMessage = "这个 Provider 没有返回可播放线路") }
                     } else {
-                        val position = if (provider is MdcTvBoxProvider && item.progressMs == 0L) {
+                        val position = if ((provider is MdcTvBoxProvider || item.key.providerId.startsWith("tvbox:")) && item.progressMs == 0L) {
                             localMediaState.history(externalHistoryKey(item.key.providerId, item.key.itemId).stableId)
                                 ?.takeUnless { it.completed }?.positionMs ?: 0L
                         } else item.progressMs
@@ -1497,12 +1509,11 @@ class MainViewModel(
             update { copy(isInspectingSource = true, errorMessage = null) }
             runCatching {
                 externalSourceRepository.importFromUrl(snapshot.sourceUrl, snapshot.sourceAllowInsecureHttp)
-            }.onSuccess { imported ->
+            }.mapCatching { imported ->
                 externalSourceStore.save(imported)
                 syncProviders()
                 update {
                     copy(
-                        externalSources = externalSourceStore.loadAll(),
                         sourceUrl = "",
                         isInspectingSource = false,
                         errorMessage = null,
@@ -1521,12 +1532,11 @@ class MainViewModel(
             update { copy(isInspectingSource = true, errorMessage = null) }
             runCatching {
                 externalSourceRepository.importPayload(sourceUri, payload, displayName)
-            }.onSuccess { imported ->
+            }.mapCatching { imported ->
                 externalSourceStore.save(imported)
                 syncProviders()
                 update {
                     copy(
-                        externalSources = externalSourceStore.loadAll(),
                         isInspectingSource = false,
                         errorMessage = null,
                     )
@@ -1544,7 +1554,8 @@ class MainViewModel(
 
     fun openExternalSource(source: ExternalSourceSummary) {
         cancelContentRequests()
-        val imported = externalSourceStore.load(source.id)
+        val imported = try { externalSourceStore.load(source.id) }
+        catch (e: Exception) { showError(e); return }
         if (imported == null || imported.payload.isBlank()) {
             update { copy(errorMessage = "这个订阅来自旧版本，请移除后重新导入") }
             return
@@ -1725,11 +1736,24 @@ class MainViewModel(
         playbackRequest?.cancel()
         playbackRequest = viewModelScope.launch {
             try {
-                val candidates = provider.resolve(UnifiedPlaybackRequest(MediaKey(provider.descriptor.id, entry.id), positionMs))
+                val current = MediaKey(provider.descriptor.id, entry.playbackItemId ?: entry.id)
+                var playbackKey = current
+                val alternate = if (automatic && autoSwitchLines() && provider is MdcTvBoxProvider) {
+                    try { provider.alternateEpisode(current) }
+                    catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { null }
+                } else null
+                suspend fun resolve(key: MediaKey) = provider.resolve(UnifiedPlaybackRequest(key, positionMs, refresh = true))
+                val candidates = if (alternate == null) resolve(current) else {
+                    try { resolve(alternate).also { playbackKey = alternate } }
+                    catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { resolve(current) }
+                }
                 ensureActive()
                 val candidate = requireNotNull(candidates.firstOrNull()) { "来源没有返回播放线路" }
                 if (state.value.screen == Screen.EXTERNAL_PLAYER && state.value.selectedExternalEntry == entry) update {
                     copy(selectedExternalEntry = entry.copy(url = candidate.url, requestHeaders = candidate.requiredHeaders,
+                        playbackItemId = playbackKey.itemId,
                         credentialOrigin = candidate.credentialOrigin, subtitles = candidate.subtitles, startPositionMs = positionMs,
                         mimeType = candidate.mimeType ?: entry.mimeType,
                         playWhenReady = playWhenReady, playbackRevision = entry.playbackRevision + 1,
@@ -1751,9 +1775,9 @@ class MainViewModel(
     }
 
     fun removeExternalSource(sourceId: String) {
-        externalSourceStore.remove(sourceId)
+        try { externalSourceStore.remove(sourceId) }
+        catch (e: Exception) { showError(e); return }
         syncProviders()
-        update { copy(externalSources = externalSourceStore.loadAll()) }
     }
 
     fun refreshProviderConnections() = syncProviders()
@@ -1766,11 +1790,12 @@ class MainViewModel(
         null
     }
 
-    private fun syncProviders() {
+    private fun syncProviders(mdc: MdcDiscovery = knownMdcConnections()) {
         val storedNetworkConnections = loadNetworkStorageConnections().orEmpty()
+        val subscriptions = runCatching { externalSourceStore.loadImports() }
         val providers = buildList {
             addAll(nativeProviders())
-            mdcConnections().forEach {
+            mdc.connections.forEach {
                 val provider = mdcProvider(it)
                 add(provider)
                 add(MdcTvBoxProvider(provider))
@@ -1780,13 +1805,14 @@ class MainViewModel(
             storedNetworkConnections.forEach { connection ->
                 add(networkStorageRepository.provider(connection))
             }
-            externalSourceStore.loadAll().forEach { summary ->
-                val imported = externalSourceStore.load(summary.id) ?: return@forEach
+            var catalogCount = 0
+            subscriptions.getOrNull().orEmpty().forEach { imported ->
+                val summary = imported.summary
                 val entries = runCatching { externalSourceRepository.entries(imported) }.getOrDefault(emptyList())
                 if (entries.isNotEmpty()) add(LiveMediaProvider(summary, entries))
                 externalSourceRepository.catalogSites(imported).forEach { site ->
-                    if (count { it.descriptor.kind == com.shadow.media.model.ProviderKind.DECLARATIVE_HTTP &&
-                        it !is MdcMediaProvider } < MAX_HTTP_PROVIDERS) {
+                    if (catalogCount < MAX_HTTP_PROVIDERS) {
+                        catalogCount++
                         TvBoxHttpMediaProvider(site, externalClient).let { add(library?.cacheProvider(it) ?: it) }
                     }
                 }
@@ -1795,6 +1821,8 @@ class MainViewModel(
         providerRegistry.replace(providers)
         update {
             copy(
+                externalSources = subscriptions.getOrNull()?.map { it.summary } ?: externalSources,
+                externalSourceReadError = subscriptions.exceptionOrNull()?.message,
                 providerDescriptors = providers.map { it.descriptor },
                 networkStorages = storedNetworkConnections,
                 integrations = integrationStore.loadAll(),
@@ -2011,7 +2039,6 @@ class MainViewModel(
             allowInsecureHttp = session.allowInsecureHttp,
             savedSessions = saved,
             session = session,
-            externalSources = externalSourceStore.loadAll(),
             isLoading = true,
         )
         viewModelScope.launch {
@@ -2110,7 +2137,8 @@ class MainViewModel(
                         autoSwitchLines = { container.videoPreferences.settings.value.autoSwitchLines },
                         playbackNetwork = container.playbackNetwork,
                         retryLimit = { container.videoPreferences.settings.value.retries },
-                        mdcConnections = { container.sharedMdc.connections() + container.mdcConnections.load() },
+                        mdcConnections = container.mdcConnections::load,
+                        sharedMdcConnections = container.sharedMdc::connections,
                         discoverSharedMdc = container.sharedMdc::discover,
                         sharedMdcToken = container.sharedMdc::token,
                     ) as T

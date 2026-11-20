@@ -20,7 +20,7 @@ import org.json.JSONObject
 internal data class MdcTvBoxChoice(val id: String, val name: String)
 internal data class MdcTvBoxGroup(val id: String, val name: String, val sites: List<String>)
 
-internal class MdcTvBoxProvider(private val mdc: MdcMediaProvider) : MediaProvider {
+internal class MdcTvBoxProvider(val mdc: MdcMediaProvider) : MediaProvider {
     override val descriptor = ProviderDescriptor(
         id = "mdc-tvbox:${mdc.connection.id}",
         name = "${mdc.connection.name} · TVBox",
@@ -28,6 +28,7 @@ internal class MdcTvBoxProvider(private val mdc: MdcMediaProvider) : MediaProvid
         capabilities = setOf(ProviderCapability.BROWSE, ProviderCapability.SEARCH,
             ProviderCapability.DETAIL, ProviderCapability.PLAYBACK),
     )
+    val connection get() = mdc.connection
     val includeInSearch get() = mdc.connection.includeInSearch
 
     private var features: Set<String>? = null
@@ -95,6 +96,15 @@ internal class MdcTvBoxProvider(private val mdc: MdcMediaProvider) : MediaProvid
         return MediaDetail(parent, children = children)
     }
 
+    suspend fun alternateEpisode(key: MediaKey): MediaKey? {
+        val parent = MediaKey(descriptor.id, key.itemId.substringBeforeLast(':'))
+        val children = detail(parent).children
+        val current = children.firstOrNull { it.key == key } ?: return null
+        val lines = children.filter { it.title == current.title && !it.subtitle.isNullOrBlank() }.groupBy { it.subtitle }
+        if (lines[current.subtitle]?.size != 1) return null
+        return lines.values.firstOrNull { it.size == 1 && it.single().key != key }?.single()?.key
+    }
+
     override suspend fun resolve(request: UnifiedPlaybackRequest): List<PlaybackCandidate> {
         val target = target(request.key)
         val episode = requireNotNull(target.episode) { "请先选择分集" }
@@ -130,7 +140,11 @@ internal class MdcTvBoxProvider(private val mdc: MdcMediaProvider) : MediaProvid
 
     private fun parsePage(body: JSONObject): UnifiedMediaPage {
         val rows = body.getJSONArray("items")
+        val failures = body.optJSONArray("failures")?.let { names ->
+            (0 until names.length()).map(names::getString).distinct()
+        }.orEmpty()
         return UnifiedMediaPage(
+            failedSources = failures,
             items = (0 until rows.length()).map { card(rows.getJSONObject(it)) },
             nextPageToken = body.optInt("next_page").takeIf { it > 0 }?.toString(),
         )
@@ -139,6 +153,11 @@ internal class MdcTvBoxProvider(private val mdc: MdcMediaProvider) : MediaProvid
     private fun card(body: JSONObject): UnifiedMediaItem = UnifiedMediaItem(
         MediaKey(descriptor.id, "${body.getString("site_id")}:${body.getString("id")}"),
         body.getString("title"), "Series", overview = body.optString("overview"),
+        year = body.optString("year").toIntOrNull(),
+        subtitle = body.optString("remarks").takeIf { it.isNotBlank() },
+        posterUrl = if (body.optBoolean("image")) connection.base().newBuilder()
+            .addPathSegments("api/media/v1/tvbox/sites").addPathSegment(body.getString("site_id"))
+            .addPathSegment("items").addPathSegment(body.getString("id")).addPathSegment("image").build().toString() else null,
     )
 
     private data class Target(val path: String, val episode: String?)

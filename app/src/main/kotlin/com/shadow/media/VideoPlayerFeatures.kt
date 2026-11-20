@@ -208,7 +208,7 @@ internal fun VideoPlayerFeatures(
             Text("解码器")
             Row { VideoDecoderMode.entries.forEach { mode -> TextButton(onClick = { if (onDecoderChange != null) onDecoderChange(mode) else preferences.update { it.copy(decoder = mode) } }) { Text((if (settings.decoder == mode) "✓ " else "") + when (mode) { VideoDecoderMode.AUTO -> "自动"; VideoDecoderMode.HARDWARE -> "硬件"; VideoDecoderMode.SOFTWARE -> "软件" }) } } }
             Text("软件模式使用设备提供的软件解码器；没有兼容解码器时可切回自动。", style = MaterialTheme.typography.bodySmall)
-            Row { Text("直播自动切换线路", Modifier.weight(1f)); Switch(settings.autoSwitchLines, { value -> preferences.update { it.copy(autoSwitchLines = value) } }) }
+            Row { Text("直播与影视仓自动切换线路", Modifier.weight(1f)); Switch(settings.autoSwitchLines, { value -> preferences.update { it.copy(autoSwitchLines = value) } }) }
             Text("自动重试次数")
             FlowRow { (0..5).forEach { limit -> TextButton(onClick = { preferences.update { it.copy(retries = limit) } }) { Text((if (settings.retries == limit) "✓ " else "") + limit) } } }
             Text("默认音轨 / 字幕语言")

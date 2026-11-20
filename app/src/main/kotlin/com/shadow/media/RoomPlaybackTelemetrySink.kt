@@ -36,7 +36,8 @@ class RoomPlaybackTelemetrySink(
                     completed = snapshot.completed,
                 )
             )
-            if (snapshot.terminal && processedTerminalIds.add(snapshot.id)) updateSourceHealth(snapshot)
+            if (snapshot.terminal && (!snapshot.completed || snapshot.firstFrameMs != null) &&
+                processedTerminalIds.add(snapshot.id)) updateSourceHealth(snapshot)
         }
     }
 

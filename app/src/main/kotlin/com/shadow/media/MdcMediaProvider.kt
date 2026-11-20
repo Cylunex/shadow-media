@@ -3,6 +3,11 @@ package com.shadow.media
 import com.shadow.media.library.CatalogConnection
 import com.shadow.media.model.*
 import com.shadow.media.provider.*
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -15,38 +20,64 @@ import org.json.JSONObject
 internal class MdcMediaProvider(
     val connection: CatalogConnection,
     client: OkHttpClient,
-    private val accessToken: (suspend (Boolean) -> String)? = null,
+    private val accessToken: (suspend (String?) -> String)? = null,
 ) : MediaProvider {
-    // API and images share one refresh path. No credential is sent outside the exact API subtree.
-    internal val imageClient = client.newBuilder().followRedirects(false).followSslRedirects(false)
-        .addInterceptor { chain ->
-            val request = chain.request()
-            val base = connection.base()
-            val prefix = base.newBuilder().addPathSegments("api/media/v1/").build().encodedPath
-            if (request.url.scheme != base.scheme || request.url.host != base.host ||
-                request.url.port != base.port || !request.url.encodedPath.startsWith(prefix)) {
-                throw java.io.IOException("拒绝跨来源 MDC 请求")
+    private val apiClient = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
+    private val base = connection.base()
+    private val apiPrefix = base.newBuilder().addPathSegments("api/media/v1/").build().encodedPath
+
+    private fun checkScope(request: Request) {
+        if (request.url.scheme != base.scheme || request.url.host != base.host || request.url.port != base.port ||
+            !request.url.encodedPath.startsWith(apiPrefix)) throw java.io.IOException("拒绝跨来源 MDC 请求")
+    }
+
+    private suspend fun token(rejected: String? = null): String = accessToken?.invoke(rejected) ?: connection.token
+
+    private fun Request.authorized(token: String): Request = newBuilder()
+        .header("Authorization", "Bearer $token")
+        .header("X-Catalog-Owner", connection.username.ifBlank { connection.id }).build()
+
+    internal val imageClient = apiClient.newBuilder().addInterceptor { chain ->
+        val request = chain.request()
+        checkScope(request)
+        val first = runBlocking { token() }
+        val response = chain.proceed(request.authorized(first))
+        if (response.code != 401 || accessToken == null) response else {
+            response.close()
+            chain.proceed(request.authorized(runBlocking { token(first) }))
+        }
+    }.build()
+
+    private suspend fun <T> execute(request: Request, consume: (okhttp3.Response) -> T): T {
+        checkScope(request)
+        return withContext(Dispatchers.IO) {
+            var access = token()
+            for (attempt in 0..1) {
+                val call = apiClient.newCall(request.authorized(access))
+                val cancellation = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
+                    try { awaitCancellation() } finally { call.cancel() }
+                }
+                try {
+                    call.execute().use { response ->
+                        if (response.code != 401 || accessToken == null || attempt == 1) {
+                            return@withContext consume(response)
+                        }
+                    }
+                } catch (e: java.io.IOException) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    throw e
+                } finally { cancellation.cancel() }
+                access = token(access)
             }
-            fun authorized(force: Boolean): Request = request.newBuilder()
-                .header("Authorization", accessToken?.let { kotlinx.coroutines.runBlocking { bearer(force) } }
-                    ?: "Bearer ${connection.token}")
-                .header("X-Catalog-Owner", connection.username.ifBlank { connection.id }).build()
-            var response = chain.proceed(authorized(false))
-            if (response.code == 401 && accessToken != null) {
-                response.close()
-                response = chain.proceed(authorized(true))
-            }
-            response
-        }.build()
-    private val client = imageClient
-    private suspend fun bearer(force: Boolean = false): String =
-        "Bearer ${accessToken?.invoke(force) ?: connection.token}"
+            error("MDC 请求未完成")
+        }
+    }
 
     suspend fun tvboxStream(path: String, mimeType: String): PlaybackCandidate {
         require(TVBOX_STREAM.matches(path)) { "MDC 返回的播放地址无效" }
         val base = connection.base()
         val url = base.newBuilder().addPathSegments(path.removePrefix("/")).build()
-        return PlaybackCandidate(url.toString(), PlayMethod.DIRECT_PLAY, mapOf("Authorization" to bearer()),
+        return PlaybackCandidate(url.toString(), PlayMethod.DIRECT_PLAY, mapOf("Authorization" to "Bearer ${token()}"),
             credentialOrigin = base.toString(), mimeType = mimeType)
     }
 
@@ -61,11 +92,9 @@ internal class MdcMediaProvider(
                 query.forEach { (key, value) -> addQueryParameter(key, value) }
             }.build()
             val request = Request.Builder().url(url)
-                .header("Authorization", "Bearer ${connection.token}")
-                .header("X-Catalog-Owner", connection.username.ifBlank { connection.id })
                 .apply { if (body != null) post(body.toString().toRequestBody("application/json".toMediaType()))
                     else if (post) post(ByteArray(0).toRequestBody()) }.build()
-            client.newCall(request).execute().use { response ->
+            execute(request) { response ->
                 val body = response.body?.string().orEmpty()
                 check(response.isSuccessful) {
                     when (response.code) {
@@ -108,8 +137,7 @@ internal class MdcMediaProvider(
 
     suspend fun people(): List<MdcPerson> = withContext(Dispatchers.IO) {
         val url = connection.base().newBuilder().addPathSegments("api/media/v1/catalog/people").build()
-        client.newCall(Request.Builder().url(url).header("Authorization", "Bearer ${connection.token}")
-                .header("X-Catalog-Owner", connection.username.ifBlank { connection.id }).build()).execute().use {
+        execute(Request.Builder().url(url).build()) {
             check(it.isSuccessful) { "演员目录读取失败（${it.code}）" }
             val rows = org.json.JSONArray(it.body?.string().orEmpty())
             (0 until rows.length()).map { index ->
@@ -149,12 +177,10 @@ internal class MdcMediaProvider(
 
     private suspend fun array(path: String): org.json.JSONArray = withContext(Dispatchers.IO) {
         val url = connection.base().newBuilder().addPathSegments("api/media/v1/catalog/$path").build()
-        client.newCall(Request.Builder().url(url)
-            .header("Authorization", "Bearer ${connection.token}")
-            .header("X-Catalog-Owner", connection.username.ifBlank { connection.id }).build()).execute().use {
-                check(it.isSuccessful) { "目录读取失败（${it.code}）" }
-                org.json.JSONArray(it.body?.string().orEmpty())
-            }
+        execute(Request.Builder().url(url).build()) {
+            check(it.isSuccessful) { "目录读取失败（${it.code}）" }
+            org.json.JSONArray(it.body?.string().orEmpty())
+        }
     }
     suspend fun playlists(): List<MdcPlaylist> {
         val rows = array("playlists")
@@ -206,8 +232,7 @@ internal class MdcMediaProvider(
         val result = withContext(Dispatchers.IO) {
             val url = connection.base().newBuilder().addPathSegments("api/media/v1/works/${key.itemId}/emby-candidates")
                 .addQueryParameter("q", query).build()
-            client.newCall(Request.Builder().url(url).header("Authorization", "Bearer ${connection.token}")
-                .header("X-Catalog-Owner", connection.username.ifBlank { connection.id }).build()).execute().use {
+            execute(Request.Builder().url(url).build()) {
                 check(it.isSuccessful) { "无法读取 Emby 候选（${it.code}）" }
                 org.json.JSONArray(it.body?.string().orEmpty())
             }
@@ -217,8 +242,7 @@ internal class MdcMediaProvider(
     suspend fun bind(key: MediaKey, itemId: String) = withContext(Dispatchers.IO) {
         val url = connection.base().newBuilder().addPathSegments("api/media/v1/works/${key.itemId}/binding").build()
         val body = JSONObject().put("item_id", itemId).toString().toRequestBody("application/json".toMediaType())
-        client.newCall(Request.Builder().url(url).header("Authorization", "Bearer ${connection.token}")
-                .header("X-Catalog-Owner", connection.username.ifBlank { connection.id }).put(body).build()).execute().use {
+        execute(Request.Builder().url(url).put(body).build()) {
             check(it.isSuccessful) { "无法保存 Emby 关联（${it.code}）" }
         }
     }

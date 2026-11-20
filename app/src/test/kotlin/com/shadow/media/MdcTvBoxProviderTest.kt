@@ -2,6 +2,9 @@ package com.shadow.media
 
 import com.shadow.media.library.CatalogConnection
 import com.shadow.media.library.CatalogKind
+import com.shadow.media.model.MediaKey
+import com.shadow.media.model.UnifiedMediaItem
+import com.shadow.media.model.UnifiedMediaPage
 import com.shadow.media.model.UnifiedPlaybackRequest
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
@@ -18,6 +21,52 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28], application = android.app.Application::class)
 @RunWith(RobolectricTestRunner::class)
 class MdcTvBoxProviderTest {
+    @Test fun paginationKeepsPreviousHitsAndStopsOnRepeatedCursors() {
+        fun item(id: String) = UnifiedMediaItem(MediaKey("site", id), id, "Series")
+        val pages = TvBoxPages()
+        pages.record("1", UnifiedMediaPage(listOf(item("one")), "2"))
+        pages.record("2", UnifiedMediaPage(listOf(item("one"), item("two")), "3", failedSources = listOf("slow")))
+        assertEquals(listOf(item("one"), item("two")), pages.items)
+        assertEquals(listOf("slow"), pages.failed["2"])
+        assertFalse(pages.allowAutoLoad)
+        pages.record("2", UnifiedMediaPage(listOf(item("three")), "3", failedSources = listOf("other")))
+        assertTrue(pages.items.containsAll(listOf(item("one"), item("two"), item("three"))))
+        pages.record("2", UnifiedMediaPage(listOf(item("three"), item("two")), "3"))
+        assertTrue(pages.failed.isEmpty())
+        assertTrue(pages.allowAutoLoad)
+        pages.record("3", UnifiedMediaPage(listOf(item("two")), "3"))
+        assertEquals(null, pages.next)
+        assertFalse(pages.allowAutoLoad)
+    }
+
+    @Test fun `warehouse preserves partial failures and authenticated poster metadata`() = runTest {
+        MockWebServer().use { server ->
+            val connection = CatalogConnection(name = "MDC", kind = CatalogKind.OPDS,
+                url = server.url("/mdc/").toString(), allowHttp = true)
+            val provider = MdcTvBoxProvider(MdcMediaProvider(connection, OkHttpClient()))
+            server.enqueue(MockResponse().setBody("""{"items":[{"site_id":"one","id":"film","title":"Film","image":true,"year":"2024","remarks":"更新至第六集"}],"failures":["two"]}"""))
+            val page = provider.searchGroup("film", "1", "")
+            assertEquals(listOf("two"), page.failedSources)
+            val film = page.items.single()
+            assertEquals(2024, film.year)
+            assertEquals("更新至第六集", film.subtitle)
+            assertEquals(server.url("/mdc/api/media/v1/tvbox/sites/one/items/film/image").toString(), film.posterUrl)
+        }
+    }
+
+    @Test fun `recovery selects a unique matching episode on another line`() = runTest {
+        MockWebServer().use { server ->
+            val provider = MdcTvBoxProvider(MdcMediaProvider(CatalogConnection(name = "MDC", kind = CatalogKind.OPDS,
+                url = server.url("/").toString(), allowHttp = true), OkHttpClient()))
+            val key = com.shadow.media.model.MediaKey(provider.descriptor.id, "one:film:first")
+            fun episodes(extra: String = "") = """{"site_id":"one","id":"film","title":"Film","episodes":[{"id":"first","title":"第二集","line":"A"},{"id":"other","title":"第一集","line":"B"},{"id":"backup","title":"第二集","line":"B"}$extra]}"""
+            server.enqueue(MockResponse().setBody(episodes()))
+            assertEquals("one:film:backup", provider.alternateEpisode(key)?.itemId)
+            server.enqueue(MockResponse().setBody(episodes(""",{"id":"duplicate","title":"第二集","line":"B"}""")))
+            assertEquals(null, provider.alternateEpisode(key))
+        }
+    }
+
     @Test fun `resolves existing episode after cold start without passing catalog credentials to player`() = runTest {
         MockWebServer().use { server ->
             val connection = CatalogConnection(

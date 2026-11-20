@@ -1,5 +1,6 @@
 package com.shadow.media.playback
 
+import com.shadow.media.network.closeOwnedConnections
 import android.content.Context
 import android.view.Surface
 import android.view.SurfaceHolder
@@ -268,7 +269,7 @@ class MpvIsoPlaybackRuntime private constructor(
         initialized = false
         IsoSessionManager.closeUri(isoUri)
         isoUri = null
-        playbackClient.dispatcher.cancelAll()
+        playbackClient.closeOwnedConnections()
         if (shouldReport) {
             scope.launch(Dispatchers.IO) {
                 runCatching { report(PlaybackEvent.STOPPED, finalPosition, paused = true) }

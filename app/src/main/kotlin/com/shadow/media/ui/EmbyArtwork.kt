@@ -1,5 +1,6 @@
 package com.shadow.media.ui
 
+import com.shadow.media.network.closeOwnedConnections
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -61,7 +62,8 @@ fun rememberEmbyImageLoader(session: EmbySession?, clientIdentity: ClientIdentit
     }
     DisposableEffect(imageLoader) {
         onDispose {
-            imageClient?.dispatcher?.cancelAll()
+            imageLoader?.shutdown()
+            imageClient?.closeOwnedConnections()
         }
     }
     return imageLoader

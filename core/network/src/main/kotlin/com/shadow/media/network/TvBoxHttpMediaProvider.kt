@@ -83,18 +83,14 @@ class TvBoxHttpMediaProvider(
 
     override suspend fun detail(key: MediaKey): MediaDetail {
         require(key.providerId == descriptor.id) { "媒体不属于这个 Provider" }
-        if (candidateCache.containsKey(key.itemId)) {
-            val child = itemCache.values.asSequence()
-                .flatMap { record -> record.episodes().asSequence() }
-                .firstOrNull { it.key == key }
-                ?: UnifiedMediaItem(key, key.itemId, "Episode")
-            return MediaDetail(child)
-        }
-        val record = fetchRecords(endpoint("ac" to "detail", "ids" to key.itemId)).firstOrNull()
-            ?: itemCache[key.itemId]
+        val parentId = EPISODE_KEY.matchEntire(key.itemId)?.groupValues?.get(1) ?: key.itemId
+        val record = fetchRecords(endpoint("ac" to "detail", "ids" to parentId)).firstOrNull { it.id == parentId }
+            ?: itemCache[parentId]
             ?: throw IOException("站点没有返回详情")
-        itemCache[record.id] = record
         val children = record.episodes()
+        if (parentId != key.itemId) {
+            return MediaDetail(children.firstOrNull { it.key == key } ?: throw IOException("分集或线路已变更"))
+        }
         return MediaDetail(
             item = record.toItem(),
             children = children,
@@ -107,8 +103,10 @@ class TvBoxHttpMediaProvider(
 
     override suspend fun resolve(request: UnifiedPlaybackRequest): List<PlaybackCandidate> {
         require(request.key.providerId == descriptor.id) { "媒体不属于这个 Provider" }
-        candidateCache[request.key.itemId]?.let { return it }
+        if (!request.refresh) candidateCache[request.key.itemId]?.let { return it }
         val detail = detail(request.key)
+        if (detail.item.type == "Episode") return candidateCache[request.key.itemId]
+            ?: throw IOException("分集或线路已变更")
         val firstChild = detail.children.firstOrNull()
             ?: throw IOException("这个条目没有可播放分集")
         return candidateCache[firstChild.key.itemId]
@@ -280,6 +278,7 @@ class TvBoxHttpMediaProvider(
     )
 
     private companion object {
+        private val EPISODE_KEY = Regex("""(.+)::[0-9]+::[0-9]+""")
         const val MAX_RESPONSE_BYTES = 4 * 1024 * 1024
         const val MAX_PAGE_ITEMS = 120
     }

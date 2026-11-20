@@ -1,6 +1,12 @@
 package com.shadow.media.model
 
-data class ExternalSubtitle(val uri: String, val mimeType: String, val label: String)
+data class ExternalSubtitle(
+    val uri: String,
+    val mimeType: String,
+    val label: String,
+    val requestHeaders: Map<String, String> = emptyMap(),
+    val credentialOrigin: String? = null,
+)
 
 fun subtitleMimeType(name: String): String? = when (name.substringAfterLast('.', "").lowercase()) {
     "srt" -> "application/x-subrip"

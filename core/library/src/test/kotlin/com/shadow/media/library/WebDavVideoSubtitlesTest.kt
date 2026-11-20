@@ -27,6 +27,24 @@ class WebDavVideoSubtitlesTest {
         <d:response><d:href>/dav/Film2.srt</d:href><d:propstat><d:prop><d:getcontentlength>30</d:getcontentlength></d:prop></d:propstat></d:response>
         </d:multistatus>
     """.trimIndent()
+    @Test fun `strm subtitles retain storage authorization separately from the stream`() = runBlocking {
+        MockWebServer().use { server ->
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) = if (request.method == "GET") {
+                    MockResponse().setBody("https://example.com/movie.mp4")
+                } else MockResponse().setResponseCode(207).setBody(listing)
+            }
+            val storage = NetworkStorageConnection("strm", "DAV", NetworkStorageKind.WEBDAV, server.url("/dav/").toString(),
+                username = "viewer", password = "REPLACE_PASSWORD", allowInsecureHttp = true, resolveStrm = true)
+            val provider = DefaultNetworkStorageRepository(RuntimeEnvironment.getApplication(), OkHttpClient()).provider(storage)
+            val video = provider.resolve(UnifiedPlaybackRequest(MediaKey("storage:strm", "/Film.strm"))).single()
+            assertEquals("https://example.com/movie.mp4", video.url)
+            assertTrue(video.requiredHeaders.isEmpty())
+            assertEquals(3, video.subtitles.size)
+            assertTrue(video.subtitles.all { it.requestHeaders["Authorization"] == okhttp3.Credentials.basic("viewer", "REPLACE_PASSWORD") })
+        }
+    }
+
     @Test fun `resolves same name subtitles alongside authenticated WebDAV video`() = runBlocking {
         val server = MockWebServer()
         server.dispatcher = object : Dispatcher() {

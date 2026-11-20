@@ -118,6 +118,6 @@ class FeedPreloadPool(context: Context, private val session: EmbySession, identi
     override fun close() {
         if (closed) return
         settled = false; closed = true
-        entries.values.toList().forEach(::remove); publish(); manager.release(); client.dispatcher.cancelAll(); metricsScope.cancel()
+        entries.values.toList().forEach(::remove); publish(); manager.release(); client.closeOwnedConnections(); metricsScope.cancel()
     }
 }

@@ -633,45 +633,49 @@ private class NetworkStorageMediaProvider(
         val file = files[safePath]
             ?: RemoteFile(safePath, fileName(safePath), false)
         require(!file.isDirectory) { "文件夹不能直接播放" }
-        if (file.extension() == "strm" && storage.resolveStrm) {
-            val line = backend.read(file.path, MAX_STRM_BYTES).decodeToString()
-                .lineSequence().map { it.trim().removePrefix("\uFEFF") }
-                .firstOrNull { it.isNotEmpty() && !it.startsWith('#') }
-                ?: throw IOException("STRM 没有包含可播放地址")
-            val (target, strmHeaders) = parseStrmLine(line)
-            if (target.startsWith("http://") || target.startsWith("https://")) {
-                val targetUrl = target.toHttpUrlOrNull() ?: throw IOException("STRM 播放地址无效")
-                if (targetUrl.scheme == "http" && !storage.allowInsecureHttp) {
-                    throw IOException("STRM 使用 HTTP，请在网络存储中明确允许明文连接")
-                }
-                return listOf(
-                    PlaybackCandidate(
-                        target,
-                        PlayMethod.DIRECT_PLAY,
-                        strmHeaders,
-                        isDiscImage = targetUrl.encodedPath.substringAfterLast('.', "").equals("iso", true),
-                    )
-                )
+        val candidate = if (file.extension() == "strm" && storage.resolveStrm) resolveStrm(file)
+            else backend.resolve(withFileDetails(file)).toCandidate(file.extension() == "iso")
+        return listOf(candidate.copy(subtitles = companionSubtitles(file)))
+    }
+
+    private suspend fun resolveStrm(file: RemoteFile): PlaybackCandidate {
+        val line = backend.read(file.path, MAX_STRM_BYTES).decodeToString()
+            .lineSequence().map { it.trim().removePrefix("\uFEFF") }
+            .firstOrNull { it.isNotEmpty() && !it.startsWith('#') }
+            ?: throw IOException("STRM 没有包含可播放地址")
+        val (target, strmHeaders) = parseStrmLine(line)
+        if (target.startsWith("http://") || target.startsWith("https://")) {
+            val targetUrl = target.toHttpUrlOrNull() ?: throw IOException("STRM 播放地址无效")
+            if (targetUrl.scheme == "http" && !storage.allowInsecureHttp) {
+                throw IOException("STRM 使用 HTTP，请在网络存储中明确允许明文连接")
             }
-            val targetPath = requireWithinRoot(
-                if (target.startsWith('/')) normalizePath(target) else joinPath(parentPath(file.path), target)
+            return PlaybackCandidate(
+                target, PlayMethod.DIRECT_PLAY, strmHeaders,
+                isDiscImage = targetUrl.encodedPath.substringAfterLast('.', "").equals("iso", true),
             )
-            val nested = RemoteFile(targetPath, fileName(targetPath), false, files[targetPath]?.size ?: 0)
-            val resolved = backend.resolve(withFileDetails(nested))
-            return listOf(resolved.toCandidate(targetPath.substringAfterLast('.', "").equals("iso", true)))
         }
-        val candidate = backend.resolve(withFileDetails(file)).toCandidate(file.extension() == "iso")
+        val targetPath = requireWithinRoot(
+            if (target.startsWith('/')) normalizePath(target) else joinPath(parentPath(file.path), target)
+        )
+        val nested = RemoteFile(targetPath, fileName(targetPath), false, files[targetPath]?.size ?: 0)
+        val resolved = backend.resolve(withFileDetails(nested))
+        return resolved.toCandidate(targetPath.substringAfterLast('.', "").equals("iso", true))
+    }
+
+    private suspend fun companionSubtitles(file: RemoteFile): List<com.shadow.media.model.ExternalSubtitle> {
         // Optional sidecars must never prevent the video itself from opening.
-        val subtitles = try {
+        return try {
             backend.list(parentPath(file.path)).filter {
                 !it.isDirectory && com.shadow.media.model.isCompanionSubtitle(file.name, it.name)
-            }.take(16).map { sidecar ->
-                val resolved = backend.resolve(sidecar)
+            }.take(16).mapNotNull { sidecar ->
+                val resolved = try { backend.resolve(sidecar) }
+                catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                catch (_: Exception) { return@mapNotNull null }
                 com.shadow.media.model.ExternalSubtitle(resolved.url,
-                    requireNotNull(com.shadow.media.model.subtitleMimeType(sidecar.name)), sidecar.name)
+                    requireNotNull(com.shadow.media.model.subtitleMimeType(sidecar.name)), sidecar.name,
+                    resolved.headers, resolved.credentialOrigin)
             }
         } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { emptyList() }
-        return listOf(candidate.copy(subtitles = subtitles))
     }
 
     private suspend fun toItem(file: RemoteFile, siblings: List<RemoteFile>): UnifiedMediaItem {

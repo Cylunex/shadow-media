@@ -1,5 +1,6 @@
 package com.shadow.media.playback
 
+import com.shadow.media.network.closeOwnedConnections
 import android.content.Context
 import android.os.SystemClock
 import androidx.media3.common.AudioAttributes
@@ -219,6 +220,7 @@ class PlaybackRuntime(
         audible.close()
         mediaSession.release()
         exoPlayer.release()
+        playbackClient.closeOwnedConnections()
         if (started) {
             report(PlaybackEvent.STOPPED, finalPosition, paused, canSeek, candidate.method, candidate.mediaSourceId)
         }

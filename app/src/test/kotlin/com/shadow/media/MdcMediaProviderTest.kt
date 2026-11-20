@@ -5,6 +5,11 @@ import com.shadow.media.library.CatalogKind
 import com.shadow.media.model.MediaKey
 import com.shadow.media.provider.ProviderBrowseRequest
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -16,18 +21,75 @@ import org.robolectric.RobolectricTestRunner
 @org.robolectric.annotation.Config(sdk = [28], application = android.app.Application::class)
 @RunWith(RobolectricTestRunner::class)
 class MdcMediaProviderTest {
+    @Test fun cancellingASlowCatalogueRequestAllowsImmediateReload() = runBlocking {
+        MockWebServer().use { server ->
+            val provider = MdcMediaProvider(CatalogConnection(name = "MDC", kind = CatalogKind.OPDS,
+                url = server.url("/").toString(), allowHttp = true), OkHttpClient())
+            server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE))
+            val stalled = launch(kotlinx.coroutines.Dispatchers.IO) { provider.browse(ProviderBrowseRequest()) }
+            assertNotNull(server.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS))
+            withTimeout(3000) { stalled.cancelAndJoin() }
+            server.enqueue(MockResponse().setBody("""{"items":[]}"""))
+            assertTrue(provider.browse(ProviderBrowseRequest()).items.isEmpty())
+        }
+    }
+
+    @Test fun discoveryIsolatesAccountsAndRevalidatesCachedServices() = runTest {
+        val first = CatalogConnection(id = "one", name = "One", kind = CatalogKind.OPDS, url = "https://one.example.com/",
+            oidcIssuer = "https://id.example.com", oidcSubject = "owner", oidcAuthState = "session")
+        val second = first.copy(id = "two", name = "Two", url = "https://two.example.com/")
+        var accounts = listOf(first, second)
+        var firstStatus = 503
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val code = if (request.url.host == "one.example.com") firstStatus else 200
+            val response = if (code == 200) """{"services":[{"id":"mdc","base_url":"https://${request.url.host}/services/mdc/"}]}""" else "{}"
+            okhttp3.Response.Builder().request(request).protocol(okhttp3.Protocol.HTTP_1_1).code(code)
+                .message("fixture").body(response.toResponseBody()).build()
+        }.build()
+        val api = com.shadow.media.library.NovelApi(client) { _, _ -> "session" }
+        val novel = com.shadow.media.library.NovelRepository(org.robolectric.RuntimeEnvironment.getApplication(), api = api,
+            connectionLoader = { accounts })
+        val sessions = SharedMdcSessions(novel)
+        fun ids() = sessions.connections().map { it.id }
+        assertEquals(listOf("One"), sessions.discover())
+        assertEquals(listOf("shared-mdc:two"), ids())
+        firstStatus = 200
+        assertTrue(sessions.discover().isEmpty())
+        firstStatus = 503
+        assertEquals(listOf("One"), sessions.discover())
+        assertEquals(listOf("shared-mdc:one", "shared-mdc:two"), ids())
+        accounts = listOf(first.copy(oidcSubject = "different"), second)
+        assertEquals(listOf("shared-mdc:two"), ids())
+        firstStatus = 404
+        assertTrue(sessions.discover().isEmpty())
+        val manual = second.copy(id = "manual")
+        val isolated = readMdcConnections({ listOf(manual) }, { error("locked") })
+        assertEquals(listOf(manual), isolated.connections)
+        assertEquals(listOf("统一账号"), isolated.failedAccounts)
+        assertEquals(ids(), readMdcConnections({ error("locked") }, sessions::connections).connections.map { it.id })
+    }
+
+    @Test fun `default filters remove all collection constraints`() {
+        val active = MdcFilters(label = "label", platform = "platform", series = "series").request("sample")
+        for (key in listOf("series", "platforms", "labels")) assertTrue(active.has(key))
+        val cleared = MdcFilters().request("")
+        for (key in listOf("series", "platforms", "labels", "actors", "year_from", "year_to")) assertFalse(cleared.has(key))
+        assertEquals("", cleared.getString("q"))
+    }
+
     @Test fun `shared account refreshes once for api and poster without storing a mobile token`() = runTest {
         MockWebServer().use { server ->
-            val refreshes = mutableListOf<Boolean>()
+            val refreshes = mutableListOf<String?>()
             val connection = CatalogConnection(id = "shared-mdc:account", name = "MDC", kind = CatalogKind.OPDS,
                 url = server.url("/novel/services/mdc/").toString(), allowHttp = true)
-            val provider = MdcMediaProvider(connection, OkHttpClient()) { force ->
-                refreshes.add(force); if (force) "fresh-session" else "existing-session"
+            val provider = MdcMediaProvider(connection, OkHttpClient()) { rejected ->
+                refreshes.add(rejected); if (rejected != null) "fresh-session" else "existing-session"
             }
             server.enqueue(MockResponse().setResponseCode(401))
             server.enqueue(MockResponse().setBody("""{"items":[],"next_cursor":null}"""))
             provider.browse(ProviderBrowseRequest())
-            assertEquals(listOf(false, true), refreshes)
+            assertEquals(listOf(null, "existing-session"), refreshes)
             assertEquals("Bearer existing-session", server.takeRequest().getHeader("Authorization"))
             assertEquals("Bearer fresh-session", server.takeRequest().getHeader("Authorization"))
             server.enqueue(MockResponse().setBody("poster"))

@@ -3,7 +3,8 @@ package com.shadow.media.library
 import android.content.Context
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.NonCancellable
+import kotlin.coroutines.suspendCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -60,30 +61,43 @@ internal data class NovelLoginConfig(val issuer: String, val clientId: String, v
 
 /** A single refresh per process; rotations never change the verified account's scope. */
 class NovelOidcTokens(private val context: Context, private val store: CatalogConnectionStore) : NovelBearerTokens {
-    override suspend fun token(connection: CatalogConnection, forceRefresh: Boolean): String = refreshLock.withLock {
-        val current = store.load().singleOrNull { it.id == connection.id } ?: authRequired()
-        if (!connection.retainsAccountOf(current) || current.oidcAuthState.isBlank()) authRequired()
-        val state = runCatching { AuthState.jsonDeserialize(current.oidcAuthState) }.getOrElse { authRequired() }
-        if (forceRefresh) state.setNeedsTokenRefresh(true)
-        val service = AuthorizationService(context.applicationContext)
-        try {
-            suspendCancellableCoroutine { continuation ->
-                state.performActionWithFreshTokens(service) { token, _, error ->
-                    if (!continuation.isActive) return@performActionWithFreshTokens
-                    if (token == null || error != null) {
-                        val permanent = error?.type == AuthorizationException.TYPE_OAUTH_TOKEN_ERROR && error.error !in setOf("server_error", "temporarily_unavailable")
-                        if (permanent) store.updateAuthState(current.id, current.oidcAuthState, "")
-                        if (permanent) continuation.resumeWith(Result.failure(NovelApiException(401, "authentication_required", JSONObject())))
-                        else continuation.resumeWith(Result.failure(java.io.IOException("统一认证暂不可用，请稍后重试")))
-                    } else {
-                        val saved = store.updateAuthState(current.id, current.oidcAuthState, state.jsonSerializeString())
-                        if (saved) continuation.resume(token)
-                        else continuation.resumeWith(Result.failure(NovelApiException(401, "authentication_required", JSONObject())))
-                    }
+    override suspend fun token(connection: CatalogConnection, forceRefresh: Boolean): String =
+        readToken(connection, forceRefresh, null)
+
+    override suspend fun tokenAfterRejection(connection: CatalogConnection, rejected: String?): String =
+        readToken(connection, rejected != null, rejected)
+
+    private suspend fun readToken(connection: CatalogConnection, force: Boolean, rejected: String?): String =
+        withContext(Dispatchers.IO) {
+            refreshLock.withLock {
+                val current = store.load().singleOrNull { it.id == connection.id } ?: authRequired()
+                if (!connection.retainsAccountOf(current) || current.oidcAuthState.isBlank()) authRequired()
+                val state = runCatching { AuthState.jsonDeserialize(current.oidcAuthState) }.getOrElse { authRequired() }
+                if (force && (rejected == null || rejected == state.accessToken)) state.setNeedsTokenRefresh(true)
+                state.accessToken?.takeUnless { state.needsTokenRefresh }?.let { return@withLock it }
+                // A rotating refresh token must be saved even if the caller leaves the screen.
+                withContext(NonCancellable) {
+                    val service = AuthorizationService(context.applicationContext)
+                    try {
+                        val (token, error) = suspendCoroutine { continuation ->
+                            state.performActionWithFreshTokens(service) { access, _, failure ->
+                                continuation.resume(access to failure)
+                            }
+                        }
+                        if (token == null || error != null) {
+                            if (error?.type == AuthorizationException.TYPE_OAUTH_TOKEN_ERROR &&
+                                error.error !in setOf("server_error", "temporarily_unavailable")) {
+                                store.updateAuthState(current.id, current.oidcAuthState, "")
+                                authRequired()
+                            }
+                            throw java.io.IOException("统一认证暂不可用，请稍后重试")
+                        }
+                        if (!store.updateAuthState(current.id, current.oidcAuthState, state.jsonSerializeString())) authRequired()
+                        token
+                    } finally { service.dispose() }
                 }
             }
-        } finally { service.dispose() }
-    }
+        }
 
     suspend fun logout(connection: CatalogConnection) {
         val previous = store.signOut(connection.id) ?: return

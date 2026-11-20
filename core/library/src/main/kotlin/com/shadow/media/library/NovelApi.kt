@@ -32,7 +32,10 @@ class NovelApiException(val status: Int, val code: String, val detail: JSONObjec
 )
 
 /** Every redirect is checked before transmission, including 307/308 mutation redirects. */
-fun interface NovelBearerTokens { suspend fun token(connection: CatalogConnection, forceRefresh: Boolean): String }
+fun interface NovelBearerTokens {
+    suspend fun token(connection: CatalogConnection, forceRefresh: Boolean): String
+    suspend fun tokenAfterRejection(connection: CatalogConnection, rejected: String?): String = token(connection, rejected != null)
+}
 
 class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
     .addInterceptor(com.shadow.media.network.OfflineModeInterceptor())
@@ -56,26 +59,30 @@ class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
         }.build()
         val activeCall = java.util.concurrent.atomic.AtomicReference<Call?>()
         val cancellation = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) { try { awaitCancellation() } finally { activeCall.get()?.cancel() } }
-        suspend fun request(force: Boolean): Response {
-        val access = if (c.oidcIssuer.isNotBlank()) bearer?.token(c, force)
-            ?: throw NovelApiException(401, "authentication_required", JSONObject()) else c.token
-        if (c.oidcIssuer.isNotBlank() && access.isBlank()) throw NovelApiException(401, "authentication_required", JSONObject())
-        val call = scoped.newCall(Request.Builder().url(url).apply {
-            if (access.isNotBlank()) header("Authorization", "Bearer $access")
-            else if (c.username.isNotBlank()) header("Authorization", Credentials.basic(c.username, c.password))
-            header("Accept", "application/json, application/epub+zip")
-            headers.forEach { (name, value) -> header(name, value) }
-            method(method, body
-                ?: if (method in setOf("POST", "PUT", "PATCH")) "{}".toRequestBody("application/json".toMediaType()) else null)
-        }.build())
-        activeCall.set(call)
-        currentCoroutineContext().ensureActive()
-        return call.execute()
+        suspend fun request(rejected: String?): Response {
+            val access = if (c.oidcIssuer.isNotBlank()) bearer?.tokenAfterRejection(c, rejected)
+                ?: throw NovelApiException(401, "authentication_required", JSONObject()) else c.token
+            if (c.oidcIssuer.isNotBlank() && access.isBlank()) throw NovelApiException(401, "authentication_required", JSONObject())
+            val call = scoped.newCall(Request.Builder().url(url).apply {
+                if (access.isNotBlank()) header("Authorization", "Bearer $access")
+                else if (c.username.isNotBlank()) header("Authorization", Credentials.basic(c.username, c.password))
+                header("Accept", "application/json, application/epub+zip")
+                headers.forEach { (name, value) -> header(name, value) }
+                method(method, body
+                    ?: if (method in setOf("POST", "PUT", "PATCH")) "{}".toRequestBody("application/json".toMediaType()) else null)
+            }.build())
+            activeCall.set(call)
+            currentCoroutineContext().ensureActive()
+            return call.execute()
         }
         try {
-        var response = request(false)
-        if (response.code == 401 && c.oidcIssuer.isNotBlank()) { response.close(); response = request(true) }
-        response.use {
+            var response = request(null)
+            if (response.code == 401 && c.oidcIssuer.isNotBlank()) {
+                val rejected = response.request.header("Authorization")?.removePrefix("Bearer ")
+                response.close()
+                response = request(rejected)
+            }
+            response.use {
                 if (!response.isSuccessful && !(allowNotModified && response.code == 304)) {
                     val value = response.body?.byteStream()?.use { SafeArchives.readBounded(it, 128 * 1024) }?.toString(Charsets.UTF_8)
                     val parsed = runCatching { JSONObject(value.orEmpty()) }.getOrNull()
@@ -83,7 +90,7 @@ class NovelApi(private val client: OkHttpClient = OkHttpClient.Builder()
                     throw NovelApiException(response.code, detail.optString("code"), detail)
                 }
                 consume(response)
-        }
+            }
         } catch (e: Exception) { currentCoroutineContext().ensureActive(); throw e }
         finally { cancellation.cancel() }
     }

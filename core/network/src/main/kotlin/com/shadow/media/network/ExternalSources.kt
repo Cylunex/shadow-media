@@ -598,6 +598,11 @@ class SharedPreferencesExternalSourceStore(
         .sortedByDescending(ExternalSourceSummary::inspectedAtEpochMs)
 
     @Synchronized
+    override fun loadImports(): List<ExternalSourceImport> =
+        readStored()?.sources.orEmpty().map(StoredExternalSourceDto::toImport)
+            .sortedByDescending { it.summary.inspectedAtEpochMs }
+
+    @Synchronized
     override fun load(sourceId: String): ExternalSourceImport? = readStored()
         ?.sources
         ?.firstOrNull { it.id == sourceId }
@@ -631,8 +636,7 @@ class SharedPreferencesExternalSourceStore(
         val plaintext = cipher.doFinal(bytes.copyOfRange(IV_SIZE, bytes.size)).decodeToString()
         json.decodeFromString<StoredExternalSourcesDto>(plaintext)
     }.getOrElse {
-        preferences.edit().remove(KEY_SOURCES).commit()
-        null
+        throw IllegalStateException("外部订阅暂时无法读取，已保留原数据，请解锁设备后重试", it)
     }
 
     private fun writeStored(stored: StoredExternalSourcesDto) {

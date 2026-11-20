@@ -17,6 +17,7 @@ data class ProviderSearchFailure(
     val providerId: String,
     val providerName: String,
     val message: String,
+    val pageToken: String? = null,
 )
 
 data class AggregateSearchResult(
@@ -68,7 +69,7 @@ class AggregateSearchEngine(private val timeoutMs: Long = 12_000, private val co
                     val page = semaphore.withPermit {
                         withTimeoutOrNull(timeoutMs) { provider.search(request.copy(query = normalizedQuery)) }
                     }
-                    page to if (page == null) "搜索超时" else null
+                    page to if (page == null) "搜索超时" else page.failedSources.takeIf { it.isNotEmpty() }?.joinToString(prefix = "未响应站点：")
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
@@ -77,7 +78,7 @@ class AggregateSearchEngine(private val timeoutMs: Long = 12_000, private val co
                 mutex.withLock {
                     val id = provider.descriptor.id
                     outcome.first?.let { pages[id] = it }
-                    outcome.second?.let { failures += ProviderSearchFailure(id, provider.descriptor.name, it) }
+                    outcome.second?.let { failures += ProviderSearchFailure(id, provider.descriptor.name, it, request.pageToken) }
                     pending.remove(id)
                     publish()
                 }

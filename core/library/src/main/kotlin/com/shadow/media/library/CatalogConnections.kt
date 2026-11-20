@@ -82,9 +82,11 @@ class CatalogConnectionStore(context: Context, namespace: String = "publication_
     }
     fun remove(id: String) = synchronized(lock) { write(load().filterNot { it.id == id }) }
     fun updateAuthState(id: String, expected: String, updated: String): Boolean = synchronized(lock) {
-        val current = load().singleOrNull { it.id == id } ?: return@synchronized false
+        val accounts = load()
+        val current = accounts.singleOrNull { it.id == id } ?: return@synchronized false
         if (current.oidcAuthState != expected) return@synchronized false
-        write(load().map { if (it.id == id) it.copy(oidcAuthState = updated) else it }); true
+        if (expected != updated) write(accounts.map { if (it.id == id) it.copy(oidcAuthState = updated) else it })
+        true
     }
     fun beginLogin(value: JSONObject) = synchronized(lock) { check(preferences.edit().putString("login_attempt", seal(value.toString())).commit()) }
     fun pendingLogin(): JSONObject? = synchronized(lock) { preferences.getString("login_attempt", null)?.let { JSONObject(unseal(it)) } }

@@ -32,6 +32,15 @@ class AggregateSearchEngineTest {
         assertTrue(result.failures.single().message.contains("offline"))
     }
 
+    @Test fun aPartiallySuccessfulPageRetainsItsItemsAndRetryCursor() = runBlocking {
+        val entry = item("warehouse", "银河")
+        val provider = SearchProvider("warehouse", "影视仓", listOf(entry), failedSites = listOf("站点 A"))
+        val result = AggregateSearchEngine().search(listOf(provider), ProviderSearchRequest("银河", pageToken = "2"))
+        assertEquals(listOf(entry), result.items)
+        assertEquals("2", result.failures.single().pageToken)
+        assertTrue(result.failures.single().message.contains("站点 A"))
+    }
+
     private fun item(providerId: String, title: String) = UnifiedMediaItem(
         key = MediaKey(providerId, title),
         title = title,
@@ -44,6 +53,7 @@ private class SearchProvider(
     name: String,
     private val items: List<UnifiedMediaItem>,
     private val failure: Throwable? = null,
+    private val failedSites: List<String> = emptyList(),
 ) : MediaProvider {
     override val descriptor = ProviderDescriptor(
         id,
@@ -56,7 +66,7 @@ private class SearchProvider(
     override suspend fun browse(request: ProviderBrowseRequest) = UnifiedMediaPage(emptyList())
     override suspend fun search(request: ProviderSearchRequest): UnifiedMediaPage {
         failure?.let { throw it }
-        return UnifiedMediaPage(items)
+        return UnifiedMediaPage(items, failedSources = failedSites)
     }
     override suspend fun detail(key: MediaKey) = MediaDetail(items.first { it.key == key })
     override suspend fun resolve(request: UnifiedPlaybackRequest) = emptyList<PlaybackCandidate>()

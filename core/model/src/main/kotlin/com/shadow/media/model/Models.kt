@@ -151,6 +151,7 @@ data class ExternalMediaEntry(
     val playWhenReady: Boolean = true,
     val refreshAttempts: Int = 0,
     val mimeType: String? = null,
+    val playbackItemId: String? = null,
 )
 
 data class LiveChannel(
@@ -308,6 +309,7 @@ data class UnifiedMediaPage(
     val nextPageToken: String? = null,
     val totalCount: Int? = null,
     val cached: Boolean = false,
+    val failedSources: List<String> = emptyList(),
 )
 
 data class MediaDetail(
@@ -325,6 +327,7 @@ data class UnifiedPlaybackRequest(
     val startPositionMs: Long = 0,
     val preferredAudioLanguage: String? = null,
     val preferredSubtitleLanguage: String? = null,
+    val refresh: Boolean = false,
 )
 
 enum class FeatureId(val defaultEnabled: Boolean) {

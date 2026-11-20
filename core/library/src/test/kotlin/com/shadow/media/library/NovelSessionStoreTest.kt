@@ -23,6 +23,26 @@ class NovelSessionStoreTest {
     private fun attempt(id: String, created: Long = System.currentTimeMillis()) = JSONObject().put("attempt", id).put("created", created)
         .put("previousId", "account").put("request", "private-pkce-verifier")
 
+    @Test fun staleUnauthorizedResponsesReuseTheRotatedTokenWithoutRewritingTheVault() = runBlocking {
+        val config = net.openid.appauth.AuthorizationServiceConfiguration(
+            android.net.Uri.parse("https://id.example.com/auth"), android.net.Uri.parse("https://id.example.com/token"))
+        val request = net.openid.appauth.TokenRequest.Builder(config, "media").setGrantType("refresh_token")
+            .setRefreshToken("refresh").build()
+        val tokens = net.openid.appauth.TokenResponse.Builder(request).setTokenType("Bearer").setAccessToken("current")
+            .setAccessTokenExpirationTime(System.currentTimeMillis() + 3600000L).build()
+        val state = net.openid.appauth.AuthState(config).apply { update(tokens, null) }
+        val current = account().copy(oidcAuthState = state.jsonSerializeString())
+        val store = store()
+        store.save(current)
+        val prefs = context.getSharedPreferences("oidc-test", Context.MODE_PRIVATE)
+        val original = prefs.getString("encrypted", null)
+        val oidc = NovelOidcTokens(context, store)
+        assertEquals("current", oidc.tokenAfterRejection(current, "already-replaced"))
+        assertEquals("current", oidc.tokenAfterRejection(current, null))
+        assertTrue(store.updateAuthState(current.id, current.oidcAuthState, current.oidcAuthState))
+        assertEquals(original, prefs.getString("encrypted", null))
+    }
+
     @Test fun `sessions and pending PKCE survive process recreation encrypted`() {
         val store = store(); store.save(account()); store.beginLogin(attempt("login"))
         val saved = context.getSharedPreferences("oidc-test", Context.MODE_PRIVATE).all.toString()

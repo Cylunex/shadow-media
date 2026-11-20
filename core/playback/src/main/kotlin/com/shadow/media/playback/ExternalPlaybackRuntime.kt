@@ -1,5 +1,6 @@
 package com.shadow.media.playback
 
+import com.shadow.media.network.closeOwnedConnections
 import android.content.Context
 import android.net.Uri
 import androidx.media3.common.AudioAttributes
@@ -66,18 +67,22 @@ class ExternalPlaybackRuntime(
         .readTimeout(30, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
-        .addNetworkInterceptor { chain ->
-            val origin = (entry.credentialOrigin ?: entry.url).toHttpUrlOrNull()
-            val request = chain.request()
-            val scoped = request.newBuilder().headers(externalHeaders(origin, request.url, request.headers)).build()
-            chain.proceed(scoped)
-        }
         .build()
-    private val httpFactory = OkHttpDataSource.Factory(client)
-        .setUserAgent("Shadow Media")
-        .setDefaultRequestProperties(entry.requestHeaders)
+    private fun httpFactory(headers: Map<String, String>, credentialOrigin: String?): OkHttpDataSource.Factory {
+        val origin = credentialOrigin?.toHttpUrlOrNull()
+        val scoped = client.newBuilder().addNetworkInterceptor { chain ->
+            val request = chain.request()
+            chain.proceed(request.newBuilder().headers(externalHeaders(origin, request.url, request.headers)).build())
+        }.build()
+        return OkHttpDataSource.Factory(scoped).setUserAgent("Shadow Media").setDefaultRequestProperties(headers)
+    }
+
+    private val videoHttp = httpFactory(entry.requestHeaders, entry.credentialOrigin ?: entry.url)
+    private val subtitleHttp = entry.subtitles.filter { it.uri.toHttpUrlOrNull() != null }.associate { subtitle ->
+        subtitle.uri to httpFactory(subtitle.requestHeaders, subtitle.credentialOrigin ?: subtitle.uri)
+    }
     private val dataSourceFactory = DataSource.Factory {
-        DefaultDataSource(context, RoutingDataSource(httpFactory.createDataSource(), networkStorageRepository))
+        DefaultDataSource(context, RoutingDataSource(videoHttp.createDataSource(), networkStorageRepository, subtitleHttp))
     }
     private val sourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
     private var mediaItem = MediaItem.Builder().setUri(entry.url).setMediaId(entry.id).setMimeType(externalVideoMimeType(entry.mimeType))
@@ -203,23 +208,14 @@ class ExternalPlaybackRuntime(
         audible.close()
         mediaSession.release()
         exoPlayer.release()
-        client.closeExternalPlaybackConnections()
+        client.closeOwnedConnections()
     }
-}
-
-internal fun OkHttpClient.closeExternalPlaybackConnections() {
-    val cleanup = dispatcher.executorService
-    // Evicting a pooled TLS socket can send close_notify. Compose disposes the player on main.
-    cleanup.execute {
-        dispatcher.cancelAll()
-        connectionPool.evictAll()
-    }
-    cleanup.shutdown()
 }
 
 class RoutingDataSource(
     private val http: DataSource,
     private val networkStorageRepository: NetworkStorageRepository?,
+    private val subtitleHttp: Map<String, DataSource.Factory> = emptyMap(),
 ) : DataSource {
     private var active: DataSource? = null
     private val listeners = mutableListOf<TransferListener>()
@@ -236,7 +232,7 @@ class RoutingDataSource(
         } else if (dataSpec.uri.scheme == "shadow-smb") {
             val repository = networkStorageRepository ?: throw java.io.IOException("SMB 播放服务未初始化")
             SmbDataSource(repository).also { source -> listeners.forEach(source::addTransferListener) }
-        } else http
+        } else subtitleHttp[dataSpec.uri.toString()]?.createDataSource()?.also { sub -> listeners.forEach(sub::addTransferListener) } ?: http
         active = delegate
         return delegate.open(dataSpec)
     }

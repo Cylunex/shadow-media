@@ -351,7 +351,7 @@ import com.shadow.media.reading.ReaderActivity
                             }
                             container.library.remove(item.id)
                         } })
-                    module == MediaModule.LIVE -> LiveLanding(state, container, viewModel)
+                    module == MediaModule.LIVE -> LiveLanding(state, viewModel)
                     destination == MediaDestination.LIBRARIES -> VideoLibraryLanding(state, viewModel, onLocal = { localVideoScreen = true })
                     else -> LegacyMediaRoot(viewModel, container)
                 }
@@ -582,11 +582,12 @@ internal fun MediaModule.catalogKinds(): Set<CatalogKind> = when (this) {
     }
 }
 
-@Composable private fun LiveLanding(state: MainUiState, container: AppContainer, viewModel: MainViewModel) {
-    val sources = remember(state.externalSources) { container.externalSourceStore.loadAll().filter { it.liveCount > 0 || it.kind == com.shadow.media.model.ExternalSourceKind.LIVE_PLAYLIST } }
+@Composable private fun LiveLanding(state: MainUiState, viewModel: MainViewModel) {
+    val sources = remember(state.externalSources) { state.externalSources.filter { it.liveCount > 0 || it.kind == com.shadow.media.model.ExternalSourceKind.LIVE_PLAYLIST } }
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { Row(verticalAlignment = Alignment.CenterVertically) { Text("直播", Modifier.weight(1f), style = MaterialTheme.typography.headlineLarge); IconButton(onClick = viewModel::showSources) { Icon(Icons.Rounded.Add, "导入直播订阅") } }; Text("频道、节目单与回看", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        if (sources.isEmpty()) item { SourceTile("添加直播订阅", "支持 M3U、TXT 与 XMLTV 节目单", Icons.Rounded.AddLink, viewModel::showSources) }
+        state.externalSourceReadError?.let { item { TextButton(onClick = viewModel::refreshExternalSources) { Text("$it · 重试") } } }
+        if (sources.isEmpty() && state.externalSourceReadError == null) item { SourceTile("添加直播订阅", "支持 M3U、TXT 与 XMLTV 节目单", Icons.Rounded.AddLink, viewModel::showSources) }
         items(sources, key = { it.id }) { source -> SourceTile(source.name, "${source.liveCount} 个直播条目 · 查看频道与节目单", Icons.Rounded.LiveTv) { viewModel.openExternalSource(source) } }
     }
 }

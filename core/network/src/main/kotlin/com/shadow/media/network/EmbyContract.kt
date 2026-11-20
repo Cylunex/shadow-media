@@ -52,6 +52,7 @@ interface SessionStore {
 
 interface ExternalSourceStore {
     fun loadAll(): List<ExternalSourceSummary>
+    fun loadImports(): List<ExternalSourceImport> = loadAll().mapNotNull { load(it.id) }
     fun load(sourceId: String): ExternalSourceImport?
     fun save(source: ExternalSourceImport)
     fun remove(sourceId: String)

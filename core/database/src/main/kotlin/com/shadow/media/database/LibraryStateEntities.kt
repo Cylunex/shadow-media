@@ -23,18 +23,21 @@ data class ContinueRow(val rowId: String, val assetId: String?, val providerId: 
     val kind: String, val positionMs: Long?, val durationMs: Long?, val progression: Double?, val updatedAt: Long)
 
 private const val CONTINUE_ROWS = LOGICAL_LIBRARY_PROGRESS + """
-, continue_rows AS (
+, video_history AS (
+ SELECT h.*, CASE WHEN h.providerId LIKE 'external:tvbox:%' THEN substr(h.providerId, 10)
+                  ELSE h.providerId END AS sourceProviderId FROM media_history h
+), continue_rows AS (
  SELECT 'library:' || a.id AS rowId, a.id AS assetId, a.providerId, a.itemId, a.title, a.kind,
         NULL AS positionMs, NULL AS durationMs, a.progression, a.updatedAt
  FROM shelf_rows a WHERE a.completed = 0 AND a.kind != 'MUSIC'
  UNION ALL
- SELECT 'history:' || h.stableKey, NULL, h.providerId, h.itemId, h.title, 'MOVIE', h.positionMs, h.durationMs,
+ SELECT 'history:' || h.stableKey, NULL, h.sourceProviderId, h.itemId, h.title, 'MOVIE', h.positionMs, h.durationMs,
         CASE WHEN h.durationMs > 0 THEN 1.0 * h.positionMs / h.durationMs ELSE NULL END, h.lastPlayedAtEpochMs
- FROM media_history h WHERE h.completed = 0 AND h.positionMs > 0
+ FROM video_history h WHERE h.completed = 0 AND h.positionMs > 0
    AND h.providerId NOT LIKE 'external:mdc:%' AND h.providerId NOT LIKE 'mdc:%'
    AND NOT EXISTS (
    SELECT 1 FROM library_assets a JOIN progress_records p ON p.assetId = a.id
-   WHERE a.providerId = h.providerId AND a.itemId = h.itemId)
+   WHERE a.providerId = h.sourceProviderId AND a.itemId = h.itemId)
  UNION ALL
  SELECT 'music:' || a.id, a.id, a.providerId, a.itemId, a.title, a.kind, NULL, t.durationMs, NULL, s.lastPlayedAt
  FROM music_listening s JOIN library_assets a ON a.id = s.assetId JOIN music_tracks t ON t.assetId = a.id

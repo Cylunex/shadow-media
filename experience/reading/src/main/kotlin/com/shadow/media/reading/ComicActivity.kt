@@ -51,6 +51,7 @@ class ComicActivity : ComponentActivity() {
     private var currentPage by mutableIntStateOf(0)
     private var currentOffset = 0f
     private var reflowBlock = 0
+    private var stripReachedEnd: Boolean? = null
     private var reflowReachedEnd = false
     private var textSize by mutableFloatStateOf(20f)
     private val adjacentCache = ComicAdjacentCache(::preparePage)
@@ -90,12 +91,18 @@ class ComicActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) { outState.putString("revision", asset?.revision); outState.putString("mode", mode); outState.putInt("page", currentPage); outState.putInt("reflowBlock", reflowBlock); outState.putFloat("offset", currentOffset); super.onSaveInstanceState(outState) }
     private fun save(force: Boolean = false) {
         val item = asset ?: return
+        if (mode == "长图" && stripReachedEnd == null) return
         val page = currentPage; val offset = currentOffset
         val now = android.os.SystemClock.elapsedRealtime()
         if (!force && page == lastSavedPage && now - lastSaveTime < 250) return
         lastSavedPage = page; lastSaveTime = now
+        val completed = when (mode) {
+            "长图" -> stripReachedEnd == true
+            "REFLOW" -> page == pages.lastIndex && reflowReachedEnd
+            else -> comicSpreadCompleted(page, pages.size, mode)
+        }
         ProgressWriter.save(library, progressSession ?: return, "page", JSONObject().put("chapterId", item.id).put("pageIndex", page).put("offset", offset).put("reflowBlock", reflowBlock),
-            (page + offset.toDouble()) / pages.size.coerceAtLeast(1), completed = if (mode == "REFLOW") page == pages.lastIndex && reflowReachedEnd else comicCompleted(page, pages.size, mode, offset))
+            if (completed) 1.0 else (page + offset.toDouble()) / pages.size.coerceAtLeast(1), completed = completed)
     }
     override fun onStop() { save(force = true); super.onStop() }
     override fun onDestroy() { adjacentCache.close(); super.onDestroy() }
@@ -162,7 +169,7 @@ class ComicActivity : ComponentActivity() {
             }
             if (settings) AlertDialog(onDismissRequest = { settings = false }, title = { Text("阅读模式") }, text = {
                 Column { listOf("LTR" to "从左向右", "RTL" to "从右向左", "长图" to "条漫 · 连续上下滚动", "双页" to "双页对开").forEach { (key, label) ->
-                    TextButton(onClick = { initialPage = currentPage; initialOffset = currentOffset; mode = key; restoreEpoch++; save(force = true); getPreferences(MODE_PRIVATE).edit().putString("mode:" + asset?.id, key).apply(); settings = false }) { Text(label) }
+                    TextButton(onClick = { initialPage = currentPage; initialOffset = currentOffset; stripReachedEnd = null; mode = key; restoreEpoch++; save(force = true); getPreferences(MODE_PRIVATE).edit().putString("mode:" + asset?.id, key).apply(); settings = false }) { Text(label) }
                 }
                 if (asset?.format == "pdf" && android.os.Build.VERSION.SDK_INT >= 35) TextButton(onClick = {
                     initialPage = currentPage; initialOffset = currentOffset; mode = "REFLOW"; restoreEpoch++
@@ -241,6 +248,7 @@ class ComicActivity : ComponentActivity() {
         LaunchedEffect(restoreEpoch, pages) {
             if (pages.isEmpty()) return@LaunchedEffect
             restored = false
+            stripReachedEnd = null
             val target = initialPage.coerceIn(pages.indices)
             list.scrollToItem(target)
             val size = snapshotFlow {
@@ -251,14 +259,21 @@ class ComicActivity : ComponentActivity() {
             list.scrollToItem(target, (size * initialOffset).toInt().coerceAtMost(size - 1))
             restored = true
         }
-        LaunchedEffect(list) {
+        LaunchedEffect(list, restored) {
+            if (!restored) return@LaunchedEffect
             snapshotFlow {
-                val visible = list.layoutInfo.visibleItemsInfo.firstOrNull()
-                Triple(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset, visible?.size ?: 1)
-            }.distinctUntilChanged().collect { (index, pixels, size) ->
-                if (restored) {
-                    currentPage = index; currentOffset = if (!list.canScrollForward && index == pages.lastIndex) 1f else (pixels.toFloat() / size.coerceAtLeast(1)).coerceIn(0f, 1f)
-                    save()
+                val visible = list.layoutInfo.visibleItemsInfo
+                val first = visible.firstOrNull() ?: return@snapshotFlow null
+                val offset = (list.firstVisibleItemScrollOffset.toFloat() / first.size.coerceAtLeast(1)).coerceIn(0f, 1f)
+                Triple(list.firstVisibleItemIndex, offset, comicStripCompleted(visible.last().index, pages.size, list.canScrollForward))
+            }.collect { position ->
+                if (position != null) {
+                    val (index, offset, atEnd) = position
+                    val changedEnd = stripReachedEnd != atEnd
+                    stripReachedEnd = atEnd
+                    currentPage = index
+                    currentOffset = offset
+                    save(force = changedEnd)
                 }
             }
         }

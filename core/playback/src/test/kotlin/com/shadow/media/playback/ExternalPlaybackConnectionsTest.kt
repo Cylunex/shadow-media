@@ -1,5 +1,6 @@
 package com.shadow.media.playback
 
+import com.shadow.media.network.closeOwnedConnections
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -25,7 +26,7 @@ class ExternalPlaybackConnectionsTest {
                     .execute().use { assertEquals("media", it.body.string()) }
                 assertEquals(1, client.connectionPool.idleConnectionCount())
 
-                client.closeExternalPlaybackConnections()
+                client.closeOwnedConnections()
                 assertTrue(executor.isShutdown)
                 assertEquals(1, client.connectionPool.idleConnectionCount())
 

@@ -28,29 +28,16 @@ internal fun MdcScreen(viewModel: MainViewModel) {
     var connections by remember { mutableStateOf(stored.getOrDefault(emptyList())) }
     var selected by rememberSaveable { mutableStateOf<String?>(null) }
     var workId by rememberSaveable { mutableStateOf<String?>(null) }
+    var selection by rememberSaveable(selected) { mutableStateOf(MdcFilters()) }
     var query by rememberSaveable { mutableStateOf("") }
     var mode by rememberSaveable { mutableStateOf("works") }
     var selectedPlaylist by rememberSaveable { mutableStateOf("") }
     var playlists by remember { mutableStateOf(emptyList<MdcPlaylist>()) }
     var playlistWorks by remember { mutableStateOf(emptyList<Pair<String, String>>()) }
-    var genre by rememberSaveable { mutableStateOf("") }
-    var form by rememberSaveable { mutableStateOf("") }
-    var region by rememberSaveable { mutableStateOf("") }
-    var unknownYear by rememberSaveable { mutableStateOf(false) }
-    var status by rememberSaveable { mutableStateOf("all") }
-    var actor by rememberSaveable { mutableStateOf("") }
     var people by remember { mutableStateOf(emptyList<MdcPerson>()) }
-    var year by rememberSaveable { mutableStateOf("") }
-    var decade by rememberSaveable { mutableStateOf("") }
     var actorProfile by remember { mutableStateOf<org.json.JSONObject?>(null) }
     var expandedFilters by rememberSaveable { mutableStateOf(false) }
     var total by remember { mutableStateOf(0) }
-    var studio by rememberSaveable { mutableStateOf("") }
-    var series by rememberSaveable { mutableStateOf("") }
-    var label by rememberSaveable { mutableStateOf("") }
-    var platform by rememberSaveable { mutableStateOf("") }
-    var tag by rememberSaveable { mutableStateOf("") }
-    var sort by rememberSaveable { mutableStateOf("added") }
     var facetData by remember { mutableStateOf(org.json.JSONObject()) }
     var submittedQuery by rememberSaveable { mutableStateOf("") }
     var rows by remember { mutableStateOf(emptyList<UnifiedMediaItem>()) }
@@ -89,18 +76,18 @@ internal fun MdcScreen(viewModel: MainViewModel) {
     }
     val libraryScroll = rememberLazyGridState()
     val detailScroll = rememberLazyGridState()
-    val loader = remember(provider) {
-        provider?.let { p -> ImageLoader.Builder(context)
-            .components { add(OkHttpNetworkFetcherFactory(callFactory = { p.imageClient })) }.build() }
-    }
-    LaunchedEffect(Unit) {
-        busy = true
-        try { connections = viewModel.discoverMdcConnections() }
+    val loader = rememberMdcImageLoader(provider)
+    var discoveryAttempt by remember { mutableIntStateOf(0) }
+    var discoveryError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(discoveryAttempt) {
+        try {
+            val discovery = viewModel.discoverMdcConnections()
+            connections = discovery.connections
+            discoveryError = discovery.failedAccounts.takeIf { it.isNotEmpty() }?.joinToString(prefix = "未能连接：")
+        }
         catch (e: CancellationException) { throw e }
-        catch (e: Exception) { error = e.message }
-        finally { busy = false }
+        catch (e: Exception) { discoveryError = e.message ?: "服务发现失败" }
     }
-    DisposableEffect(loader) { onDispose { loader?.shutdown() } }
     var facetJob by remember { mutableStateOf<Job?>(null) }
     var actorJob by remember { mutableStateOf<Job?>(null) }
     var facetError by remember { mutableStateOf<String?>(null) }
@@ -142,18 +129,12 @@ internal fun MdcScreen(viewModel: MainViewModel) {
         val requestedWork = workId
         val requestedMode = mode
         val requestedPlaylist = selectedPlaylist
-        val requestedActor = actor
+        val requestedActor = selection.actor
         if (next == null) submittedQuery = query
         val filters = if (next != null) {
             org.json.JSONObject(loadedFilters?.toString() ?: return).put("cursor", next)
-        } else org.json.JSONObject().apply {
-            put("q", submittedQuery).put("sort", sort).put("unknown_year", unknownYear).put("status", status)
-            for ((key, value) in listOf("genres" to genre, "forms" to form, "regions" to region, "organizations" to studio,
-                "series" to series, "labels" to label, "platforms" to platform, "tags" to tag, "actors" to requestedActor)) {
-                if (value.isNotBlank()) put(key, org.json.JSONArray().put(value))
-            }
-            (year.toIntOrNull() ?: decade.toIntOrNull())?.let { put("year_from", it).put("year_to", if (year.isNotBlank()) it else it + 9) }
-        }
+        } else selection.request(submittedQuery)
+
         if (next == null && requestedWork == null) {
             facetJob?.cancel()
             actorJob?.cancel()
@@ -218,9 +199,16 @@ internal fun MdcScreen(viewModel: MainViewModel) {
         when {
             workId != null -> { workId = null; detail = null }
             selected != null -> {
-                selected = null; rows = emptyList(); query = ""; actor = ""; actorProfile = null
-                year = ""; decade = ""; studio = ""; tag = ""; genre = ""; form = ""; region = ""
-                unknownYear = false; status = "all"; mode = "works"; selectedPlaylist = ""; playlistWorks = emptyList()
+                selected = null
+                rows = emptyList()
+                selection = MdcFilters()
+                query = ""
+                actorProfile = null
+                mode = "works"
+                selectedPlaylist = ""
+                playlistWorks = emptyList()
+                cursor = null
+                loadedFilters = null
             }
             else -> viewModel.back()
         }
@@ -237,6 +225,9 @@ internal fun MdcScreen(viewModel: MainViewModel) {
         LazyVerticalGrid(GridCells.Adaptive(150.dp), state = if (workId == null) libraryScroll else detailScroll, contentPadding = PaddingValues(16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (connection == null) {
+                discoveryError?.let { message -> item(span = { GridItemSpan(maxLineSpan) }) {
+                    TextButton(onClick = { discoveryAttempt++ }) { Text("$message · 重试") }
+                } }
                 item(span = { GridItemSpan(maxLineSpan) }) { Text("我的服务共用统一账号。已登录 Novel 后，MDC 自动连接，无需再次认证。") }
                 items(connections, key = { it.id }) { c -> Card {
                     TextButton(onClick = { selected = c.id }) { Text(c.name) }
@@ -297,11 +288,11 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                 item(span = { GridItemSpan(maxLineSpan) }) { Column {
                     Row {
                         if (supportsTvBox) TextButton(onClick = { showTvBox = true }) { Text("TVBox") }
-                        TextButton(onClick = { mode = "works"; actor = ""; query = ""; load() }) { Text("全部作品") }
+                        TextButton(onClick = { mode = "works"; selection = MdcFilters(); query = ""; load() }) { Text("全部作品") }
                         TextButton(enabled = !busy, onClick = { mode = "playlists"; load() }) { Text("我的片单") }
                         TextButton(enabled = !busy, onClick = { mode = "actors"; query = "" }) { Text("演员库") }
                     }
-                    if (mode == "works" && actor.isNotBlank()) actorProfile?.let { profile ->
+                    if (mode == "works" && selection.actor.isNotBlank()) actorProfile?.let { profile ->
                         Text(profile.optString("name"), style = MaterialTheme.typography.headlineSmall)
                         profile.optJSONArray("aliases")?.let { aliases ->
                             Text((0 until aliases.length()).joinToString(" / ") { aliases.getString(it) })
@@ -318,9 +309,9 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                                         val value = values.getJSONObject(index)
                                         SuggestionChip(onClick = {
                                             when (key) {
-                                                "collaborators" -> actor = value.getString("id")
-                                                "series" -> series = value.getString("id")
-                                                else -> studio = value.getString("id")
+                                                "collaborators" -> selection = selection.copy(actor = value.getString("id"))
+                                                "series" -> selection = selection.copy(series = value.getString("id"))
+                                                else -> selection = selection.copy(studio = value.getString("id"))
                                             }
                                             query = ""; load()
                                         }, label = { Text("${value.getString("name")} · ${value.getInt("count")}") })
@@ -334,14 +325,13 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                     Text("$total 部作品", style = MaterialTheme.typography.titleSmall)
                     TextButton(onClick = { expandedFilters = !expandedFilters }) { Text(if (expandedFilters) "收起筛选" else "分类与筛选") }
                     if (expandedFilters) {
-                    OutlinedTextField(year, { year = it }, label = { Text("发行年份") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(selection.year, { selection = selection.copy(year = it) }, label = { Text("发行年份") }, modifier = Modifier.fillMaxWidth())
                     val decades = facetData.optJSONArray("decades")
                     if (decades != null) androidx.compose.foundation.lazy.LazyRow {
                         items(decades.length()) { index ->
                             val value = decades.getJSONObject(index)
-                            if (value.getString("id") != "unknown") FilterChip(decade == value.getString("id"), {
-                                decade = if (decade == value.getString("id")) "" else value.getString("id")
-                                year = ""; unknownYear = false; load()
+                            if (value.getString("id") != "unknown") FilterChip(selection.decade == value.getString("id"), {
+                                selection = selection.copy(decade = if (selection.decade == value.getString("id")) "" else value.getString("id"), year = "", unknownYear = false); load()
                             }, { Text("${value.getString("name")} 年代 · ${value.getInt("count")}") })
                         }
                     }
@@ -350,8 +340,8 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                     if (organizations != null) androidx.compose.foundation.lazy.LazyRow {
                         items(organizations.length()) { index ->
                             val value = organizations.getJSONObject(index)
-                            FilterChip(studio == value.getString("id"), {
-                                studio = if (studio == value.getString("id")) "" else value.getString("id")
+                            FilterChip(selection.studio == value.getString("id"), {
+                                selection = selection.copy(studio = if (selection.studio == value.getString("id")) "" else value.getString("id"))
                                 load()
                             }, { Text(value.getString("name")) })
                         }
@@ -364,10 +354,10 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                                 items(choices.length()) { index ->
                                     val choice = choices.getJSONObject(index)
                                     val id = choice.getString("id")
-                                    val current = when (key) { "labels" -> label; "platforms" -> platform; else -> series }
+                                    val current = when (key) { "labels" -> selection.label; "platforms" -> selection.platform; else -> selection.series }
                                     FilterChip(current == id, {
                                         val next = if (current == id) "" else id
-                                        when (key) { "labels" -> label = next; "platforms" -> platform = next; else -> series = next }
+                                        when (key) { "labels" -> selection = selection.copy(label = next); "platforms" -> selection = selection.copy(platform = next); else -> selection = selection.copy(series = next) }
                                         load()
                                     }, { Text("${choice.getString("name")} · ${choice.getInt("count")}") })
                                 }
@@ -379,17 +369,17 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                         val current = loadedFilters
                         if (p != null && current != null) loadFacets(p, current)
                     }) { Text("重试筛选统计") }
-                    if (actorError != null && actor.isNotBlank()) TextButton(onClick = {
-                        provider?.let { loadActor(it, actor) }
+                    if (actorError != null && selection.actor.isNotBlank()) TextButton(onClick = {
+                        provider?.let { loadActor(it, selection.actor) }
                     }) { Text("重试演员资料") }
-                    MdcTagFilters(facetData.optJSONArray("tags"), tag) { tag = it; load() }
+                    MdcTagFilters(facetData.optJSONArray("tags"), selection.tag) { selection = selection.copy(tag = it); load() }
                     Row {
-                        Checkbox(unknownYear, { unknownYear = it; year = ""; decade = ""; load() })
+                        Checkbox(selection.unknownYear, { selection = selection.copy(unknownYear = it, year = "", decade = ""); load() })
                         Text("发行年待补")
                     }
                     Row {
                         listOf("added" to "最近入库", "newest" to "最新发行", "title" to "片名").forEach { (key, text) ->
-                            FilterChip(sort == key, { sort = key; load() }, { Text(text) })
+                            FilterChip(selection.sort == key, { selection = selection.copy(sort = key); load() }, { Text(text) })
                         }
                     }
                     listOf("genres" to "题材", "forms" to "形式", "regions" to "制作地区").forEach { (key, label) ->
@@ -399,10 +389,10 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                             androidx.compose.foundation.lazy.LazyRow {
                                 items(values.length()) { index ->
                                     val value = values.getJSONObject(index)
-                                    val current = when (key) { "genres" -> genre; "forms" -> form; else -> region }
+                                    val current = when (key) { "genres" -> selection.genre; "forms" -> selection.form; else -> selection.region }
                                     FilterChip(current == value.getString("id"), {
                                         val next = if (current == value.getString("id")) "" else value.getString("id")
-                                        when (key) { "genres" -> genre = next; "forms" -> form = next; else -> region = next }
+                                        when (key) { "genres" -> selection = selection.copy(genre = next); "forms" -> selection = selection.copy(form = next); else -> selection = selection.copy(region = next) }
                                         load()
                                     }, { Text(value.getString("name")) })
                                 }
@@ -411,12 +401,13 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                     }
                     Row {
                         listOf("all" to "全部", "emby" to "Emby", "files" to "有文件", "metadata" to "仅资料").forEach { (key, label) ->
-                            FilterChip(status == key, { status = key; load() }, { Text(label) })
+                            FilterChip(selection.status == key, { selection = selection.copy(status = key); load() }, { Text(label) })
                         }
                     }
                     TextButton(onClick = {
-                        year = ""; decade = ""; unknownYear = false; genre = ""; form = ""; region = ""
-                        studio = ""; tag = ""; actor = ""; query = ""; status = "all"; load()
+                        selection = MdcFilters()
+                        query = ""
+                        load()
                     }) { Text("清除条件") }
                     }
                     }
@@ -436,7 +427,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
                     }
                 }
                 if (mode == "actors") items(people, key = { it.id }) { person ->
-                    Card(onClick = { actor = person.id; mode = "works"; query = ""; actorProfile = null; load() }) {
+                    Card(onClick = { selection = selection.copy(actor = person.id); mode = "works"; query = ""; actorProfile = null; load() }) {
                         Column(Modifier.padding(16.dp)) {
                             if (loader != null) MdcArtwork(person.imageUrl, person.name, loader,
                                 Modifier.fillMaxWidth().height(150.dp), "暂无头像")
@@ -551,13 +542,34 @@ internal fun MdcScreen(viewModel: MainViewModel) {
 }
 
 @Composable
-private fun MdcArtwork(url: String?, description: String, loader: ImageLoader, modifier: Modifier,
+internal fun MdcArtwork(url: String?, description: String, loader: MdcImageLoader, modifier: Modifier,
     unavailable: String = "暂无封面") {
-    var failed by remember(url) { mutableStateOf(url.isNullOrBlank()) }
+    var failed by remember(url, loader) { mutableStateOf(url.isNullOrBlank()) }
     Box(modifier, contentAlignment = Alignment.Center) {
-        AsyncImage(url, description, imageLoader = loader, modifier = Modifier.fillMaxSize(),
+        val context = LocalContext.current
+        val request = remember(url, loader) {
+            val key = "${loader.connectionId}:$url"
+            coil3.request.ImageRequest.Builder(context).data(url).memoryCacheKey(key).diskCacheKey(key).build()
+        }
+        AsyncImage(request, description, imageLoader = loader.images, modifier = Modifier.fillMaxSize(),
             onSuccess = { failed = false }, onError = { failed = true })
         if (failed) Text(unavailable, color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall)
     }
+}
+
+
+internal data class MdcImageLoader(val connectionId: String, val images: ImageLoader)
+
+@Composable
+internal fun rememberMdcImageLoader(provider: MdcMediaProvider?): MdcImageLoader? {
+    val context = LocalContext.current.applicationContext
+    val loader = remember(provider) {
+        provider?.let {
+            MdcImageLoader(it.connection.id, ImageLoader.Builder(context)
+                .components { add(OkHttpNetworkFetcherFactory(callFactory = { it.imageClient })) }.build())
+        }
+    }
+    DisposableEffect(loader) { onDispose { loader?.images?.shutdown() } }
+    return loader
 }
