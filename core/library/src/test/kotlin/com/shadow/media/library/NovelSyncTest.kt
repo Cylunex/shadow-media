@@ -59,16 +59,13 @@ class NovelSyncTest {
         try {
             val version = publication.versionId
             val manifestOne = api.json(c, listOf("works", id, "reading-manifest"), listOf("version_id" to version, "limit" to "1"))
-            val manifestThree = api.json(c, listOf("works", id, "reading-manifest"), listOf("version_id" to version, "limit" to "3"))
             val open = api.json(c, listOf("works", id, "open"), listOf("version_id" to version))
             api.download(c, listOf("works", id, "publication.epub"), one, listOf("version_id" to version, "limit" to "1"))
-            val broken = mapping.chapters[1].getString("id")
             simulated.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse = when {
                     request.path!!.contains("/open") -> MockResponse().setBody(open.toString())
-                    request.path!!.contains("reading-manifest") -> MockResponse().setBody(if (request.requestUrl!!.queryParameter("limit") == "1") manifestOne.toString() else manifestThree.toString())
+                    request.path!!.contains("reading-manifest") && request.requestUrl!!.queryParameter("limit") == "1" -> MockResponse().setBody(manifestOne.toString())
                     request.path!!.contains("publication.epub") && request.requestUrl!!.queryParameter("limit") == "1" -> MockResponse().setBody(okio.Buffer().write(one.readBytes()))
-                    request.path!!.contains("publication.epub") -> MockResponse().setResponseCode(409).setBody(JSONObject().put("detail", JSONObject().put("code", "publication_not_cached").put("missing_chapter_ids", org.json.JSONArray().put(broken))).toString())
                     else -> MockResponse().setResponseCode(503).setBody("{}")
                 }
             }

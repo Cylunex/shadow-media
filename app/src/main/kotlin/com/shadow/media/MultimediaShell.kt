@@ -139,7 +139,11 @@ import com.shadow.media.reading.ReaderActivity
                     try {
                         val publication = container.novel.dao.publication(item.id)
                         val connected = runCatching { container.novel.connection(item.providerId) }.getOrNull()
-                        val prepared = if (publication != null && connected != null) container.novel.prepare(connected, publication.workId) else publication?.let { container.novel.resumeCached(it) } ?: com.shadow.media.library.NovelRepository.Prepared(item, null)
+                        val prepared = when {
+                            publication == null -> com.shadow.media.library.NovelRepository.Prepared(item, null)
+                            connected != null -> container.novel.prepare(connected, publication.workId)
+                            else -> requireNotNull(container.novel.resumeCached(publication)) { "本机找不到可读章节，请重新连接并下载" }
+                        }
                         context.startActivity(Intent(context, ReaderActivity::class.java).putExtra("assetId", prepared.asset.id).putExtra("novelLocator", prepared.locator))
                     } catch (e: CancellationException) { throw e }
                     catch (e: Exception) { message = e.message ?: "Novel 图书打开失败" }

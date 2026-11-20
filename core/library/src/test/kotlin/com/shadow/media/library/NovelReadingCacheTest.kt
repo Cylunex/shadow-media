@@ -368,6 +368,47 @@ class NovelReadingCacheTest {
         }
     }
 
+    @Test fun offlineOpenSkipsDamagedWindowsAndHonorsExplicitChapterAndVersion() = runBlocking {
+        Service().use { service ->
+            val repository = repository(service)
+            val broken = repository.cache.window(service.c, "work", "v1", 0, 1)
+            val later = repository.cache.window(service.c, "work", "v1", 4, 1)
+            repository.cache.window(service.c, "work", "v2", 0, 1)
+            val library = LibraryRepository(RuntimeEnvironment.getApplication())
+            library.localFile(broken.asset).writeText("truncated")
+            val before = service.requests.size
+            LibraryResources.offlineOnly = true
+            try {
+                val opened = repository.prepare(service.c, "work", "v1")
+                assertEquals(later.asset.id, opened.asset.id)
+                assertEquals("chapters/c4.xhtml", JSONObject(opened.locator!!).getString("href"))
+                val missing = runCatching { repository.prepare(service.c, "work", "v1", "c0") }.exceptionOrNull()
+                assertEquals("此章节尚未下载", missing?.message)
+                assertEquals(before, service.requests.size)
+                assertNull(repository.dao.state(NovelRepository.stateId(novelScope(service.c), "work")))
+            } finally { LibraryResources.offlineOnly = false }
+        }
+    }
+
+    @Test fun unreadDownloadOpensAfterDisconnectWhileServerRejectionsRemainVisible() = runBlocking {
+        Service().use { service ->
+            val repository = repository(service)
+            repository.cache.window(service.c, "work", "v1", 5, 1)
+            val first = repository.cache.window(service.c, "work", "v1", 1, 1)
+            service.server.dispatcher = QueueDispatcher()
+            service.server.enqueue(MockResponse().setResponseCode(403).setBody("{}"))
+            val rejected = runCatching { repository.prepare(service.c, "work") }.exceptionOrNull()
+            assertEquals(403, (rejected as NovelApiException).status)
+            service.server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) = MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
+            }
+            val opened = repository.prepare(service.c, "work")
+            assertEquals(first.asset.id, opened.asset.id)
+            assertEquals("chapters/c1.xhtml", JSONObject(opened.locator!!).getString("href"))
+            assertNull(repository.dao.state(NovelRepository.stateId(novelScope(service.c), "work")))
+        }
+    }
+
     @Test fun redirectedDetailRemainsAvailableAfterNavigationToTheCanonicalWorkOffline() = runBlocking {
         Service().use { service ->
             service.detail = "canonical"

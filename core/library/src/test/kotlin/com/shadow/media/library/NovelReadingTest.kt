@@ -40,6 +40,23 @@ class NovelReadingTest {
         assertTrue(position.getJSONObject("anchor").toString().toByteArray().size < 8192)
         assertEquals(0.1, position.getDouble("ratio"), 0.0001)
     }
+    @Test fun longQuotedTextKeepsTheExactOffsetAndReflowDoesNotCreateMovement() {
+        val map = mapping()
+        fun locator(offset: Int, ratio: Double) = JSONObject().put("href", "chapters/c1.xhtml")
+            .put("locations", JSONObject().put("progression", ratio))
+            .put("text", JSONObject().put("before", "章节📖".repeat(1500)))
+            .put("native_text", JSONObject().put("schema", 1).put("version_id", "v1").put("chapter_id", "c1")
+                .put("text_hash", "b".repeat(64)).put("offset", offset))
+        val initial = locator(710, .2)
+        val position = map.position(initial)!!
+        val anchor = position.getJSONObject("anchor")
+        assertTrue(anchor.toString().toByteArray(Charsets.UTF_8).size <= 8192)
+        assertEquals(710, map.locator(position)!!.getJSONObject("native_text").getInt("offset"))
+        val tracker = NovelLocatorTracker(map)
+        assertFalse(tracker.moved(initial))
+        assertTrue(tracker.moved(locator(711, .2)))
+        assertFalse(tracker.moved(locator(711, .21)))
+    }
     @Test(expected = IllegalArgumentException::class) fun ambiguousMappingIsRejected() {
         val json = JSONObject(mapping().json.toString()); json.getJSONArray("chapters").put(json.getJSONArray("chapters").getJSONObject(0))
         NovelPublicationMap(json)

@@ -25,6 +25,8 @@ data class NovelChapterMembership(
 
 data class NovelChapterAsset(val chapterId: String, val assetId: String)
 
+data class NovelResumeWindow(@Embedded val publication: NovelPublicationEntity, val locatorJson: String?, val lastRead: Long?)
+
 /** A frozen request and the newest locator are independent durable slots. */
 @Entity(tableName = "novel_reading_states", indices = [Index("scope")])
 data class NovelReadingStateEntity(
@@ -44,6 +46,10 @@ data class NovelReadingStateEntity(
     @Query("SELECT * FROM novel_publications WHERE scope = :scope AND workId = :work AND versionId = :version LIMIT 1")
     suspend fun publication(scope: String, work: String, version: String): NovelPublicationEntity?
     @Query("SELECT * FROM novel_publications WHERE scope = :scope") suspend fun publications(scope: String): List<NovelPublicationEntity>
+    @Query("""SELECT p.*, r.locatorJson, r.updatedAt AS lastRead FROM novel_publications p
+        LEFT JOIN progress_records r ON r.assetId = p.assetId
+        WHERE p.scope = :scope AND p.workId = :work AND (:version IS NULL OR p.versionId = :version)""")
+    suspend fun resumeWindows(scope: String, work: String, version: String?): List<NovelResumeWindow>
     @Query("SELECT * FROM novel_publications WHERE scope = :scope AND workId = :work AND versionId = :version")
     suspend fun windows(scope: String, work: String, version: String): List<NovelPublicationEntity>
     @Upsert suspend fun putPublication(value: NovelPublicationEntity)

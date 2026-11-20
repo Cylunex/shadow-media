@@ -6,6 +6,12 @@ import com.shadow.media.model.MediaKey
 import com.shadow.media.model.UnifiedMediaItem
 import com.shadow.media.model.UnifiedMediaPage
 import com.shadow.media.model.UnifiedPlaybackRequest
+import com.shadow.media.database.LocalMediaStateRepository
+import com.shadow.media.database.MediaHistoryEntity
+import com.shadow.media.database.ShadowMediaDatabase
+import androidx.room.Room
+import kotlinx.coroutines.flow.first
+import org.robolectric.RuntimeEnvironment
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
@@ -21,6 +27,52 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28], application = android.app.Application::class)
 @RunWith(RobolectricTestRunner::class)
 class MdcTvBoxProviderTest {
+    @Test fun seriesDetailRestoresEpisodeAndLineUsingOnlyVisibleHistoryFromThisSeries() = kotlinx.coroutines.runBlocking {
+        val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), ShadowMediaDatabase::class.java).build()
+        try {
+            val local = LocalMediaStateRepository(db.dao())
+            val owner = "mdc-tvbox:one"
+            val series = UnifiedMediaItem(MediaKey(owner, "site:film_1"), "剧名", "Series")
+            fun episode(id: String, title: String, line: String) =
+                UnifiedMediaItem(MediaKey(owner, series.key.itemId + ":" + id), "剧名 · $title", "Episode", subtitle = line)
+            val first = episode("a", "第一集", "A")
+            val second = episode("a2", "第二集", "A")
+            val alternate = episode("b", "第一集", "B")
+            val children = listOf(first, second, alternate)
+            suspend fun saved(key: MediaKey, time: Long, position: Long = 5000, done: Boolean = false) =
+                local.recordHistory(MediaHistoryEntity(key.stableId, key.providerId, key.itemId, "历史标题",
+                    positionMs = position, completed = done, lastPlayedAtEpochMs = time))
+            suspend fun guide(line: String? = null): TvBoxEpisodeGuide = tvBoxEpisodeGuide(series, children,
+                local.episodeHistory(owner, series.key.itemId).first(), line)
+            assertEquals(first, guide().target)
+            saved(first.key, 100, done = true)
+            saved(alternate.key, 200, position = 45000)
+            saved(second.key.copy(providerId = "mdc-tvbox:other"), 300)
+            saved(MediaKey(owner, "site:filmX1:a2"), 400)
+            saved(MediaKey(owner, "site:film_10:a2"), 500)
+            saved(MediaKey(owner, "site:film_1:removed"), 600)
+            saved(second.key, 700, position = 0)
+            val rows = local.episodeHistory(owner, series.key.itemId).first()
+            assertEquals(4, rows.size)
+            assertEquals("B", guide().line)
+            assertEquals(alternate.copy(progressMs = 45000), guide().target)
+            assertEquals("继续 第一集 · 0:45", guide().action)
+            val selected = guide("A")
+            assertEquals(second, selected.target)
+            assertEquals("接着看 第二集", selected.action)
+            assertTrue(selected.episodes.first().played)
+            val duplicateFirst = episode("another-first", "第一集", "A")
+            assertEquals(second, tvBoxEpisodeGuide(series, listOf(first, duplicateFirst, second), rows, "A").target)
+            assertEquals("B", guide("已移除的线路").line)
+            saved(second.key, 800, done = true)
+            assertEquals("重播 第二集", guide().action)
+            assertEquals(0L, guide().target!!.progressMs)
+            assertEquals(null, tvBoxEpisodeGuide(series, emptyList(), rows, null).target)
+        } finally {
+            db.close()
+        }
+    }
+
     @Test fun failedFirstAndSecondResolversFallThroughWithoutReplayingAnAttemptedLine() = runTest {
         MockWebServer().use { server ->
             val provider = MdcTvBoxProvider(MdcMediaProvider(CatalogConnection(name = "MDC", kind = CatalogKind.OPDS,

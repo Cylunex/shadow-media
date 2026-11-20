@@ -60,13 +60,13 @@
 - `NovelApi` 构造已知 API 路径与重复查询参数；每次重定向在发送前校验 scheme/host/port，跨源 GET/正文/凭据均拒绝。HTTP 必须显式启用。Basic/Bearer 凭据仅保存在加密连接库。
 - `NovelRepository` 使用 `works`、`navigation`、`city/home`、`authors`、`booklists`、`me/books` 等原生接口。普通写操作直接调用服务端，失败保留表单并显示错误。缓存页面标明时间，认证与业务错误不会伪装成缓存成功。
 - 浏览缓存使用现有 Room `catalog_pages`，键包含连接作用域；递归移除服务地址、文件路径与来源 URL。读取包使用 `reading-manifest` 与 `publication.epub`；标题来自 manifest，安装时同时解析 OPF 的真实书名和作者。
-- 默认窗口为 **3 个目录节点**，未缓存时只按服务端 `missing_chapter_ids` 载入当前窗口正文并重试，不因首次阅读抓取整本网文；后续章节载入失败时退回当前单章，避免阻塞已经可读的当前位置。卷标题不进入 spine；后续窗口按 `next_offset` 接续。
+- 打开作品时先获取所选的单章。章节显示后，原生阅读器按需向后预取三个可读章节，跳过卷标题。仅离线模式或请求开书时断网，会在当前作品的本机阅读包中恢复已保存的位置。首次打开已下载的作品从最靠前的可读章节开始。指定版本或章节时只使用匹配的阅读包，读取前校验文件摘要。
 - 资源身份为 `(connection scope, work_id, version_id, package SHA-256)`；安装资源 ID 使用现有书库要求的 64 位十六进制哈希。Room `novel_publications` 保存资源与 `shadow-novel.json` 的映射。导入前校验包身份及窗口章节集合与 manifest 一致。
 - `LibraryRepository.importPrepared` 验证 EPUB，既有 `PublicationSanitizer` 去除脚本和外部加载；`NativeTextReaderActivity` 使用 Legado 断行和卷页代码绘制 Canvas，EPUB 仅用作不可变章节运输容器。不同窗口独立保留，书签汇总同版本下载包并打开原位置。
 
 ## 位置与同步
 
-`NovelPublicationMap` 将阅读器 href（去容器前缀、片段及查询）精确匹配到唯一 `chapter_id`，仅用 `locations.progression` 表示章内 ratio；不从全书百分比猜章节。完整 Locator 留在本机；远端 anchor 超过 8192 字节时只发送安全的章节路径和章内比例。恢复会移除属于另一窗口的 totalProgression/position，保留身份和文本 hash 合法的 `native_text` 字符锚点；跨 `version_id` 不复用 locator。服务端 `quality` 无法精确映射时要求选择目录章节。
+`NovelPublicationMap` 将阅读器 href 去掉容器前缀、片段及查询后匹配到唯一的 `chapter_id`，用 `locations.progression` 表示章内比例。完整 Locator 保存在本机。远端 anchor 超过 8192 字节时，客户端保留章节路径、章内比例及有效的 `text_v1` 正文摘要和字符偏移。恢复时按版本和章节校验位置，舍弃旧窗口的 totalProgression 和 position。服务端无法定位时由读者选择章节。[Readium Locator 规范](https://readium.org/architecture/models/locators/)
 
 Room `novel_reading_states` 按连接/作品保存已知 revision、最新本地位置、本地序号、稳定 client_id、递增 client_seq、冻结请求、请求对应的序号、冲突和错误。既有资源修订/阅读会话检查通过后，本地进度与 Novel 待同步状态在同一事务写入。
 

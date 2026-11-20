@@ -188,24 +188,41 @@ class NovelRepository(private val context: Context, private val library: Library
     suspend fun resumeCached(publication: NovelPublicationEntity): Prepared? {
         val position = dao.state(stateId(publication.scope, publication.workId))?.localPosition
             ?.takeIf(String::isNotBlank)?.let { runCatching { JSONObject(it) }.getOrNull() }
-        val candidates = dao.publications(publication.scope).filter { it.workId == publication.workId }
-        val recent = candidates.map { it to library.dao.progress(it.assetId) }
-            .sortedWith(compareByDescending<Pair<NovelPublicationEntity, ContentProgressEntity?>> { it.first.assetId == position?.optString("asset_id") }
-                .thenByDescending { it.second?.updatedAt ?: 0 })
-        for ((window, progress) in recent) {
-            val asset = library.dao.asset(window.assetId) ?: continue
-            if (!runCatching { library.localFile(asset).isFile }.getOrDefault(false)) continue
-            val locator = if (window.assetId == position?.optString("asset_id"))
-                NovelPublicationMap(JSONObject(window.mappingJson)).locator(position)?.toString() else progress?.locatorJson
-            return Prepared(asset, locator)
+        return resumeCached(publication.scope, publication.workId, null, null, position)
+    }
+
+    private suspend fun resumeCached(scope: String, work: String, version: String?, chapter: String?, position: JSONObject?): Prepared? {
+        val saved = position?.takeIf { chapter == null && (version == null || version == it.optString("version_id")) }
+        if (saved != null) {
+            cachedPosition(scope, work, saved)?.let { return it }
+        }
+        val windows = dao.resumeWindows(scope, work, version).map { it to NovelPublicationMap(JSONObject(it.publication.mappingJson)) }
+            .sortedWith(compareByDescending<Pair<NovelResumeWindow, NovelPublicationMap>> { it.first.lastRead }
+                .thenBy { it.second.chapters.first().novelRowOffset() }.thenBy { it.first.publication.assetId })
+        for ((row, mapping) in windows) {
+            if (chapter != null && mapping.chapter(chapter) == null) continue
+            if (!cache.valid(row.publication, verify = true)) continue
+            val asset = library.dao.asset(row.publication.assetId) ?: continue
+            if (chapter == null && row.locatorJson != null) return Prepared(asset, row.locatorJson)
+            val start = JSONObject().put("version_id", mapping.versionId)
+                .put("chapter_id", chapter ?: mapping.chapters.first().getString("id")).put("ratio", 0)
+            return Prepared(asset, mapping.locator(start)?.toString())
         }
         return null
     }
 
     suspend fun cachedChapter(scope: String, workId: String, versionId: String, chapterId: String): Prepared? {
+        val start = JSONObject().put("version_id", versionId).put("chapter_id", chapterId).put("ratio", 0)
+        return cachedPosition(scope, workId, start)
+    }
+
+    private suspend fun cachedPosition(scope: String, workId: String, position: JSONObject): Prepared? {
+        val versionId = position.optString("version_id")
+        val chapterId = position.optString("chapter_id")
         val existing = cache.chapterWindows(scope, workId, versionId, listOf(chapterId), verify = true)[chapterId] ?: return null
         val mapping = NovelPublicationMap(JSONObject(existing.mappingJson))
-        return Prepared(requireNotNull(library.dao.asset(existing.assetId)), mapping.locator(JSONObject().put("version_id", versionId).put("chapter_id", chapterId).put("ratio", 0))?.toString())
+        val asset = library.dao.asset(existing.assetId) ?: return null
+        return Prepared(asset, mapping.locator(position)?.toString())
     }
     suspend fun prepare(c: CatalogConnection, workId: String, versionId: String? = null, chapterId: String? = null, useRemote: Boolean = false): Prepared = readingLock.withLock {
         ProgressWriter.flush()
@@ -215,31 +232,20 @@ class NovelRepository(private val context: Context, private val library: Library
         if (chapterId != null && versionId != null) {
             cachedChapter(scope, workId, versionId, chapterId)?.let { return@withLock it }
         }
-        var localPrepared: Prepared? = null
-        if (!useRemote && chapterId == null && local != null && (versionId == null || local.optString("version_id") == versionId)) {
-            local.optString("asset_id").takeIf(String::isNotBlank)?.let { id ->
-                val asset = library.dao.asset(id)
-                val mapping = dao.publication(id)?.let { NovelPublicationMap(JSONObject(it.mappingJson)) }
-                if (asset != null && mapping != null && runCatching { library.localFile(asset).isFile }.getOrDefault(false)) {
-                    localPrepared = Prepared(asset, mapping.locator(local)?.toString())
-                }
+        if (!useRemote && state?.pending == true && local != null && chapterId == null &&
+            (versionId == null || versionId == local.optString("version_id"))) {
+            cachedPosition(scope, workId, local)?.let { cached ->
+                schedule(context)
+                return@withLock cached
             }
         }
-        if (localPrepared != null && (state?.pending == true || LibraryResources.offlineOnly)) {
-            schedule(context)
-            return@withLock localPrepared!!
-        }
         if (LibraryResources.offlineOnly) {
-            val map = dao.publications(scope).firstOrNull { it.workId == workId && (versionId == null || it.versionId == versionId) &&
-                (chapterId == null || NovelPublicationMap(JSONObject(it.mappingJson)).chapter(chapterId) != null) } ?: error("此章节尚未下载")
-            val asset = requireNotNull(library.dao.asset(map.assetId))
-            val position = JSONObject().put("version_id", map.versionId).put("chapter_id", chapterId ?: NovelPublicationMap(JSONObject(map.mappingJson)).chapters.first().getString("id")).put("ratio", 0)
-            return@withLock Prepared(asset, NovelPublicationMap(JSONObject(map.mappingJson)).locator(position)?.toString())
+            return@withLock resumeCached(scope, workId, versionId, chapterId, local) ?: error("此章节尚未下载")
         }
         val open = try { api.json(c, listOf("works", workId, "open"), listOfNotNull("compact" to "true", versionId?.let { "version_id" to it }, chapterId?.let { "chapter_id" to it })) }
         catch (e: CancellationException) { throw e }
         catch (e: java.io.IOException) {
-            if (e !is NovelApiException && localPrepared != null) return@withLock localPrepared!!
+            if (e !is NovelApiException) resumeCached(scope, workId, versionId, chapterId, local)?.let { return@withLock it }
             throw e
         }
         val selectedVersion = open.getString("version_id")

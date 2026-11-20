@@ -32,6 +32,13 @@ internal fun portableMdc(connection: CatalogConnection, tvbox: Boolean): String 
     return accountScope(if (tvbox) "mdc-tvbox" else "mdc", connection.base().toString(), "mdc", owner)
 }
 
+internal fun MediaKey.localMdcKey(connections: List<CatalogConnection>): MediaKey? {
+    val tvbox = providerId.startsWith("mdc-tvbox:")
+    if (!tvbox && !providerId.startsWith("mdc:")) return null
+    val connection = connections.singleOrNull { portableMdc(it, tvbox) == providerId } ?: return null
+    return copy(providerId = (if (tvbox) "mdc-tvbox:" else "mdc:") + connection.id)
+}
+
 internal fun CatalogConnection.handoffAccount() = accountScope("handoff", base().toString(), oidcIssuer, oidcSubject, oidcClientId)
 
 internal class DeviceHandoff(context: Context, private val container: AppContainer) {
@@ -65,16 +72,9 @@ internal class DeviceHandoff(context: Context, private val container: AppContain
     fun observe(source: String, item: String, title: String, position: Long) {
         if (accountId != null) latest = playback(source, item, title, position)
     }
-    private suspend fun localKey(key: MediaKey, vm: MainViewModel): MediaKey {
-        if (!key.providerId.startsWith("mdc:") && !key.providerId.startsWith("mdc-tvbox:")) return key
-        val tvbox = key.providerId.startsWith("mdc-tvbox:")
-        fun match(rows: List<CatalogConnection>) = rows.singleOrNull { portableMdc(it, tvbox) == key.providerId }
-        val c = match(vm.knownMdcConnections().connections) ?: match(vm.discoverMdcConnections().connections)
-            ?: error("此设备尚未连接相同的 MDC 片库")
-        return MediaKey((if (tvbox) "mdc-tvbox:" else "mdc:") + c.id, key.itemId)
-    }
     suspend fun resume(row: DevicePlayback, vm: MainViewModel) {
-        val key = localKey(row.key, vm)
+        val key = if (row.key.providerId.startsWith("mdc:") || row.key.providerId.startsWith("mdc-tvbox:"))
+            vm.resolveMdcHandoff(row.key) else row.key
         vm.resumeDevicePlayback(key, row.position)
     }
     private fun account(id: String) = accounts().singleOrNull { it.handoffAccount() == id } ?: error("请重新选择已登录的统一账号")

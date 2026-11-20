@@ -32,6 +32,24 @@ class DevicePlaybackFeatureTest {
         assertNotEquals(account.handoffAccount(), account.copy(url = "https://example.com/other/").handoffAccount())
     }
 
+    @Test fun sharedEpisodeLinkResolvesDifferentDeviceSlotAndRetainsPositionAndLegacyLinks() {
+        val phone = CatalogConnection(id = "phone", name = "片库", url = "https://example.com/mdc/",
+            kind = CatalogKind.OPDS, token = "REPLACE_ACCOUNT")
+        val tv = phone.copy(id = "tv")
+        val saved = MediaKey(portableMdc(phone, true), "site:film:episode")
+        val link = saved.toHandoffUri(123456, accountScopedMdc = true)
+        assertFalse(link.toString().contains(phone.token))
+        assertFalse(link.toString().contains(phone.id))
+        val received = requireNotNull(link.toMediaHandoffOrNull())
+        assertTrue(received.accountScopedMdc)
+        assertEquals(123456L, received.positionMs)
+        assertEquals(MediaKey("mdc-tvbox:tv", saved.itemId), received.key.localMdcKey(listOf(tv)))
+        assertNull(received.key.localMdcKey(listOf(tv.copy(token = "REPLACE_OTHER"))))
+        assertNull(received.key.localMdcKey(listOf(phone, tv)))
+        val legacy = MediaKey("mdc-tvbox:phone", saved.itemId)
+        assertEquals(MediaHandoff(legacy, 0), legacy.toHandoffUri().toMediaHandoffOrNull())
+    }
+
     @Test fun feedModesKeepTheirOwnQueuesAndSeenIsScopedToTheAccountAndLibrary() {
         val store = FeedSessionStore(RuntimeEnvironment.getApplication())
         val owner = EmbySession("https://example.com", "demo", "owner", "", "", false)

@@ -35,16 +35,17 @@ class NovelPublicationMap(val json: JSONObject) {
         val fragment = runCatching { URI(locator.optString("href")).fragment }.getOrNull()
         if (!fragment.isNullOrBlank() && fragment.length <= 2048 && remoteLocator.getJSONObject("locations").optJSONArray("fragments") == null)
             remoteLocator.getJSONObject("locations").put("fragments", org.json.JSONArray().put(fragment))
-        var anchor = JSONObject().put("media_locator", remoteLocator)
+        val anchor = JSONObject().put("media_locator", remoteLocator)
         remoteLocator.optJSONObject("native_text")?.takeIf {
             it.optInt("schema") == 1 && it.optString("chapter_id") == chapter.getString("id") &&
                 it.optString("version_id") == versionId && it.optString("text_hash").matches(Regex("[a-f0-9]{64}")) && it.optInt("offset", -1) >= 0
         }?.let {
             anchor.put("text_v1", JSONObject().put("text_hash", it.optString("text_hash")).put("offset", it.optInt("offset", -1)))
         }
-        if (anchor.toString().toByteArray(Charsets.UTF_8).size > 8192) anchor = JSONObject().put("media_locator", JSONObject()
-            .put("href", chapter.getString("href")).put("type", "application/xhtml+xml")
-            .put("locations", JSONObject().put("progression", ratio)))
+        if (anchor.toString().toByteArray(Charsets.UTF_8).size > 8192) {
+            anchor.put("media_locator", JSONObject().put("href", chapter.getString("href")).put("type", "application/xhtml+xml")
+                .put("locations", JSONObject().put("progression", ratio)))
+        }
         return JSONObject().put("version_id", versionId).put("chapter_id", chapter.getString("id"))
             .put("ratio", ratio).put("anchor", anchor)
     }
@@ -78,14 +79,18 @@ class NovelPublicationMap(val json: JSONObject) {
 
 /** Navigator emits a position while opening/reflowing. Only a subsequent movement becomes a mutation. */
 class NovelLocatorTracker(private val mapping: NovelPublicationMap) {
-    private var initialized = false
     private var previous: JSONObject? = null
     fun moved(locator: JSONObject): Boolean {
         val position = mapping.position(locator) ?: return false
-        val changed = previous?.optString("chapter_id") != position.getString("chapter_id") || previous?.optDouble("ratio") != position.getDouble("ratio")
+        val before = previous
         previous = position
-        val accept = initialized && changed
-        initialized = true
-        return accept
+        if (before == null) return false
+        if (before.getString("chapter_id") != position.getString("chapter_id")) return true
+        val oldText = before.getJSONObject("anchor").optJSONObject("text_v1")
+        val newText = position.getJSONObject("anchor").optJSONObject("text_v1")
+        if (oldText != null && newText != null && oldText.getString("text_hash") == newText.getString("text_hash")) {
+            return oldText.getInt("offset") != newText.getInt("offset")
+        }
+        return before.getDouble("ratio") != position.getDouble("ratio")
     }
 }

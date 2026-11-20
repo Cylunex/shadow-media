@@ -281,14 +281,20 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
     val context = LocalContext.current
     val detail = state.selectedUnifiedDetail
     val loader = rememberMdcImageLoader(detail?.item?.key?.providerId?.let(viewModel::artworkProvider))
-    val lines = remember(detail) {
-        if (detail?.item?.key?.providerId?.startsWith("mdc-tvbox:") == true)
-            detail.children.map { it.subtitle.orEmpty() }.distinct() else emptyList()
-    }
     var selectedLine by rememberSaveable(detail?.item?.key?.stableId) { mutableStateOf<String?>(null) }
     var descending by rememberSaveable(detail?.item?.key?.stableId) { mutableStateOf(false) }
-    val line = selectedLine?.takeIf { it in lines } ?: lines.firstOrNull()
-    val episodes = remember(detail, line) { detail?.children.orEmpty().filter { line == null || it.subtitle.orEmpty() == line } }
+    val series = detail?.takeIf { it.item.key.providerId.startsWith("mdc-tvbox:") && it.item.type == "Series" }
+    val guide = series?.let { current ->
+        androidx.compose.runtime.key(current.item.key) {
+            val history by remember(viewModel, current.item.key) { viewModel.episodeHistory(current.item.key) }
+                .collectAsStateWithLifecycle(initialValue = null)
+            remember(current, history, selectedLine) {
+                history?.let { tvBoxEpisodeGuide(current.item, current.children, it, selectedLine) }
+            }
+        }
+    }
+    val lines = guide?.lines.orEmpty()
+    val episodes = if (series != null) guide?.episodes.orEmpty() else detail?.children.orEmpty()
     LazyColumn(
         modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
         contentPadding = PaddingValues(bottom = 36.dp),
@@ -303,9 +309,12 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
             )
         }
         if (detail != null) {
-            val firstTarget = episodes.firstOrNull { !it.type.equals("Folder", true) }
-                ?: episodes.firstOrNull()
-                ?: detail.item.takeUnless { it.type.equals("Folder", true) }
+            val firstTarget = if (series != null) {
+                guide?.target
+            } else {
+                episodes.firstOrNull { !it.type.equals("Folder", true) } ?: episodes.firstOrNull()
+                    ?: detail.item.takeUnless { it.type.equals("Folder", true) }
+            }
             item {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 20.dp),
@@ -327,7 +336,7 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                             onClick = {
                                 firstTarget?.let { target ->
                                     if (target.type.equals("Folder", true)) viewModel.openUnifiedItem(target)
-                                    else viewModel.playUnifiedItem(target)
+                                    else viewModel.playUnifiedItem(target, useSavedPosition = state.handoffDetailKey != target.key)
                                 }
                             },
                             enabled = firstTarget != null,
@@ -337,8 +346,11 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                             Spacer(Modifier.width(8.dp))
                             Text(
                                 when {
+                                    series != null -> guide?.action ?: "正在读取观看记录"
                                     firstTarget == null -> "没有可播放条目"
                                     firstTarget.type.equals("Folder", true) -> "打开文件夹"
+                                    firstTarget.key == state.handoffDetailKey && firstTarget.progressMs > 0 ->
+                                        "从 ${formatDuration(firstTarget.progressMs)} 继续"
                                     detail.children.isEmpty() -> "立即播放"
                                     else -> "播放第一集"
                                 }
@@ -346,9 +358,10 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                         }
                         if (detail.children.isEmpty() && detail.item.type.lowercase() in setOf("movie", "video", "episode", "music", "audio", "audiobook")) OutlinedButton(onClick = { viewModel.downloadUnified(detail.item) }) { Text("保存离线副本") }
                         OutlinedButton(
+                            enabled = series == null || firstTarget != null,
                             onClick = {
-                                val target = episodes.firstOrNull() ?: detail.item
-                                val link = target.key.toHandoffUri(target.progressMs).toString()
+                                val target = firstTarget ?: detail.item
+                                val link = viewModel.handoffLink(target).toString()
                                 context.startActivity(
                                     Intent.createChooser(
                                         Intent(Intent.ACTION_SEND).apply {
@@ -418,7 +431,7 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                 }
                 if (lines.isNotEmpty()) item {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (lines.size > 1) ChoiceMenu(line.orEmpty().ifBlank { "默认线路" },
+                        if (lines.size > 1) ChoiceMenu(guide?.line.orEmpty().ifBlank { "默认线路" },
                             lines.map { MdcTvBoxChoice(it, it.ifBlank { "默认线路" }) }) { selectedLine = it }
                         if (episodes.size > 1) TextButton(onClick = { descending = !descending }) { Text(if (descending) "倒序" else "正序") }
                     }
@@ -441,6 +454,10 @@ internal fun UnifiedDetailScreen(state: MainUiState, viewModel: MainViewModel) {
                             Column(Modifier.weight(1f)) {
                                 Text(child.title.withoutEmoji(), style = MaterialTheme.typography.titleMedium)
                                 child.subtitle?.let { Text(it.withoutEmoji(), style = MaterialTheme.typography.bodySmall) }
+                                if (guide != null && (child.played || child.progressMs > 0)) {
+                                    Text(if (child.played) "已看完" else "看到 ${formatDuration(child.progressMs)}",
+                                        style = MaterialTheme.typography.bodySmall)
+                                }
                             }
                             Icon(
                                 if (child.type.equals("Folder", true)) Icons.Rounded.ChevronRight else Icons.Rounded.PlayArrow,

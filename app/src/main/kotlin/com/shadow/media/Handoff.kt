@@ -20,14 +20,16 @@ class HandoffInbox {
 data class MediaHandoff(
     val key: MediaKey,
     val positionMs: Long,
+    val accountScopedMdc: Boolean = false,
 )
 
-fun MediaKey.toHandoffUri(positionMs: Long = 0): Uri = Uri.Builder()
+fun MediaKey.toHandoffUri(positionMs: Long = 0, accountScopedMdc: Boolean = false): Uri = Uri.Builder()
     .scheme(SCHEME)
     .authority(HOST)
     .appendQueryParameter("provider", providerId)
     .appendQueryParameter("item", itemId)
     .appendQueryParameter("position", positionMs.coerceAtLeast(0).toString())
+    .apply { if (accountScopedMdc) appendQueryParameter("scope", "mdc-account") }
     .build()
 
 fun Uri.toMediaHandoffOrNull(): MediaHandoff? {
@@ -35,7 +37,7 @@ fun Uri.toMediaHandoffOrNull(): MediaHandoff? {
     val provider = getQueryParameter("provider")?.takeIf { it.length in 1..240 } ?: return null
     val item = getQueryParameter("item")?.takeIf { it.length in 1..480 } ?: return null
     val position = getQueryParameter("position")?.toLongOrNull()?.coerceIn(0, MAX_POSITION_MS) ?: 0
-    return MediaHandoff(MediaKey(provider, item), position)
+    return MediaHandoff(MediaKey(provider, item), position, getQueryParameter("scope") == "mdc-account")
 }
 
 private const val SCHEME = "shadowmedia"

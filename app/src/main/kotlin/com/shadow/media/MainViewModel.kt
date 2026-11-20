@@ -122,6 +122,7 @@ data class MainUiState(
     val providerSearchNext: Map<String, String> = emptyMap(),
     val loadingSearchPages: Set<String> = emptySet(),
     val selectedUnifiedDetail: MediaDetail? = null,
+    val handoffDetailKey: MediaKey? = null,
     val pendingPublication: UnifiedMediaItem? = null,
     val providerDetailBackStack: List<MediaDetail> = emptyList(),
     val providerDetailReturnScreen: Screen = Screen.DISCOVER,
@@ -234,24 +235,26 @@ class MainViewModel(
             handoffInbox.intents.collect { uri ->
                 val handoff = uri.toMediaHandoffOrNull() ?: return@collect
                 syncProviders()
-                val provider = providerRegistry.provider(handoff.key.providerId)
-                if (provider == null) {
-                    update { copy(errorMessage = "接力链接对应的内容服务在这台设备上不可用") }
-                    return@collect
-                }
                 cancelContentRequests()
                 contentRequest = viewModelScope.launch {
                 update {
                     copy(
                         screen = Screen.PROVIDER_DETAIL,
                         selectedUnifiedDetail = null,
+                        handoffDetailKey = null,
                         providerDetailBackStack = emptyList(),
                         providerDetailReturnScreen = Screen.HOME,
                         isLoading = true,
                         errorMessage = null,
                     )
                 }
-                runCatching { provider.detail(handoff.key) }
+                runCatching {
+                    val key = if (handoff.accountScopedMdc) resolveMdcHandoff(handoff.key) else handoff.key
+                    val provider = requireNotNull(providerRegistry.provider(key.providerId)) {
+                        "接力链接对应的内容服务在这台设备上不可用"
+                    }
+                    provider.detail(key)
+                }
                     .onSuccess { detail ->
                         ensureActive()
                         update {
@@ -259,6 +262,7 @@ class MainViewModel(
                                 selectedUnifiedDetail = detail.copy(
                                     item = detail.item.copy(progressMs = handoff.positionMs)
                                 ),
+                                handoffDetailKey = detail.item.key,
                                 isLoading = false,
                             )
                         }
@@ -399,6 +403,18 @@ class MainViewModel(
 
     internal fun deviceHandoffFailed(error: Exception) = showError(error)
 
+    internal fun episodeHistory(series: MediaKey) = localMediaState.episodeHistory(series.providerId, series.itemId)
+
+    internal fun handoffLink(item: UnifiedMediaItem): android.net.Uri {
+        val provider = artworkProvider(item.key.providerId) ?: return item.key.toHandoffUri(item.progressMs)
+        val portable = portableMdc(provider.connection, item.key.providerId.startsWith("mdc-tvbox:"))
+        return item.key.copy(providerId = portable).toHandoffUri(item.progressMs, accountScopedMdc = true)
+    }
+
+    internal suspend fun resolveMdcHandoff(key: MediaKey): MediaKey =
+        key.localMdcKey(knownMdcConnections().connections) ?: key.localMdcKey(discoverMdcConnections().connections)
+        ?: error("此设备尚未连接相同的 MDC 片库，或存在多个相同连接")
+
     internal suspend fun resumeDevicePlayback(key: MediaKey, position: Long) {
         syncProviders()
         val provider = requireNotNull(providerRegistry.provider(key.providerId)) { "请在此设备连接相同来源" }
@@ -481,7 +497,7 @@ class MainViewModel(
                 feedMode = false,
             )
         }
-        playAt(0)
+        if (resumePosition == null) playAt(0) else resolvePlayback(session, item, 0, resumePosition, 0)
     }
 
     fun showLibraries() = navigate { copy(screen = Screen.LIBRARIES, errorMessage = null) }
@@ -507,7 +523,7 @@ class MainViewModel(
         val providerId = "storage:${connection.id}"
         val provider = providerRegistry.provider(providerId) ?: return
         contentRequest = viewModelScope.launch {
-            update { copy(screen = Screen.PROVIDER_DETAIL, selectedUnifiedDetail = null, providerDetailBackStack = emptyList(), providerDetailReturnScreen = Screen.NETWORK_STORAGES, isLoading = true, errorMessage = null) }
+            update { copy(screen = Screen.PROVIDER_DETAIL, selectedUnifiedDetail = null, handoffDetailKey = null, providerDetailBackStack = emptyList(), providerDetailReturnScreen = Screen.NETWORK_STORAGES, isLoading = true, errorMessage = null) }
             withOptionalCatalogCache { provider.cachedDetail(MediaKey(providerId, connection.rootPath.normalizedStoragePath())) }?.let { update { copy(selectedUnifiedDetail = it) } }
             runCatching { provider.detail(MediaKey(providerId, connection.rootPath.normalizedStoragePath())) }
                 .onSuccess { detail -> ensureActive(); update { copy(selectedUnifiedDetail = detail, isLoading = false) } }
@@ -692,6 +708,7 @@ class MainViewModel(
                 copy(
                     screen = Screen.PROVIDER_DETAIL,
                     selectedUnifiedDetail = null,
+                    handoffDetailKey = null,
                     providerDetailBackStack = if (currentScreen == Screen.PROVIDER_DETAIL && currentDetail != null) {
                         providerDetailBackStack + currentDetail
                     } else emptyList(),
@@ -733,13 +750,14 @@ class MainViewModel(
         }
     }
 
-    fun playUnifiedItem(item: UnifiedMediaItem, queueEntryId: String? = null, playWhenReady: Boolean = true) {
+    fun playUnifiedItem(item: UnifiedMediaItem, queueEntryId: String? = null, playWhenReady: Boolean = true,
+        useSavedPosition: Boolean = true) {
         if (com.shadow.media.model.contentKind(item.type) in setOf(com.shadow.media.model.ContentKind.FOLDER, com.shadow.media.model.ContentKind.SERIES)) {
             openUnifiedItem(item); return
         }
         cancelContentRequests()
         contentRequest = viewModelScope.launch {
-            if (!tryOfflineVideo(item.key, item.progressMs)) playUnifiedOnline(item, queueEntryId, playWhenReady)
+            if (!tryOfflineVideo(item.key, item.progressMs)) playUnifiedOnline(item, queueEntryId, playWhenReady, useSavedPosition)
         }
     }
     private fun playUnifiedOnline(
@@ -764,7 +782,7 @@ class MainViewModel(
                         selectMdcRecoverySource(plan, versionId, ""),
                     ) { "该版本已不可用，可从作品详情选择其他版本" }
                     ensureActive()
-                    playMdc(provider, key, plan, source)
+                    playMdc(provider, key, plan, source, resumePosition = item.progressMs.takeUnless { useSavedPosition })
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) { showError(e) }
                 finally { update { copy(isLoading = false) } }

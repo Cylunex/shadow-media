@@ -223,7 +223,7 @@ class NovelReadingCache(private val context: Context, private val library: Libra
         return null
     }
 
-    private suspend fun valid(pub: NovelPublicationEntity, verify: Boolean = false): Boolean {
+    internal suspend fun valid(pub: NovelPublicationEntity, verify: Boolean = false): Boolean {
         val asset = library.dao.asset(pub.assetId) ?: return false
         return try {
             val file = library.localFile(asset)

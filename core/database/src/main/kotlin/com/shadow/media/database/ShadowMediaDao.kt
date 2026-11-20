@@ -23,6 +23,11 @@ interface ShadowMediaDao {
     @Query("SELECT * FROM media_history WHERE stableKey = :stableKey LIMIT 1")
     suspend fun history(stableKey: String): MediaHistoryEntity?
 
+    @Query("""SELECT * FROM media_history WHERE providerId = :providerId
+        AND substr(itemId, 1, length(:prefix)) = :prefix
+        ORDER BY lastPlayedAtEpochMs DESC, itemId""")
+    fun episodeHistory(providerId: String, prefix: String): Flow<List<MediaHistoryEntity>>
+
     @Query("DELETE FROM media_history WHERE stableKey = :stableKey")
     suspend fun removeHistory(stableKey: String)
 

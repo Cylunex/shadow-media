@@ -28,3 +28,7 @@ dependencies {
     testImplementation("org.json:json:20250517")
     testImplementation("com.squareup.okhttp3:mockwebserver:5.1.0")
 }
+
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    inputs.property("novelValidationUrl", providers.environmentVariable("NOVEL_VALIDATION_URL").orElse(""))
+}
