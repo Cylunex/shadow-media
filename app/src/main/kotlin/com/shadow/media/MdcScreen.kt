@@ -84,7 +84,7 @@ internal fun MdcScreen(viewModel: MainViewModel) {
         }
     }
     if (showTvBox && tvbox != null) {
-        MdcTvBoxScreen(tvbox, viewModel) { showTvBox = false }
+        MdcTvBoxScreen(tvbox, viewModel, onBack = { showTvBox = false })
         return
     }
     val libraryScroll = rememberLazyGridState()

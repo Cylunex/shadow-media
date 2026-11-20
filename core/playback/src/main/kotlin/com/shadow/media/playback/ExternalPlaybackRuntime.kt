@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.session.MediaSession
 import androidx.media3.common.MediaItem
@@ -34,6 +35,11 @@ import com.shadow.media.model.ExternalMediaEntry
 import com.shadow.media.model.NetworkPolicy
 import com.shadow.media.network.NetworkReadHandle
 import com.shadow.media.network.NetworkStorageRepository
+
+internal fun externalVideoMimeType(mime: String?): String? = when (mime?.substringBefore(';')?.trim()?.lowercase()) {
+    "application/vnd.apple.mpegurl", "application/x-mpegurl", "audio/mpegurl", "audio/x-mpegurl" -> MimeTypes.APPLICATION_M3U8
+    else -> mime
+}
 
 /**
  * An intentionally isolated player for user-imported media URLs.
@@ -74,7 +80,7 @@ class ExternalPlaybackRuntime(
         DefaultDataSource(context, RoutingDataSource(httpFactory.createDataSource(), networkStorageRepository))
     }
     private val sourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
-    private var mediaItem = MediaItem.Builder().setUri(entry.url).setMediaId(entry.id).setMimeType(entry.mimeType)
+    private var mediaItem = MediaItem.Builder().setUri(entry.url).setMediaId(entry.id).setMimeType(externalVideoMimeType(entry.mimeType))
         .setMediaMetadata(MediaMetadata.Builder().setTitle(entry.title).build())
         .setSubtitleConfigurations((entry.subtitles + listOfNotNull(preferences.subtitle(preferenceKey))).distinctBy { it.uri }.mapIndexed { index, subtitle -> subtitle.configuration(index == 0) }).build()
     private var pendingSubtitle: com.shadow.media.model.ExternalSubtitle? = null

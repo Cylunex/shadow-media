@@ -98,7 +98,12 @@ internal class MdcTvBoxProvider(private val mdc: MdcMediaProvider) : MediaProvid
     override suspend fun resolve(request: UnifiedPlaybackRequest): List<PlaybackCandidate> {
         val target = target(request.key)
         val episode = requireNotNull(target.episode) { "请先选择分集" }
-        val body = mdc.api(target.path + "/resolve", body = JSONObject().put("episode_id", episode))
+        val selection = JSONObject().put("episode_id", episode)
+        if ("tvbox_stream" in features()) {
+            val stream = mdc.api(target.path + "/watch", body = selection)
+            return listOf(mdc.tvboxStream(stream.getString("url"), stream.getString("mime_type")))
+        }
+        val body = mdc.api(target.path + "/resolve", body = selection)
         val url = body.getString("url").toHttpUrl()
         require(url.username.isEmpty() && url.password.isEmpty()) { "播放地址格式无效" }
         val values = body.getJSONObject("headers")

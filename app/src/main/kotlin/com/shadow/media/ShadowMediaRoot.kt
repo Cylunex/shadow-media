@@ -147,7 +147,13 @@ import com.shadow.media.ui.ServerCard
 import com.shadow.media.ui.rememberEmbyImageLoader
 
 @Composable
-fun LegacyMediaRoot(viewModel: MainViewModel, container: AppContainer, rootScreen: Screen? = null) {
+fun LegacyMediaRoot(
+    viewModel: MainViewModel,
+    container: AppContainer,
+    rootScreen: Screen? = null,
+    videoWarehouse: Boolean = true,
+    onWarehouseBack: () -> Unit = viewModel::back,
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val rootContext = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(state.screen) {
@@ -173,7 +179,10 @@ fun LegacyMediaRoot(viewModel: MainViewModel, container: AppContainer, rootScree
                 Screen.LIBRARIES -> LibraryScreen(state, viewModel)
                 Screen.ITEMS -> ItemScreen(state, viewModel)
                 Screen.DETAIL -> SeriesDetailScreen(state, viewModel)
-                Screen.SOURCES -> ExternalSourcesScreen(state, viewModel)
+                Screen.SOURCES -> mdcPageState.SaveableStateProvider("warehouse") {
+                    if (videoWarehouse) VideoWarehouseScreen(state, viewModel, onWarehouseBack)
+                    else ExternalSourcesScreen(state, viewModel)
+                }
                 Screen.EXTERNAL_ITEMS -> ExternalItemsScreen(state, viewModel)
                 Screen.EXTERNAL_PLAYER -> ExternalPlayerScreen(state, viewModel, container)
                 Screen.DISCOVER -> DiscoverScreen(state, viewModel)

@@ -70,9 +70,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -95,6 +98,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.shadow.media.model.ExternalMediaEntry
@@ -103,6 +108,10 @@ import com.shadow.media.model.ExternalSourceSummary
 import com.shadow.media.model.LiveChannel
 import com.shadow.media.model.LiveProgram
 import com.shadow.media.model.UnifiedMediaItem
+import com.shadow.media.model.UnifiedMediaPage
+import com.shadow.media.provider.MediaProvider
+import com.shadow.media.provider.ProviderBrowseRequest
+import com.shadow.media.provider.ProviderSearchRequest
 import com.shadow.media.model.IntegrationKind
 import com.shadow.media.model.MediaItem
 import com.shadow.media.model.MediaSection
@@ -753,8 +762,13 @@ internal fun SeriesDetailScreen(state: MainUiState, viewModel: MainViewModel) {
 }
 
 @Composable
-internal fun ExternalSourcesScreen(state: MainUiState, viewModel: MainViewModel) {
-    BackHandler(onBack = viewModel::back)
+internal fun ExternalSourcesScreen(
+    state: MainUiState,
+    viewModel: MainViewModel,
+    onBack: () -> Unit = viewModel::back,
+    onBrowseMdc: (() -> Unit)? = null,
+) {
+    BackHandler(onBack = onBack)
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -779,8 +793,8 @@ internal fun ExternalSourcesScreen(state: MainUiState, viewModel: MainViewModel)
             ScreenHeader(
                 title = "影视仓",
                 subtitle = "URL / 本地文件 · 导入后直接浏览",
-                actionLabel = "返回媒体中心",
-                onAction = viewModel::back,
+                actionLabel = if (onBrowseMdc == null) "返回媒体中心" else "返回影视仓",
+                onAction = onBack,
             )
         }
         item {
@@ -792,17 +806,20 @@ internal fun ExternalSourcesScreen(state: MainUiState, viewModel: MainViewModel)
                 ),
             ) {
                 Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(Icons.Rounded.Security, null, tint = MaterialTheme.colorScheme.primary)
+                    Icon(Icons.Rounded.AddLink, null, tint = MaterialTheme.colorScheme.primary)
                     Column {
-                        Text("安全子集", style = MaterialTheme.typography.titleMedium)
+                        Text("导入片源", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "支持 JSONC、多仓目录、M3U/TXT，并自动展开 TVBox lives 直播列表；未知 JAR、QuickJS、Python 或 WebView 嗅探仍不会执行。",
+                            "支持 TVBox 配置、多仓目录和 M3U/TXT 直播订阅。",
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f),
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
                 }
             }
+        }
+        if (onBrowseMdc != null) item {
+            TextButton(onClick = onBrowseMdc, modifier = Modifier.padding(horizontal = 20.dp)) { Text("浏览 MDC 片源") }
         }
         item {
             Column(
@@ -939,6 +956,12 @@ private fun ExternalSourceCard(
 internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
     BackHandler(onBack = viewModel::back)
     val source = state.selectedExternalSource
+    var catalogs by remember(source?.id) { mutableStateOf<List<MediaProvider>?>(null) }
+    LaunchedEffect(source) {
+        try { catalogs = source?.let { viewModel.externalCatalogs(it.id) }.orEmpty() }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { catalogs = emptyList() }
+    }
     val groups = remember(state.liveChannels) {
         state.liveChannels.mapNotNull(LiveChannel::group).distinct().sorted()
     }
@@ -969,12 +992,16 @@ internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
         item {
             ScreenHeader(
                 title = source?.name ?: "直播中心",
-                subtitle = if (state.liveChannels.isEmpty()) "已安全导入配置" else
+                subtitle = if (state.liveChannels.isEmpty()) "" else
                     "${state.liveChannels.size} 个频道 · ${state.externalEntries.size} 条线路",
                 actionLabel = "返回影视仓",
                 onAction = viewModel::back,
             )
         }
+        if (!catalogs.isNullOrEmpty()) item {
+            ImportedVodCatalog(catalogs.orEmpty(), viewModel)
+        }
+        if (state.liveChannels.isNotEmpty()) {
         item {
             Column(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
@@ -1041,14 +1068,15 @@ internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
                 }
             }
         }
-        if (state.externalEntries.isEmpty()) {
+        }
+        if (state.externalEntries.isEmpty() && catalogs?.isEmpty() == true) {
             item {
                 EmptyStatePanel(
                     when (source?.kind) {
                         ExternalSourceKind.TVBOX_CONFIG ->
-                            "配置已导入，但没有成功展开可播放直播；需要 csp/JAR/JS 的影视站点不会在主应用中执行。"
+                            "这个配置没有可直接访问的影视站点或直播频道。"
                         ExternalSourceKind.DECLARATIVE ->
-                            "多仓目录已导入，但仓库失效、超时或 HTTP 二级源未获授权，因此没有可播放直播。"
+                            "这个多仓目录没有可直接访问的影视站点或直播频道。"
                         else -> "这个视频源没有找到有效的 HTTP(S) 播放地址"
                     },
                     Modifier.padding(horizontal = 20.dp),
@@ -1070,6 +1098,57 @@ internal fun ExternalItemsScreen(state: MainUiState, viewModel: MainViewModel) {
                 onFavorite = { viewModel.toggleLiveFavorite(channel) },
                 onCatchup = viewModel::playCatchup,
             )
+        }
+    }
+}
+
+@Composable
+private fun ImportedVodCatalog(providers: List<MediaProvider>, viewModel: MainViewModel) {
+    var site by rememberSaveable { mutableStateOf("") }
+    var input by rememberSaveable { mutableStateOf("") }
+    var query by rememberSaveable { mutableStateOf("") }
+    var page by rememberSaveable { mutableStateOf("1") }
+    var result by remember { mutableStateOf<UnifiedMediaPage?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var retry by remember { mutableIntStateOf(0) }
+    val provider = providers.firstOrNull { it.descriptor.id == site } ?: providers.first()
+    LaunchedEffect(provider, query, page, retry) {
+        result = null
+        error = null
+        try {
+            result = if (query.isBlank()) provider.browse(ProviderBrowseRequest(pageToken = page))
+            else provider.search(ProviderSearchRequest(query, pageToken = page))
+            ensureActive()
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { error = e.message ?: "影视目录读取失败" }
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        ChoiceMenu(provider.descriptor.name, providers.map { MdcTvBoxChoice(it.descriptor.id, it.descriptor.name) }) {
+            site = it
+            page = "1"
+        }
+        OutlinedTextField(input, { input = it.take(200) }, singleLine = true, label = { Text("片名") },
+            modifier = Modifier.fillMaxWidth())
+        TextButton(onClick = { query = input.trim(); page = "1"; retry++ }) { Text("搜索本站") }
+        val loaded = result
+        when {
+            error != null -> {
+                Text(error.orEmpty(), color = MaterialTheme.colorScheme.error)
+                TextButton(onClick = { retry++ }) { Text("重试") }
+            }
+            loaded == null -> LinearProgressIndicator(Modifier.fillMaxWidth())
+            loaded.items.isEmpty() -> Text("没有找到影片")
+            else -> {
+                loaded.items.distinctBy { it.key }.forEach { film ->
+                    TextButton(onClick = { viewModel.openUnifiedItem(film) }, modifier = Modifier.fillMaxWidth()) {
+                        Text(film.title)
+                    }
+                }
+                Row {
+                    TextButton(onClick = { page = (page.toInt() - 1).toString() }, enabled = page != "1") { Text("上一页") }
+                    loaded.nextPageToken?.let { next -> TextButton(onClick = { page = next }) { Text("下一页") } }
+                }
+            }
         }
     }
 }

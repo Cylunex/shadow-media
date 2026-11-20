@@ -28,7 +28,8 @@ internal class MdcMediaProvider(
                 throw java.io.IOException("拒绝跨来源 MDC 请求")
             }
             fun authorized(force: Boolean): Request = request.newBuilder()
-                .header("Authorization", "Bearer ${accessToken?.let { kotlinx.coroutines.runBlocking { it(force) } } ?: connection.token}")
+                .header("Authorization", accessToken?.let { kotlinx.coroutines.runBlocking { bearer(force) } }
+                    ?: "Bearer ${connection.token}")
                 .header("X-Catalog-Owner", connection.username.ifBlank { connection.id }).build()
             var response = chain.proceed(authorized(false))
             if (response.code == 401 && accessToken != null) {
@@ -38,6 +39,17 @@ internal class MdcMediaProvider(
             response
         }.build()
     private val client = imageClient
+    private suspend fun bearer(force: Boolean = false): String =
+        "Bearer ${accessToken?.invoke(force) ?: connection.token}"
+
+    suspend fun tvboxStream(path: String, mimeType: String): PlaybackCandidate {
+        require(TVBOX_STREAM.matches(path)) { "MDC 返回的播放地址无效" }
+        val base = connection.base()
+        val url = base.newBuilder().addPathSegments(path.removePrefix("/")).build()
+        return PlaybackCandidate(url.toString(), PlayMethod.DIRECT_PLAY, mapOf("Authorization" to bearer()),
+            credentialOrigin = base.toString(), mimeType = mimeType)
+    }
+
     override val descriptor = ProviderDescriptor(
         "mdc:${connection.id}", connection.name, ProviderKind.DECLARATIVE_HTTP,
         setOf(ProviderCapability.BROWSE, ProviderCapability.SEARCH, ProviderCapability.PLAYBACK),
@@ -59,12 +71,19 @@ internal class MdcMediaProvider(
                     when (response.code) {
                         401 -> if (accessToken == null) "MDC 访问令牌无效" else "统一账号登录已失效，请在 Novel 重新登录"
                         409 -> runCatching { JSONObject(body).optString("detail") }.getOrDefault("尚未关联 Emby 条目")
+                        404, 502 -> if (path.startsWith("tvbox/")) {
+                            runCatching { JSONObject(body).getString("detail") }.getOrDefault("影视仓请求失败（${response.code}）")
+                        } else "MDC 请求失败（${response.code}）"
                         else -> "MDC 请求失败（${response.code}）"
                     }
                 }
                 JSONObject(body)
             }
         }
+
+    private companion object {
+        val TVBOX_STREAM = Regex("/api/media/v1/tvbox/stream/[a-zA-Z0-9_-]{32}/[a-zA-Z0-9_-]{16}")
+    }
 
     suspend fun checkConnection() {
         val capabilities = api("capabilities")

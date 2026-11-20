@@ -1572,6 +1572,12 @@ class MainViewModel(
         loadLiveMetadata(source, entries)
     }
 
+    internal suspend fun externalCatalogs(sourceId: String): List<com.shadow.media.provider.MediaProvider> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            externalSourceStore.load(sourceId)?.let(externalSourceRepository::catalogSites).orEmpty()
+                .mapNotNull { site -> providerRegistry.provider("tvbox:${site.id}") }
+        }
+
     fun updateExternalQuery(value: String) = update { copy(externalQuery = value) }
 
     fun setExternalGroup(value: String?) = update { copy(externalGroup = value) }

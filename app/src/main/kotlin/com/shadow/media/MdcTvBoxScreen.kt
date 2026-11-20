@@ -37,7 +37,61 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
 
 @Composable
-internal fun MdcTvBoxScreen(provider: MdcTvBoxProvider, viewModel: MainViewModel, onBack: () -> Unit) {
+internal fun VideoWarehouseScreen(state: MainUiState, viewModel: MainViewModel, onBack: () -> Unit) {
+    var providers by remember { mutableStateOf(emptyList<MdcTvBoxProvider>()) }
+    var loading by remember { mutableStateOf(true) }
+    var importing by rememberSaveable { mutableStateOf(false) }
+    var selected by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(viewModel) {
+        try {
+            providers = viewModel.discoverMdcConnections().map {
+                MdcTvBoxProvider(viewModel.mdcProvider(it))
+            }.filter { provider ->
+                try { provider.supported() }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { false }
+            }
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { providers = emptyList() }
+        finally { loading = false }
+    }
+    val provider = providers.firstOrNull { it.descriptor.id == selected } ?: providers.firstOrNull()
+    when {
+        loading && !importing -> {
+            BackHandler(onBack = onBack)
+            Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                TopAppBar(
+                    title = { Text("影视仓") },
+                    navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
+                    actions = { TextButton(onClick = { importing = true }) { Text("导入片源") } },
+                )
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+        }
+        provider == null || importing -> ExternalSourcesScreen(
+            state, viewModel,
+            onBack = if (provider == null) onBack else { { importing = false } },
+            onBrowseMdc = provider?.let { { importing = false } },
+        )
+        else -> androidx.compose.runtime.key(provider.descriptor.id) {
+            MdcTvBoxScreen(provider, viewModel, onBack, onImport = { importing = true }) {
+                if (providers.size > 1) ChoiceMenu(
+                    provider.descriptor.name,
+                    providers.map { MdcTvBoxChoice(it.descriptor.id, it.descriptor.name) },
+                ) { selected = it }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun MdcTvBoxScreen(
+    provider: MdcTvBoxProvider,
+    viewModel: MainViewModel,
+    onBack: () -> Unit,
+    onImport: (() -> Unit)? = null,
+    connectionSelector: @Composable () -> Unit = {},
+) {
     val scroll = rememberLazyListState()
     var sites by remember { mutableStateOf(emptyList<MdcTvBoxChoice>()) }
     var groups by remember { mutableStateOf(emptyList<MdcTvBoxGroup>()) }
@@ -80,6 +134,7 @@ internal fun MdcTvBoxScreen(provider: MdcTvBoxProvider, viewModel: MainViewModel
     }
 
     LaunchedEffect(provider, site, reload) {
+        categories = emptyList()
         if (site.isEmpty()) return@LaunchedEffect
         try {
             val result = provider.categories(site)
@@ -108,15 +163,19 @@ internal fun MdcTvBoxScreen(provider: MdcTvBoxProvider, viewModel: MainViewModel
     BackHandler(onBack = onBack)
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         TopAppBar(
-            title = { Text("TVBox") },
+            title = { Text("影视仓") },
             navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
-            actions = { TextButton(onClick = { reload++ }) { Text("刷新") } },
+            actions = {
+                TextButton(onClick = { reload++ }) { Text("刷新") }
+                if (onImport != null) TextButton(onClick = onImport) { Text("导入片源") }
+            },
         )
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         LazyColumn(
             state = scroll, contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            item { connectionSelector() }
             error?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
             if (sites.isNotEmpty()) item {
                 if (groups.isNotEmpty()) ChoiceMenu(currentGroup?.name ?: "全部仓库",
@@ -158,7 +217,7 @@ internal fun MdcTvBoxScreen(provider: MdcTvBoxProvider, viewModel: MainViewModel
 }
 
 @Composable
-private fun ChoiceMenu(label: String, choices: List<MdcTvBoxChoice>, select: (String) -> Unit) {
+internal fun ChoiceMenu(label: String, choices: List<MdcTvBoxChoice>, select: (String) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     TextButton(onClick = { expanded = true }) { Text(label) }
     DropdownMenu(expanded, onDismissRequest = { expanded = false }) {

@@ -280,7 +280,15 @@ import com.shadow.media.reading.ReaderActivity
                         if (asset.kind in setOf("MOVIE", "EPISODE")) viewModel.playOfflineAsset(asset) else open(asset)
                     })
                     novelAccountScreen -> NovelScreen(container.novel, onBack = ::returnToModule)
-                    state.screen != Screen.HOME -> LegacyMediaRoot(viewModel, container)
+                    state.screen != Screen.HOME || destination == MediaDestination.VIDEO_SOURCES -> LegacyMediaRoot(
+                        viewModel, container,
+                        rootScreen = Screen.SOURCES.takeIf { destination == MediaDestination.VIDEO_SOURCES },
+                        videoWarehouse = module != MediaModule.LIVE,
+                        onWarehouseBack = {
+                            viewModel.back()
+                            if (destination == MediaDestination.VIDEO_SOURCES) selectDestination(module.destinations.first())
+                        },
+                    )
                     catalogScreen || (!generalSettings && destination in setOf(MediaDestination.COMIC_LIBRARY, MediaDestination.AUDIO_LIBRARY)) -> CatalogSourcesScreen(container.catalogs,
                         allowedKinds = if (allCatalogs) CatalogKind.entries.toSet() else module.catalogKinds(),
                         contentModule = if (allCatalogs) null else module,
@@ -345,7 +353,6 @@ import com.shadow.media.reading.ReaderActivity
                         } })
                     module == MediaModule.LIVE -> LiveLanding(state, container, viewModel)
                     destination == MediaDestination.LIBRARIES -> VideoLibraryLanding(state, viewModel, onLocal = { localVideoScreen = true })
-                    destination == MediaDestination.VIDEO_SOURCES -> LegacyMediaRoot(viewModel, container, rootScreen = Screen.SOURCES)
                     else -> LegacyMediaRoot(viewModel, container)
                 }
                 }

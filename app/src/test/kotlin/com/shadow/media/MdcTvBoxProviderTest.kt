@@ -43,6 +43,7 @@ class MdcTvBoxProviderTest {
             assertEquals("station:demo:episode", key.itemId)
             assertEquals(key, externalHistoryKey(key.providerId, key.itemId))
 
+            server.enqueue(MockResponse().setBody("""{"features":["tvbox_v1"]}"""))
             server.enqueue(MockResponse().setBody("""
                 {"url":"https://example.com/lease","mime_type":"application/vnd.apple.mpegurl",
                  "headers":{"Referer":"https://example.com/","Authorization":"discard-me"}}
@@ -51,10 +52,32 @@ class MdcTvBoxProviderTest {
             assertEquals("https://example.com/lease", stream.url)
             assertEquals("application/vnd.apple.mpegurl", stream.mimeType)
             assertEquals(mapOf("Referer" to "https://example.com/"), stream.requiredHeaders)
-            val requests = List(5) { server.takeRequest() }
+            val requests = List(6) { server.takeRequest() }
             assertTrue(requests.all { it.getHeader("Authorization") == "Bearer REPLACE_MDC_TOKEN" })
             assertEquals("/mdc/api/media/v1/tvbox/sites/station/items/demo/resolve", requests.last().path)
             assertEquals("""{"episode_id":"episode"}""", requests.last().body.readUtf8())
+        }
+    }
+
+    @Test fun `stream lease keeps the service prefix and uses shared credentials only on that origin`() = runTest {
+        MockWebServer().use { server ->
+            val base = server.url("/library/services/mdc/")
+            val connection = CatalogConnection(name = "MDC", kind = CatalogKind.OPDS,
+                url = base.toString(), allowHttp = true)
+            val p = MdcTvBoxProvider(MdcMediaProvider(connection, OkHttpClient()) { "REPLACE_SHARED" })
+            val key = com.shadow.media.model.MediaKey(p.descriptor.id, "station:film:episode")
+            val path = "/api/media/v1/tvbox/stream/${"a".repeat(32)}/${"b".repeat(16)}"
+            server.enqueue(MockResponse().setBody("""{"features":["tvbox_v1","tvbox_stream"]}"""))
+            server.enqueue(MockResponse().setBody("""{"url":"$path","mime_type":"application/vnd.apple.mpegurl"}"""))
+            val candidate = p.resolve(UnifiedPlaybackRequest(key)).single()
+            assertEquals(server.url("/library/services/mdc$path").toString(), candidate.url)
+            assertEquals(base.toString(), candidate.credentialOrigin)
+            assertEquals(mapOf("Authorization" to "Bearer REPLACE_SHARED"), candidate.requiredHeaders)
+            server.takeRequest()
+            assertEquals("/library/services/mdc/api/media/v1/tvbox/sites/station/items/film/watch",
+                server.takeRequest().path)
+            server.enqueue(MockResponse().setBody("""{"url":"https://example.com$path","mime_type":"video/mp4"}"""))
+            assertTrue(runCatching { p.resolve(UnifiedPlaybackRequest(key)) }.exceptionOrNull() is IllegalArgumentException)
         }
     }
 
