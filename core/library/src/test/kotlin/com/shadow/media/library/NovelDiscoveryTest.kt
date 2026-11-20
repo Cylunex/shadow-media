@@ -61,6 +61,20 @@ class NovelDiscoveryTest {
             .put(JSONObject().put("provider_id", "a").put("key", "fake").put("period", "year")))
         assertEquals(listOf("weekly"), NovelRankingBoard.parse(index).map { it.key })
     }
+    @Test fun discoveryRankingsKeepUnstatedPeriodsAndUseTheServersContinuationOffset() {
+        val one = JSONObject("""{"provider_id":"s","provider_name":"來源甲","key":"list","name":"月點擊榜","period":"month","paginated":true}""")
+        val two = JSONObject("""{"provider_id":"t","provider_name":"来源乙","key":"list","name":"热门榜","period":null}""")
+        val page = NovelRankingEntries.from(JSONObject().put("source_entries", JSONArray().put(one).put(one).put(two))
+            .put("source_entries_next_offset", 30), index = true)
+        assertEquals(30, page.nextOffset)
+        assertEquals(listOf("s", "t"), page.items.map { it.providerId })
+        assertTrue(page.items.first().paginated)
+        assertTrue(NovelDiscoveryQuery("月榜 点击").matches(page.items.first().name, page.items.first().periodLabel))
+        assertTrue(NovelDiscoveryQuery("完結 玄幻").matches("玄幻全本", "來源甲"))
+        assertFalse(NovelDiscoveryQuery("完本 玄幻").matches("都市完结", "來源甲"))
+        assertEquals("", page.items.last().periodLabel)
+        assertNull(NovelRankingEntries.from(JSONObject("""{"items":[],"offset":30,"next_offset":30}""")).nextOffset)
+    }
     @Test fun sectionFiltersUseNativeParametersAndKeepCategoryIdentifiersIntact() {
         assertEquals(listOf("science-fiction"), novelSectionQuery(JSONObject().put("id", "category-science-fiction")).categories)
         val completed = novelSectionQuery(JSONObject().put("id", "completed"))

@@ -2,6 +2,7 @@ package com.shadow.media.library
 
 import org.json.JSONObject
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import java.text.Normalizer
 
 /** Source identity and period are kept separate: an external week is never synthesized locally. */
 data class NovelRankingBoard(
@@ -22,6 +23,54 @@ data class NovelRankingBoard(
 
 val NOVEL_RANKING_PERIODS = linkedMapOf("total" to "总榜", "month" to "月榜", "week" to "周榜", "day" to "日榜")
 val NOVEL_LOCAL_RANKINGS = linkedMapOf("heat" to "书库热榜", "recent" to "最近收录", "completed" to "完结可读", "rating" to "我的高分")
+
+data class NovelRankingEntry(
+    val providerId: String, val providerName: String, val key: String, val name: String,
+    val periodLabel: String, val paginated: Boolean, val cacheStatus: String, val refreshFailed: Boolean,
+) {
+    companion object {
+        fun from(row: JSONObject): NovelRankingEntry? {
+            val provider = row.novelId("provider_id") ?: return null
+            val key = row.novelId("key") ?: return null
+            val name = row.novelId("name") ?: return null
+            val label = novelRankingPeriodLabel(row)
+            return NovelRankingEntry(provider, row.novelId("provider_name") ?: provider, key, name, label, row.optBoolean("paginated"),
+                row.optString("cache_status"), row.optBoolean("refresh_failed"))
+        }
+    }
+}
+
+data class NovelRankingEntries(val items: List<NovelRankingEntry>, val nextOffset: Int?) {
+    companion object {
+        fun from(json: JSONObject, index: Boolean = false): NovelRankingEntries {
+            val items = json.novelObjects(if (index) "source_entries" else "items").mapNotNull(NovelRankingEntry::from)
+            val next = json.optInt(if (index) "source_entries_next_offset" else "next_offset", -1)
+            return NovelRankingEntries(items.distinctBy { it.providerId to it.key }, next.takeIf { it > json.optInt("offset", 0) })
+        }
+    }
+}
+
+fun novelRankingPeriodLabel(row: JSONObject): String =
+    row.novelId("period_label") ?: NOVEL_RANKING_PERIODS[row.novelId("period")].orEmpty()
+
+class NovelDiscoveryQuery(query: String) {
+    private val terms = fold(query).trim().split(whitespace).filter(String::isNotBlank)
+
+    fun matches(vararg fields: String): Boolean {
+        if (terms.isEmpty()) return true
+        val text = fold(fields.joinToString(" "))
+        return terms.all { term ->
+            text.contains(term, ignoreCase = true) ||
+                (term in completedTerms && completedTerms.any(text::contains))
+        }
+    }
+
+    private companion object {
+        val whitespace = Regex("\\s+")
+        val completedTerms = setOf("完本", "全本", "完结")
+        fun fold(value: String) = SearchText.fold(Normalizer.normalize(value, Normalizer.Form.NFKC))
+    }
+}
 
 data class NovelRankingSelection(
     val provider: String = "local", val kind: String = "heat", val key: String = "",

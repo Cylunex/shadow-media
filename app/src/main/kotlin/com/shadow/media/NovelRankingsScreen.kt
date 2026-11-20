@@ -7,7 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -20,8 +20,24 @@ import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
 
+internal class NovelRankingPickerState(val sourcesOnly: Boolean = false, val initialPage: NovelRankingEntries? = null) {
+    var query by mutableStateOf("")
+        private set
+    var loadedPage by mutableStateOf<NovelRankingEntries?>(null)
+    val list = LazyListState()
+
+    fun search(value: String) {
+        if (value.trim() != query.trim()) {
+            loadedPage = null
+            list.requestScrollToItem(0)
+        }
+        query = value
+    }
+}
+
 /** Native discovery only. Neither server page URLs nor external site pages are navigation targets. */
-@Composable internal fun NovelRankingsScreen(repository: NovelRepository, connection: CatalogConnection, onWork: (String) -> Unit, onSearch: (String) -> Unit, onLogin: () -> Unit, onExplore: () -> Unit = {}) {
+@Composable internal fun NovelRankingsScreen(repository: NovelRepository, connection: CatalogConnection, onWork: (String) -> Unit, onSearch: (String) -> Unit, onLogin: () -> Unit, onExplore: () -> Unit = {}, onEntry: (NovelRankingEntry) -> Unit = {},
+    pickerState: MutableState<NovelRankingPickerState?> = remember(connection.id) { mutableStateOf(null) }) {
     val scope = rememberCoroutineScope()
     val preferences = androidx.compose.ui.platform.LocalContext.current.getSharedPreferences("novel_rankings_ui", 0)
     val saved = remember(connection.id) { runCatching { JSONObject(preferences.getString(connection.id, "{}") ?: "{}") }.getOrDefault(JSONObject()) }
@@ -32,8 +48,8 @@ import org.json.JSONObject
     var boardKey by rememberSaveable(connection.id) { mutableStateOf(saved.optString("key")) }
     var period by rememberSaveable(connection.id) { mutableStateOf(saved.optString("period", "total")) }
     var category by rememberSaveable(connection.id) { mutableStateOf(saved.optString("category")) }
-    var choosing by remember { mutableStateOf(false) }
-    var index by remember { mutableStateOf<JSONObject?>(null) }
+    var picker by pickerState
+    var index by remember(connection) { mutableStateOf<JSONObject?>(null) }
     var indexError by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
     var snapshot by remember(connection.id) { mutableStateOf<NovelRankingPage?>(null) }
@@ -44,6 +60,7 @@ import org.json.JSONObject
     var sourceEditor by remember { mutableStateOf(false) }
     var authenticationRequired by remember { mutableStateOf(false) }
     val boards = remember(index) { NovelRankingBoard.parse(index ?: JSONObject()) }
+    val sourceEntries = remember(index) { index?.takeIf { it.has("source_entries") }?.let { NovelRankingEntries.from(it, index = true) } }
     val selection = NovelRankingSelection(provider, kind, boardKey, period, category).resolved(boards)
     LaunchedEffect(connection.id, selection, index) {
         if (index != null && (selection.local || selection.key.isNotBlank())) preferences.edit().putString(connection.id,
@@ -68,9 +85,11 @@ import org.json.JSONObject
         working = true
         try {
             var id = pendingRefresh[selected]
+            var message: String? = null
             if (id == null) {
                 val result = repository.mutate(connection, listOf("rankings", selected.provider, selected.key, "refresh"), "POST")
                 id = result.novelId("job_id")
+                message = result.novelId("message")
                 if (id != null) pendingRefresh[selected] = id
             }
             if (id != null) {
@@ -79,8 +98,9 @@ import org.json.JSONObject
                     if (status.optString("state") in setOf("succeeded", "failed", "cancelled")) pendingRefresh.remove(selected)
                 }
             }
-            snapshot = NovelRankingPage(selected, fetch(selected))
-            notice = "榜单已更新"
+            val current = fetch(selected)
+            snapshot = NovelRankingPage(selected, current)
+            notice = if (current.novelId("error") != null) null else message ?: "榜单已更新"
         } finally { working = false }
     }
 
@@ -125,10 +145,12 @@ import org.json.JSONObject
     }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(enabled = !working && !loading, onClick = { choosing = true }, modifier = Modifier.weight(1f)) {
+            TextButton(enabled = !working && !loading, onClick = { picker = NovelRankingPickerState(initialPage = sourceEntries) }, modifier = Modifier.weight(1f)) {
                 Text("选择榜单 · " + if (selection.local) "我的书库" else boards.firstOrNull { it.providerId == selection.provider }?.providerName.orEmpty(), maxLines = 1)
             }
-            TextButton(enabled = !working, onClick = onExplore) { Text("书源排行榜") }
+            TextButton(enabled = !working && (index != null || indexError != null), onClick = {
+                if (sourceEntries != null) picker = NovelRankingPickerState(true, sourceEntries) else onExplore()
+            }) { Text("书源排行榜") }
         }
         if (selection.local) {
             RankingChoices(kind, NOVEL_LOCAL_RANKINGS.toList(), !working) { kind = it }
@@ -230,14 +252,17 @@ import org.json.JSONObject
                     }
                 } }) { Text("加载更多") }
             }
-            if (selection.local && boards.isEmpty() && indexError == null) item {
+            if (selection.local && index != null && boards.isEmpty() && sourceEntries?.items.isNullOrEmpty() && indexError == null) item {
                 Text("还没有配置外部榜单；已在 Novel 配置的榜单会显示在上方来源中。", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
-    if (choosing) NovelRankingPicker(boards, selection, { choosing = false }) { chosen ->
-        provider = chosen.provider; kind = chosen.kind; boardKey = chosen.key; period = chosen.period; category = chosen.category; choosing = false
-    }
+    picker?.let { state -> NovelRankingPicker(boards, selection, { picker = null }, { chosen ->
+        provider = chosen.provider; kind = chosen.kind; boardKey = chosen.key; period = chosen.period; category = chosen.category; picker = null
+    }, sourceEntries ?: state.initialPage, state, { term, offset ->
+        val query = listOf("q" to term, "offset" to offset.toString(), "limit" to "30")
+        NovelRankingEntries.from(repository.get(connection, listOf("rankings", "source-entries"), query))
+    }, onEntry) }
     if (sourceEditor) RankingSourceSheet(working, error, onDismiss = { sourceEditor = false }, onSave = { body -> operation {
         val result = repository.mutate(connection, listOf("rankings", "websites"), "POST", body)
         index = repository.get(connection, listOf("rankings"))
@@ -276,15 +301,43 @@ import org.json.JSONObject
 }
 
 @Composable internal fun NovelRankingPicker(boards: List<NovelRankingBoard>, selected: NovelRankingSelection,
-    onDismiss: () -> Unit, onSelect: (NovelRankingSelection) -> Unit) {
-    var query by remember { mutableStateOf("") }
+    onDismiss: () -> Unit, onSelect: (NovelRankingSelection) -> Unit, firstPage: NovelRankingEntries? = null,
+    state: NovelRankingPickerState = remember { NovelRankingPickerState() }, loadEntries: suspend (String, Int) -> NovelRankingEntries = { _, _ -> NovelRankingEntries(emptyList(), null) },
+    onEntry: (NovelRankingEntry) -> Unit = {}) {
+    val sourcesOnly = state.sourcesOnly
+    val term = state.query.trim()
+    val filter = remember(term) { NovelDiscoveryQuery(term) }
+    var offset by remember(term, firstPage) { mutableIntStateOf(0) }
+    var retry by remember(term, firstPage) { mutableIntStateOf(0) }
+    val initial = remember(term, firstPage) {
+        if (term.isEmpty()) firstPage else firstPage?.let { page ->
+            NovelRankingEntries(page.items.filter { filter.matches(it.providerName, it.name, "排行榜", it.periodLabel) }, null)
+        }
+    }
+    val entries = state.loadedPage ?: initial
+    var loading by remember(term, firstPage) { mutableStateOf(false) }
+    var failure by remember(term, firstPage) { mutableStateOf<String?>(null) }
+    LaunchedEffect(term, firstPage, offset, retry) {
+        if (firstPage?.nextOffset == null || (offset == 0 && (term.isEmpty() || state.loadedPage != null))) return@LaunchedEffect
+        loading = true; failure = null
+        try {
+            if (offset == 0) delay(200)
+            val page = loadEntries(term, offset)
+            val rows = if (offset == 0) page.items else (entries?.items.orEmpty() + page.items).distinctBy { it.providerId to it.key }
+            state.loadedPage = page.copy(items = rows)
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { failure = e.message ?: "书源榜单读取失败" }
+        finally { loading = false }
+    }
     ReaderModalBottomSheet(onDismissRequest = onDismiss, heightFraction = .85f) {
         Column(Modifier.fillMaxSize()) {
-            Text("选择排行榜", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.titleLarge)
-            OutlinedTextField(query, { query = it.take(100) }, Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            Text(if (sourcesOnly) "书源排行榜" else "选择排行榜", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.titleLarge)
+            OutlinedTextField(state.query, { state.search(it.take(100)) }, Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                 singleLine = true, label = { Text("查找来源、榜名或分类") })
-            LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val matches = boards.filter { (it.providerName + " " + it.name + " " + it.category + " " + NOVEL_RANKING_PERIODS[it.period]).contains(query.trim(), true) }
+            LazyColumn(state = state.list, contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val matches = if (sourcesOnly) emptyList() else boards.filter {
+                    filter.matches(it.providerName, it.name, it.category, NOVEL_RANKING_PERIODS[it.period].orEmpty(), it.metric)
+                }
                 items(matches, key = { it.providerId + ":" + it.key }) { board ->
                     OutlinedCard(onClick = { onSelect(NovelRankingSelection(provider = board.providerId, key = board.key, period = board.period)) }, modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
@@ -293,12 +346,36 @@ import org.json.JSONObject
                         }
                     }
                 }
-                items(NOVEL_LOCAL_RANKINGS.toList().filter { ("我的书库 " + it.second).contains(query.trim(), true) }, key = { "local:" + it.first }) { (kind, name) ->
+                val local = if (sourcesOnly) emptyList() else NOVEL_LOCAL_RANKINGS.toList().filter { (_, name) ->
+                    filter.matches("我的书库", name, NOVEL_RANKING_PERIODS.getValue("total"))
+                }
+                items(local, key = { "local:" + it.first }) { (kind, name) ->
                     OutlinedCard(onClick = { onSelect(NovelRankingSelection(kind = kind)) }, modifier = Modifier.fillMaxWidth()) {
                         Text("我的书库 · $name${if (selected.local && selected.kind == kind) " · 当前" else ""}", Modifier.padding(16.dp))
                     }
                 }
-                if (matches.isEmpty() && query.isNotBlank()) item { Text("没有匹配的外站榜单，试试来源名称或其他关键词。") }
+                items(entries?.items.orEmpty(), key = { "entry:" + it.providerId + ":" + it.key }) { entry ->
+                    OutlinedCard(onClick = { onEntry(entry) }, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(entry.name, style = MaterialTheme.typography.titleSmall)
+                            val status = when (entry.cacheStatus) {
+                                "cached" -> if (entry.refreshFailed) "更新失败，可读上次结果" else "已有榜单内容"
+                                "failed" -> "上次获取失败"
+                                "unfetched" -> "待获取"
+                                else -> ""
+                            }
+                            Text(listOf(entry.providerName, entry.periodLabel, status).filter(String::isNotBlank).joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                if (loading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+                failure?.let { message -> item { Text(message); TextButton(onClick = { retry++ }) { Text("重试书源榜单") } } }
+                entries?.nextOffset?.takeIf { !loading && failure == null }?.let { next -> item {
+                    OutlinedButton(onClick = { offset = next }, modifier = Modifier.fillMaxWidth()) { Text("更多书源榜单") }
+                } }
+                if (matches.isEmpty() && local.isEmpty() && entries?.items.isNullOrEmpty() && !loading && failure == null) item {
+                    Text(if (term.isBlank()) "当前书源没有可浏览的排行榜。" else "没有匹配榜单，试试来源名称或其他关键词。")
+                }
             }
         }
     }

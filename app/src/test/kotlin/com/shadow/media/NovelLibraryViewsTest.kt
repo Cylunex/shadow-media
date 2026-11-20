@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import com.shadow.media.library.NovelQuery
 import com.shadow.media.library.novelObjects
 import com.shadow.media.ui.theme.ShadowMediaTheme
+import com.shadow.media.library.NovelDiscoveryQuery
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -80,10 +81,13 @@ class NovelLibraryViewsTest {
     }
 
     @Test fun discoverySearchFindsColumnNamesAcrossProvidersAndRespectsKind() {
-        val source = JSONObject("""{"name":"原创来源","entries":[{"name":"玄幻","kind":"分类"},{"name":"玄幻月榜","kind":"排行榜"}]}""")
-        assertTrue(novelDiscoveryMatches(source, "月榜", "排行榜"))
-        assertFalse(novelDiscoveryMatches(source, "月榜", "分类"))
-        assertEquals(2, novelDiscoveryEntries(source, source.novelObjects("entries"), "原创", "").size)
+        val source = JSONObject("""{"name":"原创来源","entries":[{"name":"玄幻","kind":"分类"},{"name":"玄幻月榜","kind":"排行榜"},
+            {"name":"月點擊排行","kind":"排行榜","period":"month"}]}""")
+        assertTrue(novelDiscoveryMatches(source, NovelDiscoveryQuery("月榜"), "排行榜"))
+        assertFalse(novelDiscoveryMatches(source, NovelDiscoveryQuery("月榜"), "分类"))
+        assertEquals(3, novelDiscoveryEntries(source, source.novelObjects("entries"), NovelDiscoveryQuery("原创"), "").size)
+        val results = novelDiscoveryEntries(source, source.novelObjects("entries"), NovelDiscoveryQuery("月榜 点击"), "排行榜")
+        assertEquals(listOf("月點擊排行"), results.map { it.getString("name") })
     }
 
     @Test @Config(qualifiers = "w320dp-h640dp-mdpi") fun rankingPickerSearchesColumnsAndChoosesTheExactPeriod() {

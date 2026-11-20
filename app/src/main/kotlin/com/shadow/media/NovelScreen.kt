@@ -31,7 +31,7 @@ import com.shadow.media.library.*
 import com.shadow.media.reading.ReaderActivity
 import com.shadow.media.reading.NovelContentsPanel
 
-private data class NovelRoute(val kind: String, val id: String = "", val name: String = "", val version: String = "")
+private data class NovelRoute(val kind: String, val id: String = "", val name: String = "", val version: String = "", val ranking: NovelRankingEntry? = null)
 private data class NovelDestination(val route: NovelRoute, val query: NovelQuery, val search: String, val data: JSONObject?, val navigation: JSONObject, val offset: Int)
 private data class NovelEdit(val title: String, val fields: List<Pair<String, String>>, val save: suspend (Map<String, String>) -> Unit)
 
@@ -77,6 +77,8 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
     var disconnectedDownloads by remember { mutableStateOf<List<com.shadow.media.database.LibraryAssetEntity>>(emptyList()) }
     val pageStates = rememberSaveableStateHolder()
     val browserState = remember(connection?.id) { NovelBrowserState() }
+    val rankingPicker = remember(connection?.id) { mutableStateOf<NovelRankingPickerState?>(null) }
+    val rankingBrowsers = remember(connection?.id) { mutableMapOf<NovelRankingEntry, NovelBrowserState>() }
     val rootStacks = remember(connection?.id) { mutableMapOf<MediaDestination, List<NovelDestination>>() }
     val rootStates = remember(connection?.id) { mutableMapOf<MediaDestination, NovelDestination>() }
     var previousRoot by remember { mutableStateOf(rootSection) }
@@ -205,7 +207,11 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
         route = target; query = nextQuery; search = nextSearch; data = null; navigation = JSONObject(); error = null; message = null
     }
     fun back() {
-        if (route.kind == "sources" && browserState.backWithinBrowser()) return
+        if (route.kind == "sources") {
+            val state = route.ranking?.let { rankingBrowsers[it] } ?: browserState
+            if (state.backWithinBrowser()) return
+            route.ranking?.let { rankingBrowsers.remove(it) }
+        }
         job?.cancel(); busy = false; error = null; message = null
         if (stack.isNotEmpty()) { val previous = stack.last(); route = previous.route; query = previous.query; search = previous.search; stack = stack.dropLast(1); data = previous.data; navigation = previous.navigation; offset = previous.offset }
         else if (connection != null) { connection = null; data = null }
@@ -266,7 +272,7 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         TopAppBar(title = { Row(verticalAlignment = Alignment.CenterVertically) { Text(if (c == null) { if (rootSection == null) "Shadow Novel" else "连接小说服务" } else when (route.kind) {
             "work" -> data?.optString("title") ?: "作品"; "author" -> route.name; "list" -> data?.optString("title") ?: "书单"; "contents" -> "版本目录"
-            "sources" -> "在线找书"; "tools" -> "书库工具"; "home" -> "书城"; "lists" -> "我的书单"; "rankings" -> "排行榜"; "offline" -> "离线阅读"; "discovery" -> "发现"
+            "sources" -> route.ranking?.name ?: "在线找书"; "tools" -> "书库工具"; "home" -> "书城"; "lists" -> "我的书单"; "rankings" -> "排行榜"; "offline" -> "离线阅读"; "discovery" -> "发现"
             "works" -> if (route.id == "shelf") "我的书架" else if (route.id == "history") "阅读历史" else if (route.id == "trash") "已删除作品" else "发现好书"; else -> c.name
         }, maxLines = 1, style = MaterialTheme.typography.titleLarge,
             modifier = Modifier.weight(1f, fill = false))
@@ -358,12 +364,19 @@ private fun novelRootRoute(section: MediaDestination?): NovelRoute = when (secti
             }
             else if (route.kind == "notes") NovelNotesLibrary(repository, novelScope(c), route.id.takeIf(String::isNotBlank))
             else if (route.kind == "offline") NovelOfflineLibrary(repository, novelScope(c)) { asset -> context.startActivity(Intent(context, ReaderActivity::class.java).putExtra("assetId", asset.id)) }
-            else if (route.kind == "sources") NovelSourceBrowser(repository, c, browserState, onWork = { navigate(NovelRoute("work", it)) }, onManage = { navigate(NovelRoute("tools", "sources")) },
-                onRead = { open(it.workId, it.versionId, it.chapterId) })
+            else if (route.kind == "sources") {
+                val ranking = route.ranking
+                val state = ranking?.let { rankingBrowsers.getOrPut(it) { NovelBrowserState(ranking = it) } } ?: browserState
+                NovelSourceBrowser(repository, c, state, onWork = { navigate(NovelRoute("work", it)) }, onManage = { navigate(NovelRoute("tools", "sources")) },
+                    onRead = { open(it.workId, it.versionId, it.chapterId) },
+                    onSearchAuthor = if (ranking == null) null else { author -> browserState.requestSearch(author); navigate(NovelRoute("sources")) })
+            }
             else if (route.kind == "tools") NovelToolsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, initialPage = route.id, onSearch = {
                 rememberSearch(it); navigate(NovelRoute("works", "search"), NovelQuery(q = it), it)
             })
-            else if (route.kind == "rankings") NovelRankingsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = { title -> browserState.requestSearch(title); navigate(NovelRoute("sources")) }, onLogin = { signIn(c.name, c.url, c) }, onExplore = { browserState.selectMode(true); browserState.discoveryKind = "排行榜"; browserState.entry = null; navigate(NovelRoute("sources")) }) else if (route.kind == "contents") {
+            else if (route.kind == "rankings") NovelRankingsScreen(repository, c, onWork = { navigate(NovelRoute("work", it)) }, onSearch = { title -> browserState.requestSearch(title); navigate(NovelRoute("sources")) }, onLogin = { signIn(c.name, c.url, c) },
+                onExplore = { browserState.selectMode(true); browserState.discoveryKind = "排行榜"; browserState.entry = null; navigate(NovelRoute("sources")) },
+                onEntry = { navigate(NovelRoute("sources", ranking = it)) }, pickerState = rankingPicker) else if (route.kind == "contents") {
                 NovelContentsPanel(repository, c, route.id, route.version, !busy, onOpen = { open(route.id, route.version, it.getString("id")) },
                     modifier = Modifier.weight(1f).fillMaxWidth().imePadding().padding(horizontal = 20.dp))
             } else if (route.kind == "works") {

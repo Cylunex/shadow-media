@@ -133,6 +133,60 @@ class NovelClientFlowTest {
         compose.onAllNodesWithText("周点击").onFirst().assertIsDisplayed()
         assertTrue(requests.count { it.first.startsWith("/novel/api/v1/rankings/s/weekly?") } >= 2)
     }
+    @Test fun rankingPickerSearchesAllSourcesAndOpensTheChosenEntryWithExactPageRetry() {
+        var secondAttempts = 0
+        val monthly = """{"provider_id":"s","provider_name":"原创来源","key":"month","kind":"排行榜","name":"月点击榜","period_label":"月榜","paginated":true,"cache_status":"cached"}"""
+        val firstPage = (1..30).joinToString(",") { """{"provider_id":"other","provider_name":"其他来源","key":"m$it","name":"月点击分类 $it","period_label":"月榜"}""" }
+        handler = { request ->
+            val url = requireNotNull(request.requestUrl)
+            when {
+                url.encodedPath.endsWith("/rankings") -> json("""{"boards":[],"source_entries":[$firstPage],"source_entries_next_offset":30}""")
+                url.encodedPath.endsWith("/rankings/source-entries") && url.queryParameter("q") == "月榜 点击" -> {
+                    if (url.queryParameter("offset") == "30") json("""{"items":[$monthly],"offset":30,"next_offset":null}""")
+                    else json("""{"items":[$firstPage],"offset":0,"next_offset":30}""")
+                }
+                url.encodedPath.endsWith("/source-browser/s/month") && url.queryParameter("page") == "2" ->
+                    if (++secondAttempts == 1) json("""{"detail":"模拟分页失败"}""").setResponseCode(503)
+                    else json("""{"items":[],"page":2,"stale":false}""")
+                url.encodedPath.endsWith("/source-browser/s/month") -> json("""{"items":[$row],"page":1,"stale":false}""")
+                else -> json("{}")
+            }
+        }
+        val repo = repository(); val c = connection()
+        var target by mutableStateOf<NovelBrowserState?>(null)
+        compose.setContent { ShadowMediaTheme { Surface {
+            val state = target
+            val picker = remember { mutableStateOf<NovelRankingPickerState?>(null) }
+            if (state == null) NovelRankingsScreen(repo, c, {}, {}, {}, onEntry = { target = NovelBrowserState(ranking = it) }, pickerState = picker)
+            else NovelSourceBrowser(repo, c, state, {}, {})
+        } } }
+        waitText("选择榜单")
+        compose.waitUntil(15_000) { compose.onAllNodes(hasText("书源排行榜") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("书源排行榜").performClick()
+        compose.onNodeWithText("查找来源、榜名或分类").performTextInput("月榜 点击")
+        compose.waitUntil(15_000) { requests.any { it.first.contains("/rankings/source-entries?") } }
+        compose.waitForIdle()
+        scrollTo("更多书源榜单")
+        compose.onNodeWithText("更多书源榜单").performClick()
+        compose.waitUntil(15_000) { requests.any { it.first.contains("offset=30") } }
+        compose.waitForIdle()
+        scrollTo("月点击榜")
+        compose.onNodeWithText("月点击榜").performClick()
+        waitText("山海来信")
+        compose.onNodeWithText("下一页").performClick()
+        waitText("重试")
+        compose.onNodeWithText("重试").performScrollTo().performClick()
+        waitText("第 2 页")
+        compose.runOnIdle { assertEquals(false, target!!.backWithinBrowser()) }
+        compose.runOnIdle { target = null }
+        waitText("月榜 点击")
+        compose.onNodeWithText("月点击榜").assertIsDisplayed()
+        assertEquals(2, requests.count { it.first.contains("/rankings/source-entries?") })
+        assertEquals(2, secondAttempts)
+        assertEquals(1, requests.count { it.first.endsWith("/source-browser/s/month?page=1") })
+        assertFalse(requests.any { it.first.contains("/source-browser?") || it.first.endsWith("/rankings/s/month") })
+    }
+
     @Test fun discoveryUsesIndependentScopeAndBackReturnsToColumns() {
         handler = { request -> when {
             request.route()!!.startsWith("/novel/api/v1/source-browser?") -> json("""{"items":[{"id":"s","name":"原创来源","entry_count":1}]}""")
