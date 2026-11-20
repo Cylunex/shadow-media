@@ -197,9 +197,18 @@ class ExternalPlaybackRuntime(
         audible.close()
         mediaSession.release()
         exoPlayer.release()
-        client.dispatcher.executorService.shutdown()
-        client.connectionPool.evictAll()
+        client.closeExternalPlaybackConnections()
     }
+}
+
+internal fun OkHttpClient.closeExternalPlaybackConnections() {
+    val cleanup = dispatcher.executorService
+    // Evicting a pooled TLS socket can send close_notify. Compose disposes the player on main.
+    cleanup.execute {
+        dispatcher.cancelAll()
+        connectionPool.evictAll()
+    }
+    cleanup.shutdown()
 }
 
 class RoutingDataSource(
