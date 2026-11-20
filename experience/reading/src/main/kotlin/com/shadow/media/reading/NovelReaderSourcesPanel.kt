@@ -90,7 +90,8 @@ internal fun ColumnScope.NovelReaderSourcesPanel(repository: NovelRepository, pu
         if (catalog.versions.isEmpty()) catalog.versions = cached
         if (online && c != null) {
             val detail = repository.get(c, listOf("works", publication.workId))
-            val remote = detail.novelObjects("versions").filter { it.novelId("id") != null }.map { version ->
+            val remote = (detail.novelObjects("versions") + detail.novelObjects("previous_cached_versions"))
+                .filter { it.novelId("id") != null }.map { version ->
                 if (cached.any { it.getString("id") == version.getString("id") }) JSONObject(version.toString()).put("cached", true) else version
             }
             // Keep the previous successful directory visible throughout the request.

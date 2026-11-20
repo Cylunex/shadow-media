@@ -262,6 +262,19 @@ class NovelReadingCacheTest {
         }
     }
 
+    @Test fun overlappingWindowRecoversBookmarkAfterFirstPackageIsDamaged() = runBlocking {
+        Service(total = 3).use { service ->
+            val repository = repository(service)
+            val first = repository.cache.window(service.c, "work", "v1", 1, 1)
+            val alternate = repository.cache.window(service.c, "work", "v1", 0, 3)
+            val saved = JSONObject().put("href", "chapters/c1.xhtml").toString()
+            LibraryRepository(RuntimeEnvironment.getApplication()).localFile(first.asset).writeText("damaged")
+            val result = repository.bookmarkTarget(first.asset.id, saved)
+            assertEquals(alternate.asset.id, result.asset.id)
+            assertEquals(saved, result.locator)
+        }
+    }
+
     @Test fun staleWorkerCannotOverwritePauseOrResumedOperation() = runBlocking {
         val store = NovelDownloads(RuntimeEnvironment.getApplication())
         val task = NovelDownloadTask("novel:unique-${java.util.UUID.randomUUID()}", "work", "v1", "test")
