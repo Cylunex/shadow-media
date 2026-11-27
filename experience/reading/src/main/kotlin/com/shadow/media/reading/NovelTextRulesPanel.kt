@@ -4,9 +4,12 @@ package com.shadow.media.reading
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
 import com.shadow.media.library.*
 import kotlinx.coroutines.*
@@ -23,6 +26,9 @@ fun ColumnScope.NovelTextRulesPanel(repository: NovelRepository, scope: String?,
     var error by remember { mutableStateOf<String?>(null) }
     var preview by remember { mutableStateOf<String?>(null) }
     var input by remember { mutableStateOf(sample.take(20000)) }
+    var addedRuleId by remember(scope) { mutableStateOf<String?>(null) }
+    var focusRuleId by remember(scope) { mutableStateOf<String?>(null) }
+    val listState = rememberLazyListState()
     val coroutine = rememberCoroutineScope()
     fun run(action: suspend () -> Unit) {
         if (busy) return
@@ -43,15 +49,27 @@ fun ColumnScope.NovelTextRulesPanel(repository: NovelRepository, scope: String?,
         preview = null
     }
     LaunchedEffect(scope) { load() }
+    LaunchedEffect(addedRuleId) {
+        val id = addedRuleId ?: return@LaunchedEffect
+        val index = rules.indexOfFirst { it.getString("id") == id }
+        if (index >= 0) {
+            listState.scrollToItem(index)
+            focusRuleId = id
+        }
+        addedRuleId = null
+    }
     Text("按顺序处理所有正文，替换内容留空可屏蔽广告。原文保留，停用后恢复。", style = MaterialTheme.typography.bodySmall)
     if (scope == null) Text("本机 TXT 使用本机规则；Novel 书籍使用对应连接的同步规则。", style = MaterialTheme.typography.bodySmall)
     if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
     error?.let { Text(it, color = MaterialTheme.colorScheme.error); TextButton(enabled = !busy, onClick = ::load) { Text("重新加载规则") } }
     Row {
         TextButton(enabled = loaded && !busy && rules.size < 100, onClick = {
-            rules = rules + JSONObject().put("id", UUID.randomUUID().toString()).put("name", "").put("pattern", "")
+            val id = UUID.randomUUID().toString()
+            rules = rules + JSONObject().put("id", id).put("name", "").put("pattern", "")
                 .put("replacement", "").put("enabled", true).put("is_regex", false)
-        }) { Text("添加规则") }
+            addedRuleId = id
+            preview = null
+        }) { Text("新增规则") }
         Button(enabled = loaded && !busy, onClick = { run {
             require(rules.all { it.optString("pattern").isNotBlank() }) { "匹配内容不能为空" }
             if (scope == null) rules.filter { it.optBoolean("is_regex") }.forEach { java.util.regex.Pattern.compile(it.getString("pattern")) }
@@ -59,15 +77,23 @@ fun ColumnScope.NovelTextRulesPanel(repository: NovelRepository, scope: String?,
             revision = result.optInt("revision"); onSaved()
         } }) { Text("保存并应用") }
     }
-    LazyColumn(Modifier.weight(1f).imePadding(), contentPadding = PaddingValues(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        if (rules.isEmpty() && loaded) item { Text("暂无规则。选中广告语后可从顶部「替换」添加。") }
+    LazyColumn(Modifier.weight(1f).imePadding(), state = listState, contentPadding = PaddingValues(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (rules.isEmpty() && loaded) item { Text("暂无规则。") }
         itemsIndexed(rules, key = { _, r -> r.getString("id") }) { index, rule ->
+            val id = rule.getString("id")
+            val patternFocus = remember { FocusRequester() }
+            LaunchedEffect(focusRuleId == id) {
+                if (focusRuleId == id) {
+                    patternFocus.requestFocus()
+                    focusRuleId = null
+                }
+            }
             OutlinedCard {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     OutlinedTextField(rule.optString("name"), { edit(index, "name", it.take(100)) }, enabled = !busy,
                         label = { Text("规则 ${index + 1} · 名称") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     OutlinedTextField(rule.optString("pattern"), { edit(index, "pattern", it.take(1000)) }, enabled = !busy,
-                        label = { Text("匹配文字或正则") }, modifier = Modifier.fillMaxWidth())
+                        label = { Text("匹配文字或正则") }, modifier = Modifier.fillMaxWidth().focusRequester(patternFocus))
                     OutlinedTextField(rule.optString("replacement"), { edit(index, "replacement", it.take(1000)) }, enabled = !busy,
                         label = { Text("替换为（留空屏蔽）") }, modifier = Modifier.fillMaxWidth())
                     FlowRow {

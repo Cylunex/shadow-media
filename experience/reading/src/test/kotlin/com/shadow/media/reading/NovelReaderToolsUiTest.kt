@@ -51,6 +51,30 @@ class NovelReaderToolsUiTest {
     private fun publication() = NovelPublicationEntity("current", novelScope(c), "work", "v1", "{}", "r")
     private fun waitText(text: String) = compose.waitUntil(10_000) { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
+    @Test fun addingARuleFocusesTheNewPatternAndPreservesExecutionOrder() {
+        val existing = (1..40).joinToString(",") { """{"id":"rule-$it","pattern":"广告 $it"}""" }
+        handler = { request ->
+            if (request.method == "PUT") {
+                val body = JSONObject(request.body.clone().readUtf8())
+                json(JSONObject().put("revision", 8).put("items", body.getJSONArray("items")).toString())
+            } else json("""{"revision":7,"items":[$existing]}""")
+        }
+        val repo = repository()
+        compose.setContent { MaterialTheme { Column(Modifier.fillMaxSize()) {
+            NovelTextRulesPanel(repo, novelScope(c))
+        } } }
+        waitText("规则 1 · 名称")
+        compose.onNodeWithText("新增规则").performClick()
+        compose.onNode(isFocused() and hasSetTextAction()).assertIsDisplayed().performTextInput("新水印")
+        compose.onNodeWithText("保存并应用").performClick()
+        compose.waitUntil(10_000) { requests.any { it.first == "/api/v1/reading-rules" && it.second.isNotBlank() } }
+        val saved = JSONObject(requests.single { it.first == "/api/v1/reading-rules" && it.second.isNotBlank() }.second)
+        assertEquals(7, saved.getInt("expected_revision"))
+        val rules = saved.novelObjects("items")
+        assertEquals((1..40).map { "rule-$it" }, rules.dropLast(1).map { it.getString("id") })
+        assertEquals("新水印", rules.last().getString("pattern"))
+    }
+
     @Test fun missingChapterOffersTheMatchingChapterWithoutOpeningUntilSelected() {
         val error = JSONObject().put("message", "来源返回 HTTP 404")
         assertTrue(NovelApiException(400, "source_chapter_missing", error).isMissingNovelChapter())
