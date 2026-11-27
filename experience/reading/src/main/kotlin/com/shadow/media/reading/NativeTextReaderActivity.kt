@@ -78,6 +78,7 @@ class NativeTextReaderActivity : ComponentActivity() {
     private var acquiring = true
     private var navigationJob: Job? = null
     private var message by mutableStateOf<String?>(null)
+    private var unavailableChapter by mutableStateOf<NativeChapterRef?>(null)
     private var fatal by mutableStateOf<String?>(null)
     private var offset by mutableIntStateOf(0)
     private var pageLabel by mutableStateOf("")
@@ -206,7 +207,7 @@ class NativeTextReaderActivity : ComponentActivity() {
                     cacheStatus = "后续章节已提前缓存"; return@launch
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) {
-                    cacheStatus = "后续章节暂未缓存，联网后可重试"
+                    cacheStatus = "后续章节暂未缓存"
                     if (attempt < 2) delay(5_000L * (attempt + 1))
                 }
             }
@@ -267,7 +268,13 @@ class NativeTextReaderActivity : ComponentActivity() {
         navigationJob = lifecycleScope.launch {
             try { if (flushProgress) ProgressWriter.flush(); block() }
             catch (e: CancellationException) { busy = false; view?.isEnabled = true; view?.boundaryResolved("已取消章节加载"); throw e }
-            catch (e: Exception) { busy = false; view?.isEnabled = true; view?.boundaryResolved(); message = e.message ?: "章节获取失败，当前内容已保留" }
+            catch (e: Exception) {
+                busy = false
+                view?.isEnabled = true
+                view?.boundaryResolved()
+                if (e is NovelChapterMissing) unavailableChapter = e.chapter
+                else message = e.message ?: "章节获取失败，当前内容已保留"
+            }
             finally { acquiring = false }
         }
     }
@@ -306,9 +313,15 @@ class NativeTextReaderActivity : ComponentActivity() {
         if (pub == null) open(currentAsset, JSONObject().put("href", ref.href), end, savePosition = true)
         else {
             val inPackage = NovelPublicationMap(JSONObject(pub.mappingJson)).chapter(ref.id) != null
-            val prepared = if (inPackage) NovelRepository.Prepared(currentAsset, null)
-                else novel.cachedChapter(pub.scope, pub.workId, pub.versionId, ref.id)
-                    ?: novel.prepare(novel.connection(pub.scope), pub.workId, pub.versionId, ref.id)
+            val prepared = if (inPackage) NovelRepository.Prepared(currentAsset, null) else {
+                try {
+                    novel.cachedChapter(pub.scope, pub.workId, pub.versionId, ref.id)
+                        ?: novel.prepare(novel.connection(pub.scope), pub.workId, pub.versionId, ref.id)
+                } catch (error: NovelApiException) {
+                    if (error.isMissingNovelChapter()) throw NovelChapterMissing(ref, error)
+                    throw error
+                }
+            }
             open(prepared.asset, JSONObject().put("href", ref.href), end, savePosition = true)
         }
     }
@@ -629,6 +642,24 @@ class NativeTextReaderActivity : ComponentActivity() {
                         modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp))
                 }
             }
+            val failed = unavailableChapter
+            val pub = publication
+            if (failed != null && pub != null) NovelChapterRecoveryDialog(
+                failed, pub.versionId,
+                load = { novel.live(novel.connection(pub.scope), listOf("chapters", failed.id, "alternatives")) },
+                onDismiss = { unavailableChapter = null },
+                onOpenSources = {
+                    unavailableChapter = null
+                    sourceState.selectedVersion = null
+                    menu = true
+                    panel = "书源"
+                    applyWindow()
+                },
+                onOpenChapter = { version, id ->
+                    unavailableChapter = null
+                    switchSource(version, id)
+                },
+            )
             excerpt?.let { (text, position) -> AlertDialog(onDismissRequest = { excerpt = null }, title = { Text("摘录") }, text = { androidx.compose.foundation.text.selection.SelectionContainer { Text(if (text.length > 1000) "最多保存 1000 字，请返回缩短选区。\n\n$text" else text) } },
                 confirmButton = { TextButton(enabled = !savingMark && text.length <= 1000, onClick = { chapter?.let { mark(it.locator(position).put("selection_end", it.canonicalOffset(position + text.length, end = true)), text) } }) { Text("保存摘录") } },
                 dismissButton = { TextButton(onClick = { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("正文", text)); message = "已复制正文"; excerpt = null }) { Text("复制") } }) }

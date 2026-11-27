@@ -50,6 +50,34 @@ class NovelReaderToolsUiTest {
     private fun repository() = NovelRepository(compose.activity, api = NovelApi(), connectionLoader = { listOf(c) })
     private fun publication() = NovelPublicationEntity("current", novelScope(c), "work", "v1", "{}", "r")
     private fun waitText(text: String) = compose.waitUntil(10_000) { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
+
+    @Test fun missingChapterOffersTheMatchingChapterWithoutOpeningUntilSelected() {
+        val error = JSONObject().put("message", "来源返回 HTTP 404")
+        assertTrue(NovelApiException(400, "source_chapter_missing", error).isMissingNovelChapter())
+        assertTrue(NovelApiException(400, "invalid_input", error).isMissingNovelChapter())
+        assertFalse(NovelApiException(404, "not_found", error).isMissingNovelChapter())
+        var opened: Pair<String, String>? = null
+        compose.setContent {
+            MaterialTheme {
+                NovelChapterRecoveryDialog(
+                    NativeChapterRef("old-next", "第21章 启程", 20, "unused.xhtml"), "v1",
+                    load = { JSONObject("""{"items":[
+                        {"version_id":"v1","chapter_id":"old-next","label":"原书源"},
+                        {"version_id":"v2","chapter_id":"new-next","label":"备用书源","title":"第二十一章 启程"}
+                    ]}""") },
+                    onDismiss = {},
+                    onOpenSources = {},
+                    onOpenChapter = { version, chapter -> opened = version to chapter },
+                )
+            }
+        }
+        waitText("备用书源")
+        compose.onNodeWithText("原书源").assertDoesNotExist()
+        compose.runOnIdle { assertNull(opened) }
+        compose.onNodeWithText("备用书源").performClick()
+        compose.runOnIdle { assertEquals("v2" to "new-next", opened) }
+    }
+
     private fun screenshot(name: String) {
         System.getenv("NATIVE_READER_SCREENSHOTS")?.let { path ->
             val bitmap = compose.runOnIdle { val view = compose.activity.window.decorView
